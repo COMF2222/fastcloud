@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Fastcloud
+GenericName=SoundCloud Client
+Comment=Native SoundCloud client
+Exec=fastcloud %U
+Icon=fastcloud
+Terminal=false
+Categories=Audio;Music;AudioVideo;
+Keywords=soundcloud;music;audio;player;
+StartupWMClass=fastcloud
+MimeType=x-scheme-handler/soundcloud;
+SingleMainWindow=true

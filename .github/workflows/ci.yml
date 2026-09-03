@@ -1,0 +1,119 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libasound2-dev libudev-dev libxdo-dev libappindicator3-dev
+      - run: cargo clippy --all-targets -- -D warnings
+
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libasound2-dev libudev-dev libxdo-dev libappindicator3-dev
+      - run: cargo test --all
+
+  build:
+    needs: [fmt, clippy, test]
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: fastcloud-linux-amd64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: fastcloud-windows-amd64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: fastcloud-macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libasound2-dev libudev-dev libxdo-dev libappindicator3-dev
+      - run: cargo build --release --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: target/${{ matrix.target }}/release/fastcloud*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: fastcloud-linux-amd64
+            archive: fastcloud-${{ github.ref_name }}-linux-amd64.tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: fastcloud-windows-amd64
+            archive: fastcloud-${{ github.ref_name }}-windows-amd64.zip
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: fastcloud-macos-arm64
+            archive: fastcloud-${{ github.ref_name }}-macos-arm64.tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libasound2-dev libudev-dev libxdo-dev libappindicator3-dev
+      - run: cargo build --release --target ${{ matrix.target }}
+      - name: Archive (unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p dist
+          tar czf dist/${{ matrix.archive }} -C target/${{ matrix.target }}/release fastcloud
+      - name: Archive (windows)
+        if: runner.os == 'Windows'
+        run: |
+          mkdir dist
+          Compress-Archive -Path target/${{ matrix.target }}/release/fastcloud.exe -Destination dist/${{ matrix.archive }}
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
