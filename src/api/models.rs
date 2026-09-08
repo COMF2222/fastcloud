@@ -45,7 +45,24 @@ pub struct Track {
     #[serde(default)]
     pub full_duration_ms: Option<u64>,
     pub artwork: Option<Artwork>,
+    /// Current SoundCloud API artwork field. Older saved data may still use
+    /// the nested `artwork` object above, so both formats remain readable.
+    #[serde(default)]
+    pub artwork_url: Option<String>,
+    /// JSON endpoint containing the real waveform samples rendered by
+    /// SoundCloud. Older cached tracks simply fall back to generated bars.
+    #[serde(default)]
+    pub waveform_url: Option<String>,
     pub user: Option<UserLite>,
+    /// Release attribution supplied by the rights holder. SoundCloud's web
+    /// player shows this artist name ahead of the uploader account name.
+    #[serde(default)]
+    pub publisher_metadata: Option<PublisherMetadata>,
+    /// Artist override in the current public API schema. Some responses also
+    /// expose the richer `publisher_metadata.artist`; both mean the same
+    /// credit and both must beat the uploader account name.
+    #[serde(default)]
+    pub metadata_artist: Option<String>,
     #[serde(default)]
     pub playback_count: Option<u64>,
     #[serde(default)]
@@ -70,21 +87,97 @@ pub struct Track {
     pub created_at: Option<String>,
     #[serde(default)]
     pub permalink_url: Option<String>,
+    /// Access policy: `ALLOW`, `SNIP` (30s preview) or `BLOCK` (no off-platform stream).
+    #[serde(default)]
+    pub policy: Option<String>,
+    #[serde(default)]
+    pub access: Option<String>,
+    /// Monetization: e.g. `SUBSCRIPTION` marks Go+-exclusive tracks.
+    #[serde(default)]
+    pub monetization_model: Option<String>,
+    /// UI-only activity metadata attached while flattening `/me/feed`.
+    /// SoundCloud's feed entry owns this value, not the track itself.
+    #[serde(default, skip_serializing)]
+    pub feed_reposted: bool,
 }
 
 impl Track {
+    pub fn artwork_url(&self) -> Option<&str> {
+        self.artwork
+            .as_ref()
+            .and_then(Artwork::best)
+            .or(self.artwork_url.as_deref())
+            .filter(|url| !url.is_empty())
+    }
+
     pub fn urn(&self) -> String {
         format!("soundcloud:tracks:{}", self.id)
     }
     pub fn artist(&self) -> &str {
-        self.user
+        self.publisher_metadata
             .as_ref()
-            .map(|u| u.username.as_str())
+            .and_then(|metadata| metadata.artist.as_deref())
+            .map(str::trim)
+            .filter(|artist| !artist.is_empty())
+            .or_else(|| {
+                self.metadata_artist
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|artist| !artist.is_empty())
+            })
+            .or_else(|| self.user.as_ref().map(|u| u.username.as_str()))
             .unwrap_or("")
     }
     pub fn effective_duration_ms(&self) -> u64 {
         self.full_duration_ms.or(self.duration_ms).unwrap_or(0)
     }
+    /// Normalized access policy (`ALLOW` when the API omits it).
+    pub fn policy_name(&self) -> &str {
+        self.access
+            .as_deref()
+            .or(self.policy.as_deref())
+            .unwrap_or("ALLOW")
+    }
+    /// Track is restricted by the rightsholder: no off-platform stream.
+    pub fn is_blocked(&self) -> bool {
+        matches!(
+            self.policy_name().to_ascii_lowercase().as_str(),
+            "block" | "blocked"
+        )
+    }
+    /// Only a 30-second snippet is streamable.
+    pub fn is_snippet(&self) -> bool {
+        matches!(
+            self.policy_name().to_ascii_lowercase().as_str(),
+            "snip" | "preview"
+        )
+    }
+    /// Go+-exclusive release (needs a Go+ subscription on the user account).
+    pub fn is_go_only(&self) -> bool {
+        self.monetization_model
+            .as_deref()
+            .is_some_and(|m| m.eq_ignore_ascii_case("SUBSCRIPTION"))
+    }
+    /// Short badge for the UI: `GO+`, `PREVIEW`, `BLOCKED` or `None`.
+    pub fn access_badge(&self) -> Option<&'static str> {
+        if self.is_blocked() {
+            Some("BLOCKED")
+        } else if self.is_snippet() {
+            Some("PREVIEW")
+        } else if self.is_go_only() {
+            Some("GO+")
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PublisherMetadata {
+    #[serde(default)]
+    pub artist: Option<String>,
+    #[serde(default)]
+    pub album_title: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,26 +189,141 @@ pub struct UserLite {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebProfile {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub service: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Storefront {
+    #[serde(default)]
+    pub track_urn: Option<String>,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default, rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub link: String,
+    #[serde(default)]
+    pub link_title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub image_url: Option<String>,
+    #[serde(default)]
+    pub price: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Playlist {
     pub id: u64,
     pub title: String,
     pub artwork: Option<Artwork>,
+    /// Current SoundCloud API artwork field; `artwork` keeps compatibility
+    /// with the older nested representation persisted by Fastcloud.
+    #[serde(default)]
+    pub artwork_url: Option<String>,
     pub user: Option<UserLite>,
     #[serde(default)]
     pub track_count: Option<u64>,
-    #[serde(default)]
+    #[serde(default, alias = "duration")]
     pub duration_ms: Option<u64>,
     #[serde(default)]
     pub is_album: bool,
+    /// Newer responses may identify albums by type instead of setting the
+    /// legacy boolean. Keep both so the Albums tab follows SoundCloud.
+    #[serde(default)]
+    pub playlist_type: Option<String>,
+    #[serde(default)]
+    pub set_type: Option<String>,
     #[serde(default)]
     pub created_at: Option<String>,
     #[serde(default)]
     pub permalink_url: Option<String>,
+    /// Embedded when `show_tracks=true`; used immediately for cover fallback
+    /// while the dedicated playlist-track page is still loading.
+    #[serde(default)]
+    pub tracks: Vec<Track>,
+    /// UI-only activity metadata attached while flattening `/me/feed`.
+    #[serde(default, skip_serializing)]
+    pub feed_reposted: bool,
 }
 
 impl Playlist {
+    pub fn artwork_url(&self) -> Option<&str> {
+        self.artwork
+            .as_ref()
+            .and_then(Artwork::best)
+            .or(self.artwork_url.as_deref())
+            .or_else(|| self.tracks.iter().find_map(Track::artwork_url))
+            .filter(|url| !url.is_empty())
+    }
+
     pub fn urn(&self) -> String {
         format!("soundcloud:playlists:{}", self.id)
+    }
+
+    pub fn is_album(&self) -> bool {
+        self.is_album
+            || self
+                .playlist_type
+                .as_deref()
+                .is_some_and(|kind| kind.eq_ignore_ascii_case("album"))
+            || self
+                .set_type
+                .as_deref()
+                .is_some_and(|kind| kind.eq_ignore_ascii_case("album"))
+    }
+}
+
+#[cfg(test)]
+mod track_and_playlist_tests {
+    use super::*;
+
+    #[test]
+    fn release_artist_wins_over_uploader() {
+        let track: Track = serde_json::from_str(
+            r#"{
+                "id": 69,
+                "title": "blackpill",
+                "user": {"id": 1, "username": "eclipse media", "permalink": null, "avatar_url": null},
+                "publisher_metadata": {"artist": "RULE69"}
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(track.artist(), "RULE69");
+    }
+
+    #[test]
+    fn uploader_is_the_artist_fallback() {
+        let track: Track = serde_json::from_str(
+            r#"{"id":1,"title":"Song","user":{"id":2,"username":"Uploader","permalink":null,"avatar_url":null}}"#,
+        )
+        .unwrap();
+        assert_eq!(track.artist(), "Uploader");
+    }
+
+    #[test]
+    fn current_metadata_artist_beats_uploader() {
+        let track: Track = serde_json::from_str(
+            r#"{"id":69,"title":"blackpill","metadata_artist":"RULE69","user":{"id":1,"username":"eclipse media"}}"#,
+        )
+        .unwrap();
+        assert_eq!(track.artist(), "RULE69");
+    }
+
+    #[test]
+    fn album_type_is_recognised_in_both_api_shapes() {
+        let current: Playlist =
+            serde_json::from_str(r#"{"id":1,"title":"A","playlist_type":"album"}"#).unwrap();
+        let legacy: Playlist =
+            serde_json::from_str(r#"{"id":2,"title":"B","is_album":true}"#).unwrap();
+        assert!(current.is_album());
+        assert!(legacy.is_album());
     }
 }
 
@@ -125,7 +333,7 @@ pub struct Comment {
     pub body: String,
     pub created_at: Option<String>,
     pub user: Option<UserLite>,
-    #[serde(default)]
+    #[serde(default, alias = "timestamp")]
     pub timestamp_ms: Option<u64>,
 }
 
@@ -140,11 +348,49 @@ pub struct Me {
 }
 
 /// Standard SoundCloud collection response (linked partitioning).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Deserialises from either shape the API can answer with: the paginated
+/// object, and the bare array it returns when `linked_partitioning` is absent.
+/// Everything we send sets it (see [`crate::api::paginated::PARTITIONING`]) —
+/// but a route that ignores the parameter would otherwise fail to parse at all,
+/// and a list that reads "the request failed" is much worse than one without a
+/// next page.
+#[derive(Debug, Clone, Serialize)]
 pub struct Collection<T> {
     pub collection: Vec<T>,
-    #[serde(default)]
     pub next_href: Option<String>,
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Collection<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        /// The two shapes, as they come off the wire. Untagged, so serde tries
+        /// the object first and falls back to the array.
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire<T> {
+            Paginated {
+                collection: Vec<T>,
+                #[serde(default)]
+                next_href: Option<String>,
+            },
+            /// The deprecated shape: everything at once, no cursor.
+            Bare(Vec<T>),
+        }
+
+        Ok(match Wire::deserialize(deserializer)? {
+            Wire::Paginated {
+                collection,
+                next_href,
+            } => Self {
+                collection,
+                next_href,
+            },
+            Wire::Bare(collection) => Self {
+                collection,
+                next_href: None,
+            },
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,12 +411,14 @@ pub enum LikeTarget {
 pub struct StreamEntry {
     #[serde(default)]
     pub created_at: Option<String>,
-    #[serde(flatten)]
+    #[serde(default, rename = "type")]
+    pub activity_type: Option<String>,
+    #[serde(rename = "origin")]
     pub target: StreamTarget,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(tag = "kind", rename_all = "lowercase")]
 pub enum StreamTarget {
     Playlist(Box<Playlist>),
     Track(Box<Track>),
@@ -179,6 +427,43 @@ pub enum StreamTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feed_reads_origin_and_distinguishes_tracks_from_playlists() {
+        let feed: Collection<StreamEntry> = serde_json::from_str(
+            r#"{"collection":[
+            {"type":"track:repost","origin":{"kind":"track","id":1,"title":"Song"}},
+            {"type":"playlist","origin":{"kind":"playlist","id":2,"title":"Set"}}
+        ]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            feed.collection[0].activity_type.as_deref(),
+            Some("track:repost")
+        );
+        assert!(matches!(&feed.collection[0].target, StreamTarget::Track(t) if t.id == 1));
+        assert!(matches!(&feed.collection[1].target, StreamTarget::Playlist(p) if p.id == 2));
+    }
+
+    #[test]
+    fn public_api_access_values_drive_playback_badges() {
+        let preview: Track =
+            serde_json::from_str(r#"{"id":1,"title":"Preview","access":"preview"}"#).unwrap();
+        let blocked: Track =
+            serde_json::from_str(r#"{"id":2,"title":"Blocked","access":"blocked"}"#).unwrap();
+        assert_eq!(preview.access_badge(), Some("PREVIEW"));
+        assert_eq!(blocked.access_badge(), Some("BLOCKED"));
+    }
+
+    #[test]
+    fn public_api_duration_and_comment_timestamp_are_not_lost() {
+        let list: Playlist =
+            serde_json::from_str(r#"{"id":1,"title":"Set","duration":90000}"#).unwrap();
+        let comment: Comment =
+            serde_json::from_str(r#"{"id":1,"body":"Nice","timestamp":1200}"#).unwrap();
+        assert_eq!(list.duration_ms, Some(90000));
+        assert_eq!(comment.timestamp_ms, Some(1200));
+    }
 
     const TRACK_JSON: &str = r#"{
         "id": 123,
@@ -198,11 +483,77 @@ mod tests {
     }
 
     #[test]
+    fn public_track_artwork_url_is_preserved() {
+        let track: Track = serde_json::from_str(
+            r#"{"id":1,"title":"Song","artwork_url":"https://i1.sndcdn.com/art.jpg"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(track.artwork_url(), Some("https://i1.sndcdn.com/art.jpg"));
+    }
+
+    #[test]
+    fn playlist_cover_falls_back_to_its_first_track() {
+        let playlist: Playlist = serde_json::from_str(
+            r#"{"id":2,"title":"Set","tracks":[{"id":1,"title":"Song","artwork_url":"https://i1.sndcdn.com/art.jpg"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            playlist.artwork_url(),
+            Some("https://i1.sndcdn.com/art.jpg")
+        );
+    }
+
+    #[test]
+    fn public_playlist_artwork_url_is_preserved() {
+        let playlist: Playlist = serde_json::from_str(
+            r#"{"id":1,"title":"Set","artwork_url":"https://i1.sndcdn.com/set.jpg"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            playlist.artwork_url(),
+            Some("https://i1.sndcdn.com/set.jpg")
+        );
+    }
+
+    #[test]
     fn parse_collection() {
         let json = r#"{"collection":[{"id":1,"title":"a"}],"next_href":"https://x"}"#;
         let c: Collection<Track> = serde_json::from_str(json).unwrap();
         assert_eq!(c.collection.len(), 1);
         assert!(c.next_href.is_some());
+    }
+
+    /// The API answers a **bare array** when `linked_partitioning` is absent,
+    /// and every list in the app failed to parse because of it. We now always
+    /// ask for pagination, but a route that ignores the parameter must still
+    /// read rather than reporting "the request failed".
+    #[test]
+    fn a_collection_reads_from_either_shape() {
+        // The paginated object, with and without a cursor.
+        let c: Collection<Track> =
+            serde_json::from_str(r#"{"collection":[{"id":1,"title":"a"}]}"#).unwrap();
+        assert_eq!(c.collection.len(), 1);
+        assert_eq!(c.next_href, None, "no cursor means no next page");
+
+        // The deprecated bare array: same rows, and no next page to follow.
+        let c: Collection<Track> =
+            serde_json::from_str(r#"[{"id":1,"title":"a"},{"id":2,"title":"b"}]"#).unwrap();
+        assert_eq!(c.collection.len(), 2);
+        assert_eq!(c.collection[1].id, 2);
+        assert_eq!(c.next_href, None);
+
+        // Empty, in both shapes: a list with nothing in it, not an error.
+        for json in [r#"{"collection":[]}"#, "[]"] {
+            let c: Collection<Track> = serde_json::from_str(json).unwrap();
+            assert!(c.collection.is_empty(), "{json}");
+        }
+
+        // …and something that is neither is still an error, so a mistyped
+        // response does not quietly become an empty list.
+        assert!(serde_json::from_str::<Collection<Track>>(r#"{"tracks":[]}"#).is_err());
+        assert!(serde_json::from_str::<Collection<Track>>("null").is_err());
     }
 
     #[test]

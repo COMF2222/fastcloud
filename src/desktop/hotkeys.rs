@@ -42,7 +42,7 @@ impl HotkeyAction {
     }
 }
 
-/// Default binding: Ctrl+Alt+<key>.
+/// Default binding: `Ctrl+Alt+<key>`.
 pub fn default_binding(action: HotkeyAction) -> HotKey {
     let code = match action {
         HotkeyAction::PlayPause => Code::KeyP,

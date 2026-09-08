@@ -29,6 +29,33 @@ pub enum ApiError {
 }
 
 impl ApiError {
+    pub fn user_message(&self) -> String {
+        match self {
+            Self::Unauthorized => {
+                "Your SoundCloud session expired. Sign in again in Settings → Account.".into()
+            }
+            Self::Http { status: 404, .. } => {
+                "This item is no longer available on SoundCloud.".into()
+            }
+            Self::Http { status: 403, .. } => {
+                "SoundCloud does not allow access to this item with this account.".into()
+            }
+            Self::Http {
+                status: 500..=599, ..
+            } => "SoundCloud is temporarily unavailable. Please try again shortly.".into(),
+            Self::Network(_) => {
+                "Could not reach SoundCloud. Check your connection and try again.".into()
+            }
+            Self::RateLimited { .. } => {
+                "SoundCloud's request limit was reached. Waiting before retrying.".into()
+            }
+            Self::Json(_) => {
+                "SoundCloud returned data that could not be read. Please retry.".into()
+            }
+            _ => self.to_string(),
+        }
+    }
+
     pub fn status(&self) -> Option<u16> {
         match self {
             ApiError::Http { status, .. } => Some(*status),

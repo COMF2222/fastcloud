@@ -4,46 +4,58 @@ version = "0.1.0"
 edition = "2024"
 description = "Native SoundCloud client"
 license = "MIT"
-repository = "https://github.com/fastcloud/fastcloud"
-rust-version = "1.85"
+repository = "https://github.com/COMF2222/fastcloud"
+rust-version = "1.95"
+keywords = ["soundcloud", "music", "player", "audio", "egui"]
+categories = ["multimedia::audio", "gui"]
+exclude = ["/images", "/docs", "/session-*.md"]
 
 [dependencies]
 eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
 egui = "0.36"
-egui_extras = { version = "0.36", features = ["image"] }
+egui_extras = { version = "0.36", features = ["image", "svg"] }
 env_logger = "0.11"
 log = "0.4"
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream", "query", "form"] }
-futures-util = "0.3"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "query", "form", "multipart", "stream"] }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 url = "2"
+# PKCE: base64url for the verifier, SHA-256 for the S256 challenge.
 base64 = "0.22"
 sha2 = "0.10"
 rand = "0.9"
 thiserror = "2"
 anyhow = "1"
 
+# Client id/secret and tokens live in the OS keyring, never on disk.
 keyring = { version = "4", features = ["v1"] }
 directories = "6"
-dirs = "6"
 
 symphonia = { version = "0.6", features = ["aac", "mp3", "isomp4"] }
 cpal = "0.18"
 
 clap = { version = "4", features = ["derive"] }
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+# `bmp` is for Winamp skins, whose sprite sheets are BMP files.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "bmp"] }
+# Inflating the zip a Winamp skin comes as (src/skin/zip.rs). Already
+# compiled for reqwest's gzip support, so this adds no code to the build.
+flate2 = "1"
 parking_lot = "0.12"
 crossbeam-channel = "0.5"
-rubato = "5"
-once_cell = "1"
 bytes = "1.12.1"
 webbrowser = "1.2.4"
+rfd = "0.17.2"
 raw-window-handle = "0.6.2"
+# System-font fallback probing (same parser epaint rasterizes with). The faces
+# are memory-mapped, so a session pays only for the glyphs it draws.
+skrifa = "0.44"
+memmap2 = "0.9"
+# Right-to-left track titles.
+unicode-bidi = "0.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni = { version = "0.3", features = ["async-io"] }
@@ -76,6 +88,11 @@ codegen-units = 1
 
 [dev-dependencies]
 tempfile = "3"
+read-fonts = "0.41"
+epaint_default_fonts = "0.36"
+
+[build-dependencies]
+winresource = "0.1"
 
 [package.metadata.release]
 tag-name = "v{{version}}"

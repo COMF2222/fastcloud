@@ -1,14 +1,18 @@
 #![allow(dead_code)]
 
 use anyhow::Result;
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
 /// Content-addressed on-disk cache for HLS segments and full previews.
 ///
 /// Layout:
-///   <root>/<track_urn>/<hash>.seg      — individual segments
-///   <root>/lock                        — lightweight admission lock
+///
+/// ```text
+/// <root>/<track_urn>/<hash>.seg  - individual segments
+/// <root>/lock                    - lightweight admission lock
+/// ```
 pub struct AudioCache {
     root: PathBuf,
     max_bytes: u64,
@@ -33,7 +37,17 @@ impl AudioCache {
 
     fn hash_of(url: &str) -> String {
         use sha2::{Digest, Sha256};
-        let d = Sha256::digest(url.as_bytes());
+        // CDN signatures expire and change on every resolve. The underlying
+        // media path does not, so excluding query/fragment turns the disk
+        // cache into a cache across launches instead of a pile of duplicates.
+        let stable = url::Url::parse(url)
+            .map(|mut parsed| {
+                parsed.set_query(None);
+                parsed.set_fragment(None);
+                parsed.to_string()
+            })
+            .unwrap_or_else(|_| url.to_owned());
+        let d = Sha256::digest(stable.as_bytes());
         d.iter().take(16).map(|b| format!("{b:02x}")).collect()
     }
 
@@ -46,11 +60,16 @@ impl AudioCache {
         if !self.is_enabled() {
             return None;
         }
-        std::fs::read(
-            self.track_dir(track_urn)
-                .join(format!("{}.seg", Self::hash_of(url))),
-        )
-        .ok()
+        let path = self
+            .track_dir(track_urn)
+            .join(format!("{}.seg", Self::hash_of(url)));
+        let bytes = std::fs::read(&path)
+            .ok()
+            .filter(|bytes| !bytes.is_empty())?;
+        if let Ok(file) = std::fs::OpenOptions::new().write(true).open(path) {
+            let _ = file.set_modified(SystemTime::now());
+        }
+        Some(bytes)
     }
 
     pub fn put_segment(&self, track_urn: &str, url: &str, data: &[u8]) {
@@ -61,7 +80,20 @@ impl AudioCache {
         if std::fs::create_dir_all(&dir).is_err() {
             return;
         }
-        let _ = std::fs::write(dir.join(format!("{}.seg", Self::hash_of(url))), data);
+        if data.is_empty() {
+            return;
+        }
+        let path = dir.join(format!("{}.seg", Self::hash_of(url)));
+        let temporary = path.with_extension("seg.part");
+        let written = std::fs::File::create(&temporary).and_then(|mut file| {
+            file.write_all(data)?;
+            file.sync_all()
+        });
+        if written.is_ok() {
+            let _ = std::fs::rename(&temporary, path);
+        } else {
+            let _ = std::fs::remove_file(temporary);
+        }
     }
 
     /// Remove all cached segments for a track.
@@ -127,7 +159,10 @@ impl AudioCache {
 pub async fn quota_task(cache: std::sync::Arc<AudioCache>, interval: Duration) {
     loop {
         tokio::time::sleep(interval).await;
-        cache.enforce_quota();
+        let cache = cache.clone();
+        if let Err(error) = tokio::task::spawn_blocking(move || cache.enforce_quota()).await {
+            log::warn!("audio cache quota task failed: {error}");
+        }
     }
 }
 
@@ -135,4 +170,28 @@ pub async fn quota_task(cache: std::sync::Arc<AudioCache>, interval: Duration) {
 fn _assert_send() {
     fn is_send<T: Send>() {}
     is_send::<SystemTime>();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expiring_cdn_signatures_share_one_cache_key() {
+        let first = AudioCache::hash_of("https://cdn.example/media/42?a=old&token=one");
+        let second = AudioCache::hash_of("https://cdn.example/media/42?a=new&token=two#x");
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn empty_or_partial_writes_never_become_cache_hits() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = AudioCache::new(dir.path().to_path_buf(), 1024).unwrap();
+        cache.put_segment("track", "https://cdn.example/empty", &[]);
+        assert!(
+            cache
+                .get_segment("track", "https://cdn.example/empty")
+                .is_none()
+        );
+    }
 }

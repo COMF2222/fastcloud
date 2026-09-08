@@ -9,5 +9,5 @@ Terminal=false
 Categories=Audio;Music;AudioVideo;
 Keywords=soundcloud;music;audio;player;
 StartupWMClass=fastcloud
-MimeType=x-scheme-handler/soundcloud;
+MimeType=x-scheme-handler/soundcloud;x-scheme-handler/fastcloud;
 SingleMainWindow=true

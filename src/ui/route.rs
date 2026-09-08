@@ -3,9 +3,11 @@
 use crate::api::models::{Track, User};
 
 /// Where the main view is pointing.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Route {
     Home,
+    Feed,
+    Library,
     Likes,
     Search(String),
     TrackDetail(u64),
@@ -14,12 +16,6 @@ pub enum Route {
     Recent,
     Following,
     Settings,
-}
-
-/// A track row payload for drag & drop into playlists.
-#[derive(Clone)]
-pub struct TrackDragPayload {
-    pub track_id: u64,
 }
 
 pub fn track_row_id(track: &Track) -> egui::Id {
