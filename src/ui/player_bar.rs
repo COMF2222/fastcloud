@@ -732,15 +732,15 @@ fn thin_slider(
         }
         return SliderEvent::Committed(frac);
     }
-    if resp.dragged() {
-        if let Some(mx) = resp.interact_pointer_pos() {
-            return SliderEvent::Dragging(seek_frac(mx.x, rect.left(), rect.width()));
-        }
+    if resp.dragged()
+        && let Some(mx) = resp.interact_pointer_pos()
+    {
+        return SliderEvent::Dragging(seek_frac(mx.x, rect.left(), rect.width()));
     }
-    if resp.clicked() {
-        if let Some(mx) = resp.interact_pointer_pos() {
-            return SliderEvent::Committed(seek_frac(mx.x, rect.left(), rect.width()));
-        }
+    if resp.clicked()
+        && let Some(mx) = resp.interact_pointer_pos()
+    {
+        return SliderEvent::Committed(seek_frac(mx.x, rect.left(), rect.width()));
     }
     SliderEvent::None
 }

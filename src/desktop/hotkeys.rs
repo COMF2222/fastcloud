@@ -85,10 +85,10 @@ impl Hotkeys {
     pub fn poll(&self, out: &mut Vec<HotkeyAction>) {
         out.clear();
         while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
-            if event.state() == HotKeyState::Pressed {
-                if let Some((_, action)) = self.bindings.iter().find(|(id, _)| *id == event.id()) {
-                    out.push(*action);
-                }
+            if event.state() == HotKeyState::Pressed
+                && let Some((_, action)) = self.bindings.iter().find(|(id, _)| *id == event.id())
+            {
+                out.push(*action);
             }
         }
     }

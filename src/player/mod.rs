@@ -445,15 +445,15 @@ impl Player {
     pub fn prev(&self) -> bool {
         let mut st = self.state.lock();
         // If more than 3s into the track, restart it instead.
-        if st.position_ms > 3000 {
-            if let Some(cur) = st.current {
-                let track = st.queue.get(cur).cloned();
-                drop(st);
-                if let Some(t) = track {
-                    self.load_track(t, 0);
-                }
-                return true;
+        if st.position_ms > 3000
+            && let Some(cur) = st.current
+        {
+            let track = st.queue.get(cur).cloned();
+            drop(st);
+            if let Some(t) = track {
+                self.load_track(t, 0);
             }
+            return true;
         }
         let Some(cur) = st.current else { return false };
         let pos_in_order = st.order.iter().position(|&x| x == cur);
@@ -921,11 +921,11 @@ impl Player {
         }
         let mut slot = self.decoder.lock();
         for (url, bytes) in segs {
-            if let Some(pl) = slot.playlist.as_ref() {
-                if pl.segments.iter().any(|s| s == &url) {
-                    slot.feed(&bytes);
-                    slot.segments_fetched += 1;
-                }
+            if let Some(pl) = slot.playlist.as_ref()
+                && pl.segments.iter().any(|s| s == &url)
+            {
+                slot.feed(&bytes);
+                slot.segments_fetched += 1;
             }
         }
         Ok(())

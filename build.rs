@@ -1,3 +1,4 @@
+#[cfg(target_os = "windows")]
 #[path = "src/app_icon.rs"]
 mod app_icon;
 
