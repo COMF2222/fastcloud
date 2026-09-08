@@ -72,10 +72,10 @@ pub fn parse(raw: &str) -> Result<ParsedLink> {
     }
 
     // Plain numeric id.
-    if let Some(id) = parse_id(raw) {
-        if id.to_string() == raw {
-            return Ok(ParsedLink::TrackId(id));
-        }
+    if let Some(id) = parse_id(raw)
+        && id.to_string() == raw
+    {
+        return Ok(ParsedLink::TrackId(id));
     }
 
     // https://soundcloud.com/<user>/<track|sets>/<slug> and variants.

@@ -1895,20 +1895,19 @@ impl App {
     /// Move a track inside a playlist, optimistically. `current` is the list
     /// as shown, so a local playlist and a SoundCloud one reorder the same.
     pub fn move_in_playlist(&mut self, playlist_id: u64, current: &[u64], from: usize, to: usize) {
-        if self.demo {
-            if let Some(pl) = self
+        if self.demo
+            && let Some(pl) = self
                 .settings
                 .custom_playlists
                 .iter_mut()
                 .find(|p| p.id == playlist_id)
-            {
-                if from < pl.track_ids.len() && to < pl.track_ids.len() {
-                    let id = pl.track_ids.remove(from);
-                    pl.track_ids.insert(to, id);
-                }
-                self.persist_library();
-                return;
+        {
+            if from < pl.track_ids.len() && to < pl.track_ids.len() {
+                let id = pl.track_ids.remove(from);
+                pl.track_ids.insert(to, id);
             }
+            self.persist_library();
+            return;
         }
         if !self.demo {
             self.playlist_edits.reorder(playlist_id, current, from, to);
@@ -1933,15 +1932,14 @@ impl App {
             ids.sort_unstable();
             return ids;
         }
-        if self.demo {
-            if let Some(pl) = self
+        if self.demo
+            && let Some(pl) = self
                 .settings
                 .custom_playlists
                 .iter()
                 .find(|p| p.id == playlist_id)
-            {
-                return pl.track_ids.clone();
-            }
+        {
+            return pl.track_ids.clone();
         }
         let mut ids: Vec<u64> = self
             .tracks(crate::store::Key::PlaylistTracks(playlist_id))

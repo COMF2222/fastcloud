@@ -164,19 +164,20 @@ impl ArtLoader {
         })
         .await
         .unwrap_or(None);
-        if let Some(bytes) = disk_hit {
-            if !bytes.is_empty() && bytes.len() as u64 <= MAX_ART_BYTES {
-                return Ok(bytes);
-            }
+        if let Some(bytes) = disk_hit
+            && !bytes.is_empty()
+            && bytes.len() as u64 <= MAX_ART_BYTES
+        {
+            return Ok(bytes);
         }
         let resp = self.shared.http.get(&url).send().await?;
         if !resp.status().is_success() {
             anyhow::bail!("artwork fetch {}: {}", resp.status(), url);
         }
-        if let Some(len) = resp.content_length() {
-            if len > MAX_ART_BYTES {
-                anyhow::bail!("artwork too large ({len} bytes): {url}");
-            }
+        if let Some(len) = resp.content_length()
+            && len > MAX_ART_BYTES
+        {
+            anyhow::bail!("artwork too large ({len} bytes): {url}");
         }
         let bytes = resp.bytes().await?.to_vec();
         if bytes.len() as u64 > MAX_ART_BYTES {

@@ -168,10 +168,10 @@ fn main() -> Result<()> {
             #[cfg(target_os = "windows")]
             {
                 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-                if let Ok(handle) = cc.window_handle() {
-                    if let RawWindowHandle::Win32(w) = handle.as_raw() {
-                        app.attach_hwnd(w.hwnd.get() as *mut std::ffi::c_void);
-                    }
+                if let Ok(handle) = cc.window_handle()
+                    && let RawWindowHandle::Win32(w) = handle.as_raw()
+                {
+                    app.attach_hwnd(w.hwnd.get() as *mut std::ffi::c_void);
                 }
             }
             #[cfg(not(target_os = "windows"))]

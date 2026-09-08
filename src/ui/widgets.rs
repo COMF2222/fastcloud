@@ -712,11 +712,11 @@ pub fn waveform(
         p.rect_filled(label, 1.0, app.theme.bg.gamma_multiply(0.88));
         p.galley(label.min + egui::vec2(2.0, 1.0), galley, app.theme.text);
     }
-    if resp.clicked() || resp.dragged() {
-        if let Some(mx) = resp.interact_pointer_pos() {
-            let frac = ((mx.x - resp.rect.left()) / resp.rect.width()).clamp(0.0, 1.0);
-            return Some(frac);
-        }
+    if (resp.clicked() || resp.dragged())
+        && let Some(mx) = resp.interact_pointer_pos()
+    {
+        let frac = ((mx.x - resp.rect.left()) / resp.rect.width()).clamp(0.0, 1.0);
+        return Some(frac);
     }
     None
 }
