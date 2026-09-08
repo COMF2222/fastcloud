@@ -20,9 +20,25 @@ fn event_to_message(event: MediaControlEvent) -> Option<IpcMessage> {
         MediaControlEvent::Next => IpcMessage::Next,
         MediaControlEvent::Previous => IpcMessage::Prev,
         MediaControlEvent::Stop => IpcMessage::Stop,
-        MediaControlEvent::Seek(_) | MediaControlEvent::SeekBy(_, _) => IpcMessage::Toggle,
-        MediaControlEvent::SetPosition(_) => IpcMessage::Toggle,
-        MediaControlEvent::SetVolume(_) | MediaControlEvent::OpenUri(_) => return None,
+        MediaControlEvent::Seek(dir) => {
+            // Undetermined amount: one 10 s step, like the desktop default.
+            IpcMessage::SeekBy(match dir {
+                souvlaki::SeekDirection::Forward => 10_000,
+                souvlaki::SeekDirection::Backward => -10_000,
+            })
+        }
+        MediaControlEvent::SeekBy(dir, dur) => {
+            let ms = dur.as_millis().min(i64::MAX as u128) as i64;
+            IpcMessage::SeekBy(match dir {
+                souvlaki::SeekDirection::Forward => ms,
+                souvlaki::SeekDirection::Backward => -ms,
+            })
+        }
+        MediaControlEvent::SetPosition(MediaPosition(pos)) => {
+            IpcMessage::SeekTo(pos.as_millis().min(u64::MAX as u128) as u64)
+        }
+        MediaControlEvent::SetVolume(v) => IpcMessage::Volume((v.clamp(0.0, 1.0) * 100.0) as u8),
+        MediaControlEvent::OpenUri(uri) => IpcMessage::OpenLink(uri),
         MediaControlEvent::Raise => IpcMessage::Show,
         MediaControlEvent::Quit => IpcMessage::Quit,
     };
@@ -101,6 +117,15 @@ impl MediaIntegration {
             MediaPlayback::Paused { progress }
         };
         let _ = controls.set_playback(status);
+    }
+
+    /// Forget callbacks emitted while the OS media session was being attached.
+    ///
+    /// Windows may restore the previous SMTC transport state as an initial
+    /// callback. That state belongs to the old process and must not turn a
+    /// freshly launched, deliberately paused Fastcloud session into playback.
+    pub fn discard_pending_events(&mut self) {
+        while self.rx.try_recv().is_ok() {}
     }
 
     pub fn detach(&mut self) {

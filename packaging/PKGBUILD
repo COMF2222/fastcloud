@@ -1,10 +1,9 @@
-# Maintainer: Fastcloud <fastcloud@example.com>
 pkgname=fastcloud
 pkgver=0.1.0
 pkgrel=1
 pkgdesc="Native SoundCloud client"
 arch=('x86_64' 'aarch64')
-url="https://github.com/fastcloud/fastcloud"
+url="https://github.com/COMF2222/fastcloud"
 license=('MIT')
 depends=('gcc-libs' 'alsa-lib' 'gtk3' 'libappindicator-gtk3' 'xdg-utils')
 makedepends=('cargo' 'git')
@@ -25,7 +24,9 @@ build() {
 
 check() {
   cd "$pkgname-$pkgver"
-  cargo test --frozen --release
+  # `ipc_bind` binds the single-instance port; it cannot run in a build that
+  # may share the machine with a running Fastcloud.
+  cargo test --frozen --release -- --skip ipc_bind
 }
 
 package() {

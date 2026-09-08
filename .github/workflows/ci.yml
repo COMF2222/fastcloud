@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
     tags: ["v*"]
   pull_request:
 
@@ -28,7 +28,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libasound2-dev libudev-dev libxdo-dev libappindicator3-dev
-      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
   test:
     strategy:
@@ -41,7 +41,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libasound2-dev libudev-dev libxdo-dev libappindicator3-dev
-      - run: cargo test --all
+      - run: cargo test --all-targets --locked -- --skip ipc_bind
+      - name: Single-instance IPC (serial)
+        run: cargo test --locked ipc_bind -- --test-threads=1
 
   build:
     needs: [fmt, clippy, test]
@@ -66,54 +68,140 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libasound2-dev libudev-dev libxdo-dev libappindicator3-dev
-      - run: cargo build --release --target ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: target/${{ matrix.target }}/release/fastcloud*
           if-no-files-found: error
 
-  release:
+  release-linux:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact: fastcloud-linux-amd64
-            archive: fastcloud-${{ github.ref_name }}-linux-amd64.tar.gz
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact: fastcloud-windows-amd64
-            archive: fastcloud-${{ github.ref_name }}-windows-amd64.zip
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            artifact: fastcloud-macos-arm64
-            archive: fastcloud-${{ github.ref_name }}-macos-arm64.tar.gz
-    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-      - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libasound2-dev libudev-dev libxdo-dev libappindicator3-dev
-      - run: cargo build --release --target ${{ matrix.target }}
-      - name: Archive (unix)
-        if: runner.os != 'Windows'
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libasound2-dev libudev-dev libxdo-dev libappindicator3-dev
+      - run: cargo build --release --locked
+      - name: Package tarball and Debian installer
+        shell: bash
         run: |
-          mkdir -p dist
-          tar czf dist/${{ matrix.archive }} -C target/${{ matrix.target }}/release fastcloud
-      - name: Archive (windows)
-        if: runner.os == 'Windows'
+          version="${GITHUB_REF_NAME#v}"
+          stage="dist/fastcloud-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu"
+          mkdir -p "$stage/packaging"
+          cp target/release/fastcloud "$stage/"
+          cp packaging/fastcloud.desktop packaging/fastcloud.svg "$stage/packaging/"
+          cp LICENSE README.md "$stage/"
+          tar -czf "dist/fastcloud-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu.tar.gz" -C dist "$(basename "$stage")"
+
+          deb="dist/deb"
+          mkdir -p "$deb/DEBIAN" "$deb/usr/bin" "$deb/usr/share/applications" \
+            "$deb/usr/share/icons/hicolor/scalable/apps" "$deb/usr/share/licenses/fastcloud"
+          cp target/release/fastcloud "$deb/usr/bin/"
+          cp packaging/fastcloud.desktop "$deb/usr/share/applications/dev.fastcloud.Fastcloud.desktop"
+          cp packaging/fastcloud.svg "$deb/usr/share/icons/hicolor/scalable/apps/dev.fastcloud.Fastcloud.svg"
+          cp LICENSE "$deb/usr/share/licenses/fastcloud/"
+          printf '%s\n' \
+            'Package: fastcloud' \
+            "Version: $version" \
+            'Section: sound' \
+            'Priority: optional' \
+            'Architecture: amd64' \
+            'Maintainer: Fastcloud contributors' \
+            'Depends: libasound2, libpulse0, libxkbcommon0' \
+            'Description: Native SoundCloud desktop client' \
+            > "$deb/DEBIAN/control"
+          dpkg-deb --build --root-owner-group "$deb" "dist/fastcloud-${GITHUB_REF_NAME}-linux-amd64.deb"
+          rm -rf "$stage" "$deb"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: dist/*
+          if-no-files-found: error
+
+  release-windows:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked
+      - name: Package portable zip and installer
+        shell: pwsh
         run: |
-          mkdir dist
-          Compress-Archive -Path target/${{ matrix.target }}/release/fastcloud.exe -Destination dist/${{ matrix.archive }}
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Compress-Archive -Path target/release/fastcloud.exe, LICENSE, README.md -DestinationPath "dist/fastcloud-$env:GITHUB_REF_NAME-windows-amd64.zip"
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6/ISCC.exe'
+          & $iscc "/DAppVersion=$version" packaging/windows/installer.iss
+          Move-Item "dist/Fastcloud-Setup-$version.exe" "dist/fastcloud-$env:GITHUB_REF_NAME-windows-amd64-setup.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: dist/*
+          if-no-files-found: error
+
+  release-macos:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked
+      - name: Package application bundle and DMG
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          app="dist/Fastcloud.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          cp target/release/fastcloud "$app/Contents/MacOS/"
+          sed "s/__VERSION__/$version/g" packaging/macos/Info.plist > "$app/Contents/Info.plist"
+
+          mkdir -p dist/fastcloud.iconset
+          cargo run --locked --example export_icon -- dist/icon.png
+          for size in 16 32 128 256 512; do
+            sips -z "$size" "$size" dist/icon.png --out "dist/fastcloud.iconset/icon_${size}x${size}.png"
+            double=$((size * 2))
+            sips -z "$double" "$double" dist/icon.png --out "dist/fastcloud.iconset/icon_${size}x${size}@2x.png"
+          done
+          iconutil -c icns dist/fastcloud.iconset -o "$app/Contents/Resources/fastcloud.icns"
+          codesign --force --deep --sign - "$app"
+
+          tar -czf "dist/fastcloud-${GITHUB_REF_NAME}-macos-arm64.tar.gz" -C dist Fastcloud.app
+          mkdir -p dist/dmg
+          cp -R "$app" dist/dmg/
+          ln -s /Applications dist/dmg/Applications
+          hdiutil create -volname Fastcloud -srcfolder dist/dmg -ov -format UDZO \
+            "dist/fastcloud-${GITHUB_REF_NAME}-macos-arm64.dmg"
+          rm -rf "$app" dist/dmg dist/fastcloud.iconset dist/icon.png
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: dist/*
+          if-no-files-found: error
+
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [release-linux, release-windows, release-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Write SHA-256 checksums
+        working-directory: dist
+        run: sha256sum * > checksums.txt
       - uses: softprops/action-gh-release@v2
         with:
+          generate_release_notes: true
           files: dist/*

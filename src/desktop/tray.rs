@@ -59,14 +59,32 @@ impl Tray {
         ];
         menu.append_items(&[&show, &toggle, &next, &prev, &quit])?;
 
-        let icon = tray_icon::Icon::from_rgba(app_icon_rgba(), 64, 64)?;
+        let icon = tray_icon::Icon::from_rgba(
+            crate::app_icon::rgba(crate::app_icon::ICON_SIZE),
+            crate::app_icon::ICON_SIZE,
+            crate::app_icon::ICON_SIZE,
+        )?;
         let tray = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
+            .with_menu_on_left_click(false)
+            .with_menu_on_right_click(true)
             .with_tooltip("Fastcloud")
             .with_icon(icon)
             .build()?;
 
         let (tx, rx) = mpsc::channel();
+        let click_tx = tx.clone();
+        tray_icon::TrayIconEvent::set_event_handler(Some(move |event| {
+            if matches!(
+                event,
+                tray_icon::TrayIconEvent::DoubleClick {
+                    button: tray_icon::MouseButton::Left,
+                    ..
+                }
+            ) {
+                let _ = click_tx.send(TrayCommand::Show);
+            }
+        }));
         let handler_bindings = bindings.clone();
         MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
             for (id, cmd) in &handler_bindings {
@@ -169,56 +187,9 @@ impl ksni::Tray for KsniTray {
     }
 }
 
-pub fn app_icon_rgba() -> Vec<u8> {
-    // 64x64 orange cloud, procedurally generated.
-    let size = 64usize;
-    let mut rgba = Vec::with_capacity(size * size * 4);
-    for y in 0..size {
-        for x in 0..size {
-            let cx = x as f32 / size as f32 - 0.5;
-            let cy = y as f32 / size as f32 - 0.5;
-            let inside = cloud_sdf(cx, cy) < 0.0;
-            let px: [u8; 4] = if inside {
-                [255, 85, 17, 255]
-            } else {
-                [0, 0, 0, 0]
-            };
-            rgba.extend_from_slice(&px);
-        }
-    }
-    rgba
-}
-
-fn cloud_sdf(x: f32, y: f32) -> f32 {
-    let circles = [
-        (-0.18f32, 0.08f32, 0.20f32),
-        (0.02, 0.14, 0.22),
-        (0.20, 0.05, 0.17),
-        (-0.05, -0.05, 0.18),
-        (0.12, -0.05, 0.15),
-    ];
-    let mut d = f32::MAX;
-    for (cx, cy, r) in circles {
-        let dist = ((x - cx).powi(2) + (y - cy).powi(2)).sqrt() - r;
-        d = d.min(dist);
-    }
-    d.min(y - 0.14)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn icon_rgba_size() {
-        assert_eq!(app_icon_rgba().len(), 64 * 64 * 4);
-    }
-
-    #[test]
-    fn cloud_covers_center() {
-        assert!(cloud_sdf(0.0, 0.0) < 0.0);
-        assert!(cloud_sdf(0.9, 0.9) > 0.0);
-    }
 
     #[test]
     fn tray_commands_map() {

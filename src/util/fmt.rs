@@ -22,6 +22,20 @@ pub fn play_count(n: u64) -> String {
     }
 }
 
+/// Format bytes like "12.4 MiB" / "900 KiB" / "512 B".
+pub fn bytes(n: u64) -> String {
+    const MIB: f64 = 1_048_576.0;
+    const KIB: f64 = 1024.0;
+    let n = n as f64;
+    if n >= MIB {
+        format!("{:.1} MiB", n / MIB)
+    } else if n >= KIB {
+        format!("{:.0} KiB", n / KIB)
+    } else {
+        format!("{n:.0} B")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -38,5 +52,12 @@ mod tests {
         assert_eq!(play_count(999), "999");
         assert_eq!(play_count(1_500), "1.5K");
         assert_eq!(play_count(2_500_000), "2.5M");
+    }
+
+    #[test]
+    fn byte_sizes() {
+        assert_eq!(bytes(512), "512 B");
+        assert_eq!(bytes(2048), "2 KiB");
+        assert_eq!(bytes(12_582_912), "12.0 MiB");
     }
 }

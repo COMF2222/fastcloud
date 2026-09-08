@@ -58,18 +58,31 @@ pub fn peaking(sample_rate: f32, freq: f32, gain_db: f32, q: f32) -> BiquadCoeff
     }
 }
 
-/// 10-band graphic equalizer (31, 62, 125, 250, 500, 1k, 2k, 4k, 8k, 16k Hz).
+/// 10-band graphic equalizer on Winamp's own centre frequencies, with a
+/// preamp.
+///
+/// The bands are Winamp 2's (60 Hz … 16 kHz), not the ISO third-octave set:
+/// the equaliser window's ten sliders are labelled with these, so a different
+/// set would put a label on a band it does not control.
 pub struct Eq10 {
     bands: [BiquadCoeffs; 10],
     states_l: [BiquadState; 10],
     states_r: [BiquadState; 10],
     gains_db: [f32; 10],
+    /// A flat gain applied before the filters, as Winamp's preamp slider is.
+    preamp: f32,
+    preamp_db: f32,
     sample_rate: f32,
 }
 
+/// Winamp's ten band centres, in Hz.
 pub const EQ_BAND_FREQS: [f32; 10] = [
-    31.25, 62.5, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
+    60.0, 170.0, 310.0, 600.0, 1000.0, 3000.0, 6000.0, 12000.0, 14000.0, 16000.0,
 ];
+
+/// How far a slider goes either way, in dB. Winamp's range exactly, and what
+/// the equaliser window's `+12dB`/`-12dB` marks label.
+pub const EQ_RANGE_DB: f32 = 12.0;
 
 impl Eq10 {
     pub fn new(sample_rate: f32, gains_db: [f32; 10]) -> Self {
@@ -84,6 +97,8 @@ impl Eq10 {
             states_l: std::array::from_fn(|_| BiquadState::new()),
             states_r: std::array::from_fn(|_| BiquadState::new()),
             gains_db,
+            preamp: 1.0,
+            preamp_db: 0.0,
             sample_rate,
         };
         eq.update_coeffs();
@@ -93,6 +108,23 @@ impl Eq10 {
     pub fn set_gains(&mut self, gains_db: [f32; 10]) {
         self.gains_db = gains_db;
         self.update_coeffs();
+    }
+
+    /// The preamp, in dB. Winamp's slider is the same ±12 as the bands.
+    pub fn set_preamp_db(&mut self, preamp_db: f32) {
+        let clamped = preamp_db.clamp(-EQ_RANGE_DB, EQ_RANGE_DB);
+        self.preamp_db = clamped;
+        self.preamp = 10f32.powf(clamped / 20.0);
+    }
+
+    pub fn preamp_db(&self) -> f32 {
+        self.preamp_db
+    }
+
+    /// Clear filter memories (call on track change to avoid clicks/pops).
+    pub fn reset(&mut self) {
+        self.states_l = std::array::from_fn(|_| BiquadState::new());
+        self.states_r = std::array::from_fn(|_| BiquadState::new());
     }
 
     pub fn gains(&self) -> [f32; 10] {
@@ -116,8 +148,8 @@ impl Eq10 {
 
     #[inline]
     pub fn process_stereo(&mut self, l: f32, r: f32) -> (f32, f32) {
-        let mut lo = l;
-        let mut ro = r;
+        let mut lo = l * self.preamp;
+        let mut ro = r * self.preamp;
         for i in 0..10 {
             lo = self.states_l[i].process(&self.bands[i], lo);
             ro = self.states_r[i].process(&self.bands[i], ro);
@@ -180,10 +212,14 @@ mod tests {
 
     #[test]
     fn eq_boosts_band() {
-        let mut eq = Eq10::new(
-            44_100.0,
-            [0.0, 0.0, 0.0, 0.0, 0.0, 12.0, 0.0, 0.0, 0.0, 0.0],
-        );
+        let mut gains = [0.0; 10];
+        // The 1 kHz band, which is Winamp's fifth.
+        let band = EQ_BAND_FREQS
+            .iter()
+            .position(|f| *f == 1000.0)
+            .expect("a 1 kHz band");
+        gains[band] = 12.0;
+        let mut eq = Eq10::new(44_100.0, gains);
         // 1 kHz sine should be amplified after settling
         let sr = 44_100.0f32;
         let mut max_out: f32 = 0.0;
@@ -196,6 +232,54 @@ mod tests {
         }
         assert!(max_out > 0.2, "1kHz must be boosted: {max_out}");
     }
+
+    /// The bands are Winamp's own centres, because the equaliser window labels
+    /// its ten sliders with them.
+    #[test]
+    fn the_bands_are_winamps() {
+        assert_eq!(
+            EQ_BAND_FREQS,
+            [
+                60.0, 170.0, 310.0, 600.0, 1000.0, 3000.0, 6000.0, 12000.0, 14000.0, 16000.0
+            ]
+        );
+        // Rising, so slider *n* is always left of slider *n+1*.
+        for pair in EQ_BAND_FREQS.windows(2) {
+            assert!(pair[0] < pair[1], "the bands are out of order");
+        }
+        assert_eq!(EQ_RANGE_DB, 12.0, "±12 dB is what the window's marks say");
+    }
+
+    /// The preamp is a flat gain before the filters: unity at zero, and ±12 dB
+    /// at the ends of its travel.
+    #[test]
+    fn the_preamp_scales_everything_evenly() {
+        let mut eq = Eq10::new(44_100.0, [0.0; 10]);
+        assert_eq!(eq.preamp_db(), 0.0);
+        let flat = eq.process_stereo(0.5, -0.5);
+        assert!((flat.0 - 0.5).abs() < 1e-4, "unity at zero: {flat:?}");
+
+        // +6 dB is a factor of two.
+        let mut eq = Eq10::new(44_100.0, [0.0; 10]);
+        eq.set_preamp_db(6.0);
+        let (l, r) = eq.process_stereo(0.25, -0.25);
+        assert!((l - 0.5).abs() < 0.01, "+6 dB should double: {l}");
+        assert!((r + 0.5).abs() < 0.01, "…on both channels: {r}");
+
+        // -6 dB halves it, and both channels move together.
+        let mut eq = Eq10::new(44_100.0, [0.0; 10]);
+        eq.set_preamp_db(-6.0);
+        let (l, _) = eq.process_stereo(0.5, 0.0);
+        assert!((l - 0.25).abs() < 0.01, "-6 dB should halve: {l}");
+
+        // Out of range clamps rather than blowing the signal up.
+        let mut eq = Eq10::new(44_100.0, [0.0; 10]);
+        eq.set_preamp_db(60.0);
+        assert_eq!(eq.preamp_db(), EQ_RANGE_DB);
+        eq.set_preamp_db(-60.0);
+        assert_eq!(eq.preamp_db(), -EQ_RANGE_DB);
+    }
+
     #[test]
     fn limiter_caps_peak() {
         let mut lim = Limiter::new(44_100.0, -3.0);
