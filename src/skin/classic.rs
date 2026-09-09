@@ -11,7 +11,7 @@ pub fn load() -> anyhow::Result<Skin> {
         include_bytes!("../../assets/skins/fastpotify-base.wsz").to_vec(),
     )?;
     for bitmap in skin.sheets.values_mut() {
-        for pixel in bitmap.rgba.chunks_exact_mut(4) {
+        for pixel in bitmap.rgba.as_chunks_mut::<4>().0 {
             let [r, g, b] = orange([pixel[0], pixel[1], pixel[2]]);
             pixel[..3].copy_from_slice(&[r, g, b]);
         }

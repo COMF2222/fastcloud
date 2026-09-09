@@ -571,7 +571,7 @@ pub fn accent_from_image(rgba: &[u8]) -> Color32 {
     let mut acc_g = 0u64;
     let mut acc_b = 0u64;
     let mut count = 0u64;
-    for px in rgba.chunks_exact(4) {
+    for px in rgba.as_chunks::<4>().0 {
         let r = px[0] as f32;
         let g = px[1] as f32;
         let b = px[2] as f32;

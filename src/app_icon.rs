@@ -137,7 +137,9 @@ mod tests {
     fn icon_edges_are_antialiased_at_tray_size() {
         let pixels = rgba(16);
         let soft_edge_pixels = pixels
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|pixel| (1..=254).contains(&pixel[3]))
             .count();
         assert!(
