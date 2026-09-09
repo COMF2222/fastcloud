@@ -274,11 +274,10 @@ fn fix_checksums(d: &mut [u8], t: &TableDir) {
 /// Sum of big-endian u32 words, zero-padded (OpenType checksum).
 fn sum32(bytes: &[u8]) -> u32 {
     let mut total = 0u32;
-    let mut chunks = bytes.chunks_exact(4);
-    for c in &mut chunks {
-        total = total.wrapping_add(u32::from_be_bytes([c[0], c[1], c[2], c[3]]));
+    let (chunks, rest) = bytes.as_chunks::<4>();
+    for c in chunks {
+        total = total.wrapping_add(u32::from_be_bytes(*c));
     }
-    let rest = chunks.remainder();
     if !rest.is_empty() {
         let mut word = [0u8; 4];
         word[..rest.len()].copy_from_slice(rest);

@@ -78,7 +78,7 @@ impl AudioTap {
     /// `gain` undoes anything applied after the tap point.
     pub fn push(&self, interleaved: &[f32], gain: f32) {
         let mut samples = self.samples.lock().unwrap_or_else(|p| p.into_inner());
-        for frame in interleaved.chunks_exact(2) {
+        for frame in interleaved.as_chunks::<2>().0 {
             let mono = (frame[0] + frame[1]) / 2.0 * gain;
             if samples.len() == KEPT {
                 samples.pop_front();
