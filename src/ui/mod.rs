@@ -1985,9 +1985,6 @@ impl App {
         }
     }
 
-    #[cfg(not(target_os = "windows"))]
-    pub fn attach_hwnd(&mut self) {}
-
     // ===== Account =====
 
     /// Whether the account's own lists are reachable.
