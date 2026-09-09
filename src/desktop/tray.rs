@@ -30,6 +30,8 @@ impl TrayCommand {
 pub struct Tray {
     #[cfg(not(target_os = "linux"))]
     inner: Option<TrayInner>,
+    #[cfg(target_os = "linux")]
+    _inner: ksni::blocking::Handle<KsniTray>,
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -107,10 +109,11 @@ impl Tray {
 
     #[cfg(target_os = "linux")]
     pub fn spawn() -> anyhow::Result<(Self, mpsc::Receiver<TrayCommand>)> {
+        use ksni::blocking::TrayMethods;
+
         let (tx, rx) = mpsc::channel();
-        let service = ksni::TrayService::new(KsniTray { tx });
-        service.spawn();
-        Ok((Self {}, rx))
+        let handle = KsniTray { tx }.spawn()?;
+        Ok((Self { _inner: handle }, rx))
     }
 
     pub fn set_tooltip(&self, text: &str) {
@@ -144,7 +147,7 @@ impl ksni::Tray for KsniTray {
         vec![
             StandardItem {
                 label: "Show Fastcloud".into(),
-                activate: Box::new(|t: &Self| {
+                activate: Box::new(|t: &mut Self| {
                     let _ = t.tx.send(TrayCommand::Show);
                 }),
                 ..Default::default()
@@ -152,7 +155,7 @@ impl ksni::Tray for KsniTray {
             .into(),
             StandardItem {
                 label: "Play/Pause".into(),
-                activate: Box::new(|t: &Self| {
+                activate: Box::new(|t: &mut Self| {
                     let _ = t.tx.send(TrayCommand::PlayPause);
                 }),
                 ..Default::default()
@@ -160,7 +163,7 @@ impl ksni::Tray for KsniTray {
             .into(),
             StandardItem {
                 label: "Next".into(),
-                activate: Box::new(|t: &Self| {
+                activate: Box::new(|t: &mut Self| {
                     let _ = t.tx.send(TrayCommand::Next);
                 }),
                 ..Default::default()
@@ -168,16 +171,16 @@ impl ksni::Tray for KsniTray {
             .into(),
             StandardItem {
                 label: "Previous".into(),
-                activate: Box::new(|t: &Self| {
+                activate: Box::new(|t: &mut Self| {
                     let _ = t.tx.send(TrayCommand::Prev);
                 }),
                 ..Default::default()
             }
             .into(),
-            MenuEntry::Separator,
+            MenuItem::Separator,
             StandardItem {
                 label: "Quit".into(),
-                activate: Box::new(|t: &Self| {
+                activate: Box::new(|t: &mut Self| {
                     let _ = t.tx.send(TrayCommand::Quit);
                 }),
                 ..Default::default()
