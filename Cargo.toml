@@ -58,7 +58,7 @@ memmap2 = "0.9"
 unicode-bidi = "0.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-ksni = { version = "0.3", features = ["async-io"] }
+ksni = { version = "0.3", default-features = false, features = ["async-io"] }
 zbus = "5"
 souvlaki = { version = "0.8", default-features = false, features = ["use_zbus"] }
 global-hotkey = "0.8"
