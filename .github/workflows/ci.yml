@@ -40,6 +40,7 @@ jobs:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
       VITE_FASTCLOUD_SERVER_URL: ${{ secrets.FASTCLOUD_SERVER_URL }}
+      FASTCLOUD_DISCORD_CLIENT_ID: ${{ vars.FASTCLOUD_DISCORD_CLIENT_ID }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v6

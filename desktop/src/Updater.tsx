@@ -12,8 +12,10 @@ type UpdateState = {
   progress: number | null
   error: string
   checked: boolean
+  dismissedVersion: string
   checkNow: () => Promise<void>
   install: () => Promise<void>
+  dismiss: () => void
 }
 
 const Context = createContext<UpdateState | null>(null)
@@ -26,11 +28,14 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   const [progress, setProgress] = useState<number | null>(null)
   const [error, setError] = useState('')
   const [checked, setChecked] = useState(false)
+  const [dismissedVersion, setDismissedVersion] = useState('')
   const busy = useRef(false)
+  const lastCheckedAt = useRef(0)
 
   const checkNow = async () => {
     if (api.preview || busy.current) return
     busy.current = true
+    lastCheckedAt.current = Date.now()
     setChecking(true)
     setError('')
     try {
@@ -75,11 +80,20 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (api.preview) return
     void checkNow()
-    const timer = window.setInterval(() => void checkNow(), 6 * 60 * 60 * 1000)
-    return () => window.clearInterval(timer)
+    const timer = window.setInterval(() => void checkNow(), 30 * 60 * 1000)
+    const checkWhenActive = () => {
+      if (document.visibilityState === 'visible' && Date.now() - lastCheckedAt.current >= 10 * 60 * 1000) void checkNow()
+    }
+    window.addEventListener('focus', checkWhenActive)
+    document.addEventListener('visibilitychange', checkWhenActive)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', checkWhenActive)
+      document.removeEventListener('visibilitychange', checkWhenActive)
+    }
   }, [])
 
-  return <Context.Provider value={{ version, available, checking, installing, progress, error, checked, checkNow, install }}>{children}</Context.Provider>
+  return <Context.Provider value={{ version, available, checking, installing, progress, error, checked, dismissedVersion, checkNow, install, dismiss: () => setDismissedVersion(available?.version || '') }}>{children}</Context.Provider>
 }
 
 function useUpdater() {
@@ -94,6 +108,16 @@ export function UpdateSidebarButton({ english, openSettings }: { english: boolea
   return <button className="nav-item update-sidebar-button" onClick={openSettings} title={english ? `Update to ${available.version}` : `Обновить до ${available.version}`}>
     <span aria-hidden="true">↑</span><span>{english ? `Update available: ${available.version}` : `Доступно обновление ${available.version}`}</span>
   </button>
+}
+
+export function UpdateNotice({ english }: { english: boolean }) {
+  const { available, dismissedVersion, installing, progress, error, install, dismiss } = useUpdater()
+  if (!available || dismissedVersion === available.version) return null
+  return <div className="update-notice" role="status">
+    <div><strong>{english ? `Fastcloud ${available.version} is available` : `Доступна новая версия Fastcloud ${available.version}`}</strong><span>{english ? 'You can install it now.' : 'Её можно установить прямо сейчас.'}</span>{error && <small role="alert">{error}</small>}</div>
+    <button className="primary-button" disabled={installing} onClick={() => void install()}>{installing ? english ? `Installing… ${progress == null ? '' : `${progress}%`}` : `Устанавливаем… ${progress == null ? '' : `${progress}%`}` : english ? 'Update now' : 'Обновить'}</button>
+    <button className="icon-button" disabled={installing} aria-label={english ? 'Remind me next launch' : 'Напомнить при следующем запуске'} title={english ? 'Remind me next launch' : 'Напомнить при следующем запуске'} onClick={dismiss}>×</button>
+  </div>
 }
 
 export function UpdateSettingsCard({ english }: { english: boolean }) {

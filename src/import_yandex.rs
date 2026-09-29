@@ -83,11 +83,20 @@ pub async fn import_likes(token: String, soundcloud: Arc<ApiClient>, tx: Sender<
     }
 }
 
-async fn run(token: &str, soundcloud: Arc<ApiClient>, tx: &Sender<Event>) -> Result<()> {
-    let http = reqwest::Client::builder()
+fn http_client() -> Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
         .user_agent(concat!("fastcloud/", env!("CARGO_PKG_VERSION")))
         .timeout(std::time::Duration::from_secs(30))
-        .build()?;
+        .build()?)
+}
+
+pub async fn check_token(token: &str) -> Result<usize> {
+    let http = http_client()?;
+    Ok(load_liked_ids(&http, token).await?.len())
+}
+
+async fn load_liked_ids(http: &reqwest::Client, token: &str) -> Result<Vec<String>> {
+    anyhow::ensure!(!token.trim().is_empty(), "Paste a Yandex Music OAuth token");
     let authorization = format!("OAuth {}", token.trim());
     let status: StatusResponse = http
         .get("https://api.music.yandex.net/account/status")
@@ -110,13 +119,13 @@ async fn run(token: &str, soundcloud: Arc<ApiClient>, tx: &Sender<Event>) -> Res
         .context("cannot load Yandex Music likes")?
         .json()
         .await?;
-    let ids: Vec<_> = likes
-        .result
-        .library
-        .tracks
-        .iter()
-        .filter_map(|item| json_scalar(&item.id))
-        .collect();
+    Ok(likes.result.library.tracks.iter().filter_map(|item| json_scalar(&item.id)).collect())
+}
+
+async fn run(token: &str, soundcloud: Arc<ApiClient>, tx: &Sender<Event>) -> Result<()> {
+    let http = http_client()?;
+    let authorization = format!("OAuth {}", token.trim());
+    let ids = load_liked_ids(&http, token).await?;
     let total = ids.len();
     let mut matched_ids = Vec::new();
     let mut matched_seen = HashSet::new();

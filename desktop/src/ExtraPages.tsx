@@ -5,6 +5,7 @@ import { api } from './api'
 import { Artwork, DetailActions, Empty, LibraryPlaylists, LibraryTracks, PlaylistCards, SectionTitle, Status, TrackRows, type LibraryView } from './App'
 import { useApp } from './store'
 import { RemoteImage } from './RemoteImage'
+import { shuffleTracks } from './shuffle'
 import { GenreCarousel } from './GenreCarousel'
 import { releaseGenres, releaseMatchesGenre, sameGenre } from './genres'
 import { artist, duration, type Data, type Playlist, type Track, type User } from './types'
@@ -43,6 +44,7 @@ function ProfileCollections({ created, saved, albums, filter, english = false }:
 }
 
 export function ArtistPage({ id, name }: { id: number; name: string }) {
+  const queryClient = useQueryClient()
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.settings })
   const english = settings?.language === 'English'
   const t = (ru: string, en: string) => english ? en : ru
@@ -75,7 +77,12 @@ export function ArtistPage({ id, name }: { id: number; name: string }) {
     if (tracks?.status !== 'ready' || !tracks.data.length) return
     try { await api.setSetting('autoplay', true); await api.play(tracks.data, 0) } catch (cause) { setError(String(cause)) }
   }
+  const playLikesShuffled = async () => {
+    if (likes?.status !== 'ready' || !likes.data.length) return
+    try { await api.play(shuffleTracks(likes.data), 0); await queryClient.invalidateQueries({ queryKey: ['player'] }) } catch (cause) { setError(String(cause)) }
+  }
   return <div className="page-content profile-page"><div className="profile-hero"><div className="profile-avatar"><span>{username.slice(0, 1).toUpperCase()}</span>{avatar && <RemoteImage src={avatar} previewSrc={avatar} pixels={1080} alt={t('Аватар', 'Avatar') + ` ${username}`} />}</div><div className="profile-summary"><span className="page-kicker">FASTCLOUD / {isOwn ? t('МОЙ ПРОФИЛЬ', 'MY PROFILE') : t('АВТОР', 'ARTIST')}</span><h1>{username}</h1>{owner?.full_name && owner.full_name !== username && <p className="profile-full-name">{owner.full_name}</p>}{owner?.description && <p className="profile-description">{owner.description}</p>}{(owner?.city || owner?.country_code) && <p className="profile-location"><MapPin size={14} />{[owner.city, owner.country_code].filter(Boolean).join(', ')}</p>}<div className="profile-stats"><div><strong>{trackCount ?? '—'}</strong><span>{t('треков', 'tracks')}</span></div><div><strong>{playlistCount ?? '—'}</strong><span>{t('плейлистов', 'playlists')}</span></div><div><strong>{owner?.followers_count ?? (isOwn && me?.status === 'ready' ? me.data.followers_count : null) ?? '—'}</strong><span>{t('подписчиков', 'followers')}</span></div></div><div className="profile-actions"><button className="primary-button" disabled={tracks?.status !== 'ready' || !tracks.data.length} onClick={() => void station()}><Play size={16} fill="currentColor" /> {t('Слушать треки', 'Play tracks')}</button>{!isOwn && <DetailActions page="artist" id={id} name={name} />}{owner?.permalink_url && <button className="secondary-button" onClick={() => void api.openSoundCloud(owner.permalink_url!).catch(cause => setError(String(cause)))}>SoundCloud ↗</button>}</div>{error && <p className="error-text">{error}</p>}{profiles?.status === 'ready' && <div className="profile-links">{profiles.data.filter(profile => /^https?:\/\//.test(profile.url)).map(profile => <a href={profile.url} target="_blank" rel="noreferrer" key={profile.url}>{profile.title || profile.service || t('Сайт автора', 'Artist website')}</a>)}</div>}</div></div><div className="profile-content-tools"><div className="tabs profile-tabs">{([['tracks', t('Треки', 'Tracks'), trackCount], ['popular', t('Популярное', 'Popular'), undefined], ['albums', t('Альбомы', 'Albums'), albumCount], ['playlists', t('Плейлисты', 'Playlists'), playlistCount], ['likes', t('Лайки', 'Likes'), undefined], ['reposts', t('Репосты', 'Reposts'), undefined]] as const).map(([value, label, count]) => <button key={value} className={tab === value ? 'active' : ''} onClick={() => { setTab(value); setFilter('') }}>{label}{count != null && <small>{count}</small>}</button>)}</div><input className="profile-filter" aria-label={t('Поиск в профиле', 'Search profile')} placeholder={tab === 'albums' ? t('Найти альбом…', 'Find album…') : tab === 'playlists' ? t('Найти плейлист…', 'Find playlist…') : t('Найти трек…', 'Find track…')} value={filter} onChange={event => setFilter(event.target.value)} /></div>
+    {tab === 'likes' && <div className="profile-collection-actions"><button className="secondary-button" disabled={likes?.status !== 'ready' || !likes.data.length} onClick={() => void playLikesShuffled()}><Shuffle size={16} /> {t('Перемешать всё', 'Shuffle all')}</button></div>}
     {tab === 'tracks' && <Status value={tracks}>{items => <TrackRows tracks={matchingTracks(items)} />}</Status>}
     {tab === 'popular' && <Status value={tracks}>{items => <TrackRows tracks={matchingTracks([...items].sort((a, b) => (b.playback_count || 0) - (a.playback_count || 0)))} />}</Status>}
     {tab === 'albums' && <ProfileCollections created={lists} saved={isOwn ? savedLists ?? { status: 'loading' } : undefined} albums filter={search} english={english} />}
@@ -110,12 +117,7 @@ export function PlaylistPage({ id, name }: { id: number; name: string }) {
   const play = async () => { if (contents?.status === 'ready' && contents.data.length) { try { await api.play(contents.data, 0); await queryClient.invalidateQueries({ queryKey: ['player'] }) } catch (cause) { setError(String(cause)) } } }
   const playShuffled = async () => {
     if (contents?.status !== 'ready' || !contents.data.length) return
-    const shuffled = [...contents.data]
-    for (let index = shuffled.length - 1; index > 0; index--) {
-      const next = Math.floor(Math.random() * (index + 1))
-      ;[shuffled[index], shuffled[next]] = [shuffled[next], shuffled[index]]
-    }
-    try { await api.play(shuffled, 0); await queryClient.invalidateQueries({ queryKey: ['player'] }) } catch (cause) { setError(String(cause)) }
+    try { await api.play(shuffleTracks(contents.data), 0); await queryClient.invalidateQueries({ queryKey: ['player'] }) } catch (cause) { setError(String(cause)) }
   }
   const visibleTracks = contents?.status === 'ready' ? contents.data : []
   const count = item?.track_count || visibleTracks.length

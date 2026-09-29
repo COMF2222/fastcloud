@@ -12,6 +12,8 @@ export function SettingsSections({ section, settings, update }: { section: Setti
   const [background, setBackground] = useState('')
   const [discord, setDiscord] = useState('')
   const [token, setToken] = useState('')
+  const [checkingToken, setCheckingToken] = useState(false)
+  const [tokenCheck, setTokenCheck] = useState('')
   const [message, setMessage] = useState('')
   const [accentDraft, setAccentDraft] = useState('')
   const lastAccentCommit = useRef('')
@@ -75,8 +77,29 @@ export function SettingsSections({ section, settings, update }: { section: Setti
   </>
 
   if (section === 'integrations') return <>
-    <div className="settings-card"><h3>Discord Rich Presence</h3><p className="muted">{t('Показывать текущий трек в Discord. После регистрации приложения Fastcloud его ID встраивается в сборку, и вводить его пользователям не нужно.', 'Show the current track in Discord. Once Fastcloud has its own Discord application, its ID will be bundled so users need not enter one.')}</p><label className="setting-row"><span>{t('Показывать текущий трек', 'Show current track')}</span><input type="checkbox" disabled={!settings.discord_client_id} checked={settings.discord_presence} onChange={event => void update('discord_presence', event.target.checked)} /></label>{!settings.discord_client_id && <p className="muted">{t('Сейчас нужен собственный Discord Application ID Fastcloud. Чужой ID покажет в Discord чужое приложение.', 'Fastcloud needs its own Discord Application ID. Another ID would show another app in Discord.')}</p>}<details className="advanced-setting"><summary>{t('Настройка для разработчика', 'Developer setting')}</summary><label className="field-label">Application ID<div className="inline-form"><input value={discord} onChange={event => setDiscord(event.target.value)} placeholder="Application ID" /><button className="secondary-button" onClick={() => void update('discord_client_id', discord.trim())}>{t('Сохранить', 'Save')}</button></div></label></details></div>
-    <div className="settings-card"><h3>{t('Импорт из Яндекс Музыки', 'Import from Yandex Music')}</h3><p className="muted">{t('Любимые треки ищутся в SoundCloud и собираются в отдельный плейлист.', 'Liked tracks are matched in SoundCloud and added to a separate playlist.')}</p><div className="inline-form"><input type="password" autoComplete="off" value={token} onChange={event => setToken(event.target.value)} placeholder={t('OAuth токен Яндекс Музыки', 'Yandex Music OAuth token')} aria-label={t('Токен Яндекс Музыки', 'Yandex Music token')} /><button className="secondary-button" disabled={!token.trim() || importState?.running} onClick={() => void api.startYandexImport(token).then(() => { setToken(''); setMessage(t('Импорт начался', 'Import started')) }).catch(error => setMessage(String(error)))}>{importState?.running ? t('Импорт идёт…', 'Importing…') : t('Импортировать лайки', 'Import likes')}</button></div>{importState?.running && <p role="status">{importState.current} / {importState.total} · {t('найдено', 'matched')} {importState.matched} · {importState.title}</p>}{importState?.message && <p role="status">{importState.message}</p>}</div>{message && <p role="status" className="muted">{message}</p>}
+    <div className="settings-card"><h3>Discord Rich Presence</h3><p className="muted">{t('Показывать текущий трек в Discord. Нужен только публичный Application ID (Client ID), а не Bot Token или Client Secret. После добавления ID в сборку пользователям вводить его не придётся.', 'Show the current track in Discord. Only the public Application ID (Client ID) is needed, not a Bot Token or Client Secret. Once bundled, users will not need to enter it.')}</p><label className="setting-row"><span>{t('Показывать текущий трек', 'Show current track')}</span><input type="checkbox" disabled={!settings.discord_client_id} checked={settings.discord_presence} onChange={event => void update('discord_presence', event.target.checked)} /></label>{!settings.discord_client_id && <p className="muted">{t('Сейчас нужен собственный Discord Application ID Fastcloud. Чужой ID покажет в Discord чужое приложение.', 'Fastcloud needs its own Discord Application ID. Another ID would show another app in Discord.')}</p>}<details className="advanced-setting"><summary>{t('Настройка для разработчика', 'Developer setting')}</summary><label className="field-label">Application ID<div className="inline-form"><input value={discord} onChange={event => setDiscord(event.target.value)} placeholder="Application ID" /><button className="secondary-button" onClick={() => void update('discord_client_id', discord.trim())}>{t('Сохранить', 'Save')}</button></div></label></details></div>
+    <div className="settings-card">
+      <h3>{t('Импорт из Яндекс Музыки', 'Import from Yandex Music')}</h3>
+      <p className="muted">{t('Любимые треки ищутся в SoundCloud и собираются в отдельный плейлист.', 'Liked tracks are matched in SoundCloud and added to a separate playlist.')}</p>
+      <details className="advanced-setting">
+        <summary>{t('Где взять токен', 'How to get a token')}</summary>
+        <ol>
+          <li>{t('Открой инструкцию сообщества yandex-music-api и получи токен через OAuth Device Flow или браузер.', 'Open the yandex-music-api community guide and get a token through OAuth Device Flow or your browser.')}</li>
+          <li>{t('Войди в нужный аккаунт Яндекса и скопируй только значение access_token.', 'Sign in to the intended Yandex account and copy only the access_token value.')}</li>
+          <li>{t('Вставь токен ниже и нажми «Проверить токен», затем «Импортировать лайки».', 'Paste the token below, select “Check token”, then “Import likes”.')}</li>
+        </ol>
+        <p><a href="https://github.com/MarshalX/yandex-music-api/blob/main/docs/source/token.md" target="_blank" rel="noreferrer">{t('Открыть инструкцию по токену ↗', 'Open token guide ↗')}</a></p>
+        <p className="muted">{t('Токен нужен только на этом компьютере для импорта. Не отправляй его другим людям и не вставляй в чат.', 'The token is used on this computer for import. Do not send it to others or paste it into chat.')}</p>
+      </details>
+      <div className="inline-form">
+        <input type="password" autoComplete="off" value={token} disabled={checkingToken || importState?.running} onChange={event => { setToken(event.target.value); setTokenCheck('') }} placeholder={t('OAuth токен Яндекс Музыки', 'Yandex Music OAuth token')} aria-label={t('Токен Яндекс Музыки', 'Yandex Music token')} />
+        <button className="secondary-button" disabled={!token.trim() || checkingToken || importState?.running} onClick={() => { setCheckingToken(true); setTokenCheck(''); void api.checkYandexToken(token).then(count => setTokenCheck(t(`Токен работает: доступно ${count} лайков.`, `Token works: ${count} liked tracks available.`))).catch(error => setTokenCheck(String(error))).finally(() => setCheckingToken(false)) }}>{checkingToken ? t('Проверяем…', 'Checking…') : t('Проверить токен', 'Check token')}</button>
+        <button className="secondary-button" disabled={!token.trim() || checkingToken || importState?.running} onClick={() => void api.startYandexImport(token).then(() => { setToken(''); setTokenCheck(''); setMessage(t('Импорт начался', 'Import started')) }).catch(error => setMessage(String(error)))}>{importState?.running ? t('Импорт идёт…', 'Importing…') : t('Импортировать лайки', 'Import likes')}</button>
+      </div>
+      {tokenCheck && <p role="status">{tokenCheck}</p>}
+      {importState?.running && <p role="status">{importState.current} / {importState.total} · {t('найдено', 'matched')} {importState.matched} · {importState.title}</p>}
+      {importState?.message && <p role="status">{importState.message}</p>}
+    </div>{message && <p role="status" className="muted">{message}</p>}
   </>
 
   if (section === 'storage') {

@@ -2409,6 +2409,11 @@ fn import_status(state: tauri::State<'_, AppState>) -> ImportStatus {
 }
 
 #[tauri::command]
+async fn check_yandex_token(token: String) -> Result<usize, String> {
+    import_yandex::check_token(&token).await.map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn start_yandex_import(state: tauri::State<'_, AppState>, token: String) -> Result<(), String> {
     if token.trim().is_empty() {
         return Err("Paste a Yandex Music OAuth token".into());
@@ -2456,6 +2461,8 @@ fn start_yandex_import(state: tauri::State<'_, AppState>, token: String) -> Resu
                     let mut value = status.lock();
                     value.running = false;
                     value.message = match result {
+                        Ok(()) if count == 0 && not_found == 0 => "No liked tracks found in Yandex Music".into(),
+                        Ok(()) if count == 0 => format!("No Yandex likes matched SoundCloud tracks ({not_found} not found); no playlist created"),
                         Ok(()) => format!("Imported {count} tracks into Yandex Music likes ({not_found} not found)"),
                         Err(error) => format!("Could not create playlist: {error}"),
                     };
@@ -3147,6 +3154,7 @@ pub fn run() {
             clear_artwork_cache,
             clear_clap_preparation,
             import_status,
+            check_yandex_token,
             start_yandex_import,
             upload_track,
             edit_track,

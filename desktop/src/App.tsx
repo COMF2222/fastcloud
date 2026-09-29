@@ -10,7 +10,7 @@ import {
   Heart, Home, Library, ListMusic, LoaderCircle, MoreHorizontal, Music2, Pause,
   Play, Plus, Repeat2, Search, Settings2, Shuffle, SkipBack, SkipForward, Volume1, Volume2, VolumeX, X, Minimize2, Maximize2, ArrowUp, ArrowDown, Pin, Download, Languages, PanelLeftClose, PanelLeftOpen, ThumbsDown,
 } from 'lucide-react'
-import { api, type ApprovalUser } from './api'
+import { api } from './api'
 import { ArtistCredits } from './ArtistCredits'
 import { ArtistPage, CatalogPage, LibraryExtra, LibraryOverview, PlaylistPage, RepostsPage, TrackComments, TrackCreatorTools } from './ExtraPages'
 import { SettingsSections, type SettingsSection } from './SettingsSections'
@@ -18,8 +18,9 @@ import { NowPlaying } from './NowPlaying'
 import { GenreCarousel, musicGenres } from './GenreCarousel'
 import { genreKey, sameGenre } from './genres'
 import { RemoteImage } from './RemoteImage'
+import { shuffleTracks } from './shuffle'
 import { useVirtualRows } from './useVirtualRows'
-import { UpdateSettingsCard, UpdateSidebarButton } from './Updater'
+import { UpdateNotice, UpdateSettingsCard, UpdateSidebarButton } from './Updater'
 import { LoginGate } from './LoginGate'
 import { FASTCLOUD_SERVER_URL } from './server'
 import { hasRestoredNavigation, useApp, type Page } from './store'
@@ -675,16 +676,16 @@ function SettingsPage() {
   const { data: account } = useQuery({ queryKey: ['my-profile'], queryFn: api.myProfile, enabled: connection?.status === 'signed_in' })
   const [error, setError] = useState('')
   const [accountBusy, setAccountBusy] = useState(false)
-  const [approvalUsers, setApprovalUsers] = useState<ApprovalUser[] | null>(null)
-  const loadApprovals = async () => {
-    setAccountBusy(true); setError('')
-    try { setApprovalUsers(await api.approvalUsers(FASTCLOUD_SERVER_URL)) }
-    catch (cause) { setError(String(cause)) }
-    finally { setAccountBusy(false) }
-  }
+  const { data: approvalUsers, refetch: refreshApprovals } = useQuery({
+    queryKey: ['approval-users', account?.status === 'ready' ? account.data.id : null],
+    queryFn: () => api.approvalUsers(FASTCLOUD_SERVER_URL),
+    enabled: section === 'account' && connection?.status === 'signed_in' && account?.status === 'ready' && !!FASTCLOUD_SERVER_URL && !api.preview,
+    retry: false,
+    staleTime: 30_000,
+  })
   const setApproval = async (id: number, status: 'approved' | 'denied' | 'pending') => {
     setAccountBusy(true); setError('')
-    try { await api.approvalSetUser(FASTCLOUD_SERVER_URL, id, status); setApprovalUsers(await api.approvalUsers(FASTCLOUD_SERVER_URL)) }
+    try { await api.approvalSetUser(FASTCLOUD_SERVER_URL, id, status); await refreshApprovals() }
     catch (cause) { setError(String(cause)) }
     finally { setAccountBusy(false) }
   }
@@ -706,10 +707,10 @@ function SettingsPage() {
       {account?.status === 'ready' && <div className="account-details">{account.data.avatar_url ? <RemoteImage src={account.data.avatar_url} pixels={160} alt="" /> : <span className="account-avatar"><Music2 size={22} /></span>}<div><strong>{account.data.username}</strong><span>SoundCloud ID {account.data.id}{account.data.followers_count != null ? ` · ${account.data.followers_count} ${english ? 'followers' : 'подписчиков'}` : ''}</span></div></div>}
       {connection?.status === 'signed_in' && <button className="secondary-button" disabled={accountBusy} onClick={() => void accountAction(api.signOut)}>{english ? 'Sign out' : 'Выйти из аккаунта'}</button>}
     </div>}
-    {section === 'account' && connection?.status === 'signed_in' && <div className="settings-card"><h3>{english ? 'Access requests' : 'Заявки на доступ'}</h3>
+    {section === 'account' && connection?.status === 'signed_in' && approvalUsers && <div className="settings-card"><h3>{english ? 'Access requests' : 'Заявки на доступ'}</h3>
       <p>{english ? 'The owner of the Fastcloud SoundCloud app can review access requests here.' : 'Владелец SoundCloud-приложения Fastcloud может просматривать здесь заявки на доступ.'}</p>
-      <button className="secondary-button" disabled={accountBusy} onClick={() => void loadApprovals()}>{english ? 'Load requests' : 'Загрузить заявки'}</button>
-      {approvalUsers && <div className="approval-users">{approvalUsers.length === 0 ? <p>{english ? 'No access requests yet.' : 'Заявок пока нет.'}</p> : approvalUsers.map(user => <div className="setting-row" key={user.id}><span><strong>{user.username}</strong><small>SoundCloud ID {user.id} · {user.status}</small></span><div className="approval-actions"><button className="secondary-button" disabled={accountBusy || user.status === 'approved'} onClick={() => void setApproval(user.id, 'approved')}>{english ? 'Approve' : 'Одобрить'}</button><button className="secondary-button" disabled={accountBusy || user.status === 'denied'} onClick={() => void setApproval(user.id, 'denied')}>{english ? 'Deny' : 'Отклонить'}</button></div></div>)}</div>}
+      <button className="secondary-button" disabled={accountBusy} onClick={() => void refreshApprovals()}>{english ? 'Refresh requests' : 'Обновить заявки'}</button>
+      <div className="approval-users">{approvalUsers.length === 0 ? <p>{english ? 'No access requests yet.' : 'Заявок пока нет.'}</p> : approvalUsers.map(user => <div className="setting-row" key={user.id}><span><strong>{user.username}</strong><small>SoundCloud ID {user.id} · {user.status}</small></span><div className="approval-actions"><button className="secondary-button" disabled={accountBusy || user.status === 'approved'} onClick={() => void setApproval(user.id, 'approved')}>{english ? 'Approve' : 'Одобрить'}</button><button className="secondary-button" disabled={accountBusy || user.status === 'denied'} onClick={() => void setApproval(user.id, 'denied')}>{english ? 'Deny' : 'Отклонить'}</button></div></div>)}</div>
     </div>}
     {section === 'general' && <UpdateSettingsCard english={english} />}
     {data && <SettingsSections section={section} settings={data} update={update} />}
@@ -1034,6 +1035,11 @@ export default function App() {
       else useApp.getState().openArtist(result.id, result.title)
     } catch (cause) { setLinkError(String(cause)) }
   }
+  const playLikesShuffled = async () => {
+    if (pageTracks?.status !== 'ready' || !pageTracks.data.length) return
+    try { await api.play(shuffleTracks(pageTracks.data), 0); await queryClient.invalidateQueries({ queryKey: ['player'] }); setLinkError('') }
+    catch (cause) { setLinkError(String(cause)) }
+  }
   useEffect(() => {
     if (api.preview || connection?.status === 'signed_in' || !settings?.winamp_window) return
     void api.setSetting('winamp_window', false).then(() => queryClient.invalidateQueries({ queryKey: ['settings'] })).catch(error => setLinkError(String(error)))
@@ -1105,7 +1111,7 @@ export default function App() {
     <div className="sidebar-caption">{settings?.language === 'English' ? 'NAVIGATION' : 'НАВИГАЦИЯ'}</div><nav aria-label={english ? 'Navigation' : 'Навигация'}>{sidebar.map(item => <button key={item.page} title={settings?.language === 'English' ? item.english : item.label} className={`nav-item ${page === item.page ? 'active' : ''}`} onClick={() => setPage(item.page)}><item.icon size={19} strokeWidth={1.9} /><span>{settings?.language === 'English' ? item.english : item.label}</span>{page === item.page && <span className="nav-marker" />}</button>)}</nav>
     {settings && settings.quick_access.some(item => quickAccessTarget(item)) && <div className="quick-access"><div className="sidebar-caption">{settings.language === 'English' ? 'QUICK ACCESS' : 'БЫСТРЫЙ ДОСТУП'}</div>{settings.quick_access.map(item => { const target = quickAccessTarget(item); return target && <div className="quick-access-row" key={`${target.kind}-${target.id}`}><button className="quick-access-open" title={target.title} onClick={() => target.kind === 'track' ? useApp.getState().openTrack(target.id, target.title) : useApp.getState().openPlaylist(target.id, target.title)}><Artwork item={target.kind === 'track' ? { id: target.id, title: target.title, artwork_url: target.artwork_url } : { id: target.id, title: target.title, artwork_url: target.artwork_url, track_count: 0 }} /><span><strong>{target.title}</strong><small>{target.artist}</small></span></button><button className="quick-access-remove" title={settings.language === 'English' ? 'Unpin' : 'Открепить'} aria-label={`${settings.language === 'English' ? 'Unpin' : 'Открепить'} ${target.title}`} onClick={() => void api.toggleQuickAccess(item).then(() => queryClient.invalidateQueries({ queryKey: ['settings'] }))}><X size={14} /></button></div> })}</div>}
     <div className="sidebar-bottom"><div className="sidebar-rule" /><UpdateSidebarButton english={english} openSettings={() => setPage('settings')} /><button className="nav-item" title={english ? 'Choose language' : 'Выбрать язык'} onClick={() => void api.setSetting('language', english ? 'Russian' : 'English').then(() => queryClient.invalidateQueries({ queryKey: ['settings'] }))}><Languages size={19} /><span>{english ? 'English · Русский' : 'Русский · English'}</span></button><button className="nav-item" title={sidebarCollapsed ? english ? 'Expand' : 'Развернуть' : english ? 'Collapse' : 'Свернуть'} onClick={() => setSidebarCollapsed(value => { localStorage.setItem('fastcloud:sidebar-collapsed', String(!value)); return !value })}>{sidebarCollapsed ? <PanelLeftOpen size={19} /> : <PanelLeftClose size={19} />}<span>{sidebarCollapsed ? english ? 'Expand' : 'Развернуть' : english ? 'Collapse' : 'Свернуть'}</span></button><button className={`nav-item ${page === 'settings' ? 'active' : ''}`} title={english ? 'Settings' : 'Настройки'} onClick={() => setPage('settings')}><Settings2 size={19} /><span>{english ? 'Settings' : 'Настройки'}</span></button><button className="account-card" onClick={() => profile?.status === 'ready' ? useApp.getState().openArtist(profile.data.id, profile.data.username) : setPage('settings')} aria-label={profile?.status === 'ready' ? `${english ? 'Open profile' : 'Открыть профиль'} ${profile.data.username}` : english ? 'Open account settings' : 'Открыть настройки аккаунта'}><span className="account-avatar">{profile?.status === 'ready' && profile.data.avatar_url ? <RemoteImage src={profile.data.avatar_url} pixels={100} alt="" /> : <Music2 size={19} />}</span><span><strong>{profile?.status === 'ready' ? profile.data.username : connection?.status === 'signed_in' ? 'SoundCloud' : connection?.status === 'public' ? english ? 'Public catalog' : 'Публичный каталог' : connection?.status === 'demo' ? english ? 'Demo mode' : 'Демо-режим' : english ? 'Connecting to SoundCloud…' : 'Подключаем SoundCloud…'}</strong><small>{api.preview ? english ? 'Interface preview' : 'Предпросмотр интерфейса' : connection?.status === 'signed_in' ? english ? 'My profile' : 'Мой профиль' : connection?.status === 'connecting' ? english ? 'Restoring sign-in' : 'Восстанавливаем вход' : english ? 'Connect account' : 'Подключить аккаунт'}</small></span><ChevronRight size={16} /></button></div></aside>
-     <main className="main"><header className="topbar"><div className="history-buttons"><button className="icon-button" aria-label={english ? 'Back' : 'Назад'} disabled={historyIndex <= 0} onClick={goBack}><ArrowLeft size={19} /></button><button className="icon-button" aria-label={english ? 'Forward' : 'Вперёд'} disabled={historyIndex >= history.length - 1} onClick={goForward}><ArrowRight size={19} /></button></div><label className="search-box"><Search size={19} /><input ref={searchRef} value={search} onChange={e => setSearch(e.target.value)} onKeyDown={event => { if (event.key === 'Enter' && (/^(https?:\/\/|soundcloud:|fastcloud:|(?:on\.)?soundcloud\.com\/|\d+$)/i.test(search.trim()))) { event.preventDefault(); void openLink(search.trim()) } }} placeholder={english ? 'Search or paste a SoundCloud link…' : 'Поиск или ссылка SoundCloud…'} aria-label={english ? 'Search' : 'Поиск'} />{search && <button aria-label={english ? 'Clear search' : 'Очистить поиск'} onClick={() => setSearch('')}><X size={16} /></button>}</label><span className="topbar-pill"><span /> {connection?.status === 'demo' ? english ? 'Offline demo' : 'Офлайн-демо' : connection?.status === 'signed_in' ? english ? 'Connected' : 'На связи' : 'Fastcloud'}</span></header>{linkError && <div className="link-error error-text" role="alert">{linkError}</div>}
+     <main className="main"><header className="topbar"><div className="history-buttons"><button className="icon-button" aria-label={english ? 'Back' : 'Назад'} disabled={historyIndex <= 0} onClick={goBack}><ArrowLeft size={19} /></button><button className="icon-button" aria-label={english ? 'Forward' : 'Вперёд'} disabled={historyIndex >= history.length - 1} onClick={goForward}><ArrowRight size={19} /></button></div><label className="search-box"><Search size={19} /><input ref={searchRef} value={search} onChange={e => setSearch(e.target.value)} onKeyDown={event => { if (event.key === 'Enter' && (/^(https?:\/\/|soundcloud:|fastcloud:|(?:on\.)?soundcloud\.com\/|\d+$)/i.test(search.trim()))) { event.preventDefault(); void openLink(search.trim()) } }} placeholder={english ? 'Search or paste a SoundCloud link…' : 'Поиск или ссылка SoundCloud…'} aria-label={english ? 'Search' : 'Поиск'} />{search && <button aria-label={english ? 'Clear search' : 'Очистить поиск'} onClick={() => setSearch('')}><X size={16} /></button>}</label><span className="topbar-pill"><span /> {connection?.status === 'demo' ? english ? 'Offline demo' : 'Офлайн-демо' : connection?.status === 'signed_in' ? english ? 'Connected' : 'На связи' : 'Fastcloud'}</span></header><UpdateNotice english={english} />{linkError && <div className="link-error error-text" role="alert">{linkError}</div>}
       <div className="scroll-area" key={page}>
          {page === 'home' && <HomePage />}
           {page === 'feed' && <FeedPage />}
@@ -1120,7 +1126,7 @@ export default function App() {
           {page === 'artist' && artistId && <ArtistPage id={artistId} name={artistName} />}
           {page === 'playlist' && playlistId && <PlaylistPage id={playlistId} name={playlistTitle} />}
         {page === 'settings' && <SettingsPage />}
-         {view && <div className="page-content"><div className="page-intro"><span className="page-kicker">FASTCLOUD / {(english ? englishTitle[page] : title[page]).toUpperCase()}</span><h1>{page === 'playlist' ? playlistTitle : page === 'artist' ? artistName : english ? englishTitle[page] : title[page]}</h1><p>{page === 'likes' ? english ? 'Tracks you want to return to.' : 'Треки, к которым хочется возвращаться.' : english ? 'Recently played tracks.' : 'Последнее, что ты слушал.'}</p>{page === 'artist' && artistId && <DetailActions page="artist" id={artistId} name={artistName} />}{page === 'playlist' && playlistId && <DetailActions page="playlist" id={playlistId} name={playlistTitle} />}</div><Status value={pageTracks}>{items => <TrackRows tracks={items} compact={settings?.compact_rows} />}</Status></div>}
+         {view && <div className="page-content"><div className="page-intro"><span className="page-kicker">FASTCLOUD / {(english ? englishTitle[page] : title[page]).toUpperCase()}</span><h1>{page === 'playlist' ? playlistTitle : page === 'artist' ? artistName : english ? englishTitle[page] : title[page]}</h1><p>{page === 'likes' ? english ? 'Tracks you want to return to.' : 'Треки, к которым хочется возвращаться.' : english ? 'Recently played tracks.' : 'Последнее, что ты слушал.'}</p>{page === 'artist' && artistId && <DetailActions page="artist" id={artistId} name={artistName} />}{page === 'playlist' && playlistId && <DetailActions page="playlist" id={playlistId} name={playlistTitle} />}</div>{page === 'likes' && <div className="collection-actions"><button className="secondary-button" disabled={pageTracks?.status !== 'ready' || !pageTracks.data.length} onClick={() => void playLikesShuffled()}><Shuffle size={16} /> {english ? 'Shuffle all' : 'Перемешать всё'}</button></div>}<Status value={pageTracks}>{items => <TrackRows tracks={items} compact={settings?.compact_rows} />}</Status></div>}
       </div>
     </main><PlayerBar wallpaperUrl={wallpaperUrl} /><Dialog.Root open={shortcutsOpen} onOpenChange={setShortcutsOpen}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className="shortcuts-panel"><Dialog.Title>{english ? 'Keyboard shortcuts' : 'Горячие клавиши'}</Dialog.Title><Dialog.Description>{english ? 'Control playback and the interface' : 'Управление воспроизведением и интерфейсом'}</Dialog.Description><dl>{(english ? [['Space', 'Play / pause'], ['Ctrl + ← / →', 'Previous / next track'], ['← / →', 'Seek by 5 seconds'], ['M', 'Mute / unmute'], ['Ctrl + F / K', 'Search'], ['Ctrl + M', 'Mini player'], ['Esc', 'Clear selection'], ['F1', 'Open this help']] : [['Пробел', 'Воспроизведение / пауза'], ['Ctrl + ← / →', 'Предыдущий / следующий трек'], ['← / →', 'Перемотка на 5 секунд'], ['M', 'Выключить / включить звук'], ['Ctrl + F / K', 'Поиск'], ['Ctrl + M', 'Мини-плеер'], ['Esc', 'Снять выбор'], ['F1', 'Открыть эту справку']]).map(([key, label]) => <div key={key}><dt>{key}</dt><dd>{label}</dd></div>)}</dl><Dialog.Close className="secondary-button">{english ? 'Close' : 'Закрыть'}</Dialog.Close></Dialog.Content></Dialog.Portal></Dialog.Root></div></MemoryProfile.Provider>
 }

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { AudioLines, ArrowRight, LoaderCircle, Music2 } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { api } from './api'
-import { UpdateSettingsCard } from './Updater'
+import { UpdateNotice, UpdateSettingsCard } from './Updater'
 import { FASTCLOUD_SERVER_URL } from './server'
 import type { Connection } from './types'
 
@@ -38,6 +38,7 @@ export function LoginGate({ connection, connectionError, english }: { connection
 
   return <main className="login-screen"><div className="login-card">
     <div className="login-logo"><AudioLines size={24} strokeWidth={2.4} /><span>fastcloud</span></div>
+    <UpdateNotice english={english} />
     <div className="login-icon"><Music2 size={26} /></div>
     <h1>{english ? 'Your music starts here' : 'Твоя музыка начинается здесь'}</h1>
     <p className="login-description">{status}</p>
