@@ -1,3 +1,4 @@
+pub mod discord;
 pub mod hotkeys;
 pub mod media;
 pub mod single_instance;

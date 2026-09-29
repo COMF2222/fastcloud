@@ -3,6 +3,7 @@
 use anyhow::Result;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 /// Content-addressed on-disk cache for HLS segments and full previews.
@@ -15,24 +16,36 @@ use std::time::{Duration, SystemTime};
 /// ```
 pub struct AudioCache {
     root: PathBuf,
-    max_bytes: u64,
+    max_bytes: AtomicU64,
 }
 
 impl AudioCache {
     pub fn new(root: PathBuf, max_bytes: u64) -> Result<Self> {
         std::fs::create_dir_all(&root)?;
-        Ok(Self { root, max_bytes })
+        Ok(Self {
+            root,
+            max_bytes: AtomicU64::new(max_bytes),
+        })
     }
 
     pub fn disabled() -> Self {
         Self {
             root: PathBuf::new(),
-            max_bytes: 0,
+            max_bytes: AtomicU64::new(0),
         }
     }
 
     pub fn is_enabled(&self) -> bool {
-        self.max_bytes > 0
+        self.max_bytes.load(Ordering::Relaxed) > 0
+    }
+
+    pub fn set_max_bytes(&self, max_bytes: u64) {
+        self.max_bytes.store(max_bytes, Ordering::Relaxed);
+        self.enforce_quota();
+    }
+
+    pub fn max_bytes(&self) -> u64 {
+        self.max_bytes.load(Ordering::Relaxed)
     }
 
     fn hash_of(url: &str) -> String {
@@ -106,18 +119,19 @@ impl AudioCache {
 
     /// Evict LRU segments until total size is below `max_bytes`.
     pub fn enforce_quota(&self) {
-        if !self.is_enabled() {
+        let max_bytes = self.max_bytes();
+        if max_bytes == 0 {
             return;
         }
         let Ok(entries) = self.collect_entries() else {
             return;
         };
         let mut total: u64 = entries.iter().map(|(_, len)| len).sum();
-        if total <= self.max_bytes {
+        if total <= max_bytes {
             return;
         }
         for (path, len) in entries {
-            if total <= self.max_bytes {
+            if total <= max_bytes {
                 break;
             }
             if std::fs::remove_file(&path).is_ok() {
@@ -152,6 +166,26 @@ impl AudioCache {
         self.collect_entries()
             .map(|e| e.iter().map(|(_, l)| l).sum())
             .unwrap_or(0)
+    }
+
+    /// Delete every entry inside this cache root while keeping the root itself.
+    pub fn clear(&self) -> u64 {
+        if self.root.as_os_str().is_empty() {
+            return 0;
+        }
+        let before = self.total_size();
+        let Ok(entries) = std::fs::read_dir(&self.root) else {
+            return 0;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let _ = std::fs::remove_dir_all(path);
+            } else {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        before.saturating_sub(self.total_size())
     }
 }
 
@@ -193,5 +227,16 @@ mod tests {
                 .get_segment("track", "https://cdn.example/empty")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn changing_the_quota_evicts_oldest_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = AudioCache::new(dir.path().to_path_buf(), 1024).unwrap();
+        cache.put_segment("track", "https://cdn.example/one", &[1; 16]);
+
+        cache.set_max_bytes(1);
+
+        assert_eq!(cache.total_size(), 0);
     }
 }

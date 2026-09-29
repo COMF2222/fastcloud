@@ -198,7 +198,7 @@ async fn main() {
         (
             "ResolveEnchanted",
             "/resolve",
-            vec![("url", "https://soundcloud.com/your-profile".into())],
+            vec![("url", "https://soundcloud.com/soundcloud".into())],
         ),
         (
             "Related(293)",

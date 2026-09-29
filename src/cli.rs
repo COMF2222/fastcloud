@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use crate::player::RepeatMode;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 /// Raw `now-playing` field order (tab-separated, new fields appended only):
 /// state, title, artist, position_ms, duration_ms, volume, shuffle,
@@ -20,6 +20,19 @@ pub struct Cli {
     #[arg(long)]
     pub demo: bool,
 
+    /// Save a deterministic demo UI screenshot to this PNG and exit.
+    #[arg(long, value_name = "PATH", requires = "demo")]
+    pub screenshot: Option<std::path::PathBuf>,
+
+    /// Demo page captured by --screenshot.
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = ScreenshotPage::Home,
+        requires = "screenshot"
+    )]
+    pub screenshot_page: ScreenshotPage,
+
     /// Override client_id (takes precedence over saved settings)
     #[arg(long)]
     pub client_id: Option<String>,
@@ -33,6 +46,33 @@ pub struct Cli {
 
     #[command(subcommand)]
     pub command: Option<Command>,
+}
+
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScreenshotPage {
+    Home,
+    Discover,
+    Feed,
+    FeedScrolled,
+    Library,
+    LibrarySelection,
+    Search,
+    Settings,
+}
+
+impl std::fmt::Display for ScreenshotPage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Home => "home",
+            Self::Discover => "discover",
+            Self::Feed => "feed",
+            Self::FeedScrolled => "feed-scrolled",
+            Self::Library => "library",
+            Self::LibrarySelection => "library-selection",
+            Self::Search => "search",
+            Self::Settings => "settings",
+        })
+    }
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -283,6 +323,22 @@ mod tests {
     fn parse_play() {
         let cli = Cli::try_parse_from(["fastcloud", "play"]).unwrap();
         assert!(matches!(cli.command, Some(Command::Play)));
+    }
+
+    #[test]
+    fn screenshot_mode_requires_demo_and_parses_the_page() {
+        let cli = Cli::try_parse_from([
+            "fastcloud",
+            "--demo",
+            "--screenshot",
+            "airwave.png",
+            "--screenshot-page",
+            "settings",
+        ])
+        .unwrap();
+
+        assert_eq!(cli.screenshot_page, ScreenshotPage::Settings);
+        assert!(Cli::try_parse_from(["fastcloud", "--screenshot", "airwave.png"]).is_err());
     }
 
     #[test]

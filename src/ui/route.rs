@@ -6,6 +6,8 @@ use crate::api::models::{Track, User};
 #[derive(Debug, Clone, PartialEq)]
 pub enum Route {
     Home,
+    Discover,
+    Catalog,
     Feed,
     Library,
     Likes,

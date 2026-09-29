@@ -1,0 +1,9 @@
+The Fastcloud Windows installer includes quantized CLAP model weights from
+Xenova/larger_clap_music_and_speech, derived from
+laion/larger_clap_music_and_speech. The original LAION model is licensed under
+the Apache License, Version 2.0. The bundled weights are obtained from the
+pinned Xenova revision documented in tools/prepare_private_clap.ps1.
+
+Model: https://huggingface.co/laion/larger_clap_music_and_speech
+Quantized weights: https://huggingface.co/Xenova/larger_clap_music_and_speech
+License: see LICENSE-APACHE-2.0.txt in the same directory.

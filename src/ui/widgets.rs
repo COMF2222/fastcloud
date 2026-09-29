@@ -3,6 +3,7 @@ use crate::util::{fmt_duration_ms, play_count};
 use eframe::egui;
 
 use super::App;
+use super::design::{components, widgets as airwave};
 use super::theme::{Metrics, Type};
 
 /// Artwork edge of a standard content card (`--artwork-20x-size`). Carousel
@@ -11,6 +12,120 @@ pub const CARD_ART: f32 = 160.0;
 
 /// Row artwork (`--artwork-5x-size`).
 const ROW_ART: f32 = 40.0;
+
+pub struct MediaHero<'a> {
+    pub artwork: Option<&'a str>,
+    pub seed: u64,
+    pub title: &'a str,
+    pub round_artwork: bool,
+}
+
+/// Shared Airwave masthead for tracks, playlists and artist profiles.
+/// Its ambient field follows the loaded artwork's average colour and falls
+/// back to the same deterministic palette as missing covers.
+pub fn media_hero<R>(
+    app: &mut App,
+    ui: &mut egui::Ui,
+    hero: MediaHero<'_>,
+    content: impl FnOnce(&mut App, &mut egui::Ui) -> R,
+) -> R {
+    let width = ui.available_width().max(1.0);
+    let compact = width < 620.0;
+    let height = if compact { 184.0 } else { 220.0 };
+    let art_size = if compact { 120.0 } else { 172.0 };
+    let ambient = hero
+        .artwork
+        .and_then(|url| app.art.dominant_color_for_ui(ui.ctx(), url, art_size))
+        .unwrap_or_else(|| art_color(hero.seed));
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+    paint_media_ambient(ui, rect, ambient, app.theme);
+    let inner = rect.shrink(if compact {
+        Metrics::SP_15
+    } else {
+        Metrics::SP_2
+    });
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(inner)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        |ui| {
+            ui.spacing_mut().item_spacing.x = if compact {
+                Metrics::SP_15
+            } else {
+                Metrics::SP_3
+            };
+            artwork_img(
+                ui,
+                hero.artwork,
+                hero.seed,
+                hero.title,
+                art_size,
+                if hero.round_artwork {
+                    art_size / 2.0
+                } else {
+                    Metrics::RADIUS_LG as f32
+                },
+            );
+            // Detail mastheads read as one composition: artwork on the left,
+            // then a left-aligned information stack.  Centering the stack in
+            // the remaining (usually very wide) band made titles and actions
+            // look detached from their artwork, especially at 1280px+.
+            ui.vertical(|ui| {
+                ui.set_width(ui.available_width());
+                content(app, ui)
+            })
+            .inner
+        },
+    )
+    .inner
+}
+
+fn paint_media_ambient(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    ambient: egui::Color32,
+    theme: super::theme::Theme,
+) {
+    airwave::paint_glass_rect(ui, rect, Metrics::RADIUS_LG, theme, true, Some(ambient));
+    let glow = egui::Rect::from_center_size(
+        egui::pos2(rect.left() + rect.width() * 0.14, rect.center().y),
+        egui::vec2(rect.width() * 0.24, rect.height() * 0.42),
+    );
+    let painter = ui.painter().with_clip_rect(rect.shrink(1.0));
+    painter.add(
+        egui::epaint::Shadow {
+            offset: [0, 0],
+            blur: 110,
+            spread: 20,
+            color: ambient.gamma_multiply(if theme.dark { 0.28 } else { 0.18 }),
+        }
+        .as_shape(glow, Metrics::RADIUS_LG),
+    );
+    let orbit_center = egui::pos2(rect.right() - 72.0, rect.top() + 40.0);
+    for radius in [95.0, 150.0, 215.0] {
+        painter.circle_stroke(
+            orbit_center,
+            radius,
+            egui::Stroke::new(1.0, ambient.gamma_multiply(0.17)),
+        );
+    }
+    painter.line_segment(
+        [
+            egui::pos2(rect.left() + 18.0, rect.top() + 1.0),
+            egui::pos2(
+                (rect.left() + 196.0).min(rect.right() - 18.0),
+                rect.top() + 1.0,
+            ),
+        ],
+        egui::Stroke::new(1.5, ambient.gamma_multiply(0.74)),
+    );
+    ui.painter().rect_stroke(
+        rect.shrink(0.5),
+        Metrics::RADIUS_LG,
+        egui::Stroke::new(1.0, theme.tokens.glass_border),
+        egui::StrokeKind::Inside,
+    );
+}
 
 /// Deterministic placeholder-artwork color derived from an id.
 pub fn art_color(id: u64) -> egui::Color32 {
@@ -45,42 +160,72 @@ pub fn artwork_img(
 ) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
     if ui.is_rect_visible(rect) {
-        let mut painted = false;
-        if let Some(url) = url.filter(|u| !u.is_empty()) {
-            let img = egui::Image::new(url)
-                .show_loading_spinner(false)
-                .fit_to_exact_size(egui::vec2(size, size))
-                .corner_radius(rounding)
-                .sense(egui::Sense::hover());
-            if let Ok(egui::load::TexturePoll::Ready { .. }) =
-                img.load_for_size(ui.ctx(), rect.size())
-            {
-                img.paint_at(ui, rect);
-                painted = true;
+        match url.filter(|url| !url.is_empty()) {
+            Some(url) => {
+                let resolved_url = crate::images::artwork_url_for_ui(ui.ctx(), url, size);
+                crate::images::mark_artwork_visible(ui.ctx(), resolved_url.as_ref());
+                let img = egui::Image::new(resolved_url.as_ref())
+                    .show_loading_spinner(false)
+                    .fit_to_exact_size(egui::vec2(size, size))
+                    .corner_radius(rounding)
+                    .sense(egui::Sense::hover());
+                match img.load_for_size(ui.ctx(), rect.size()) {
+                    Ok(egui::load::TexturePoll::Ready { .. }) => img.paint_at(ui, rect),
+                    Ok(egui::load::TexturePoll::Pending { .. }) => {
+                        paint_loading_art(ui, rect, rounding)
+                    }
+                    Err(_) => paint_missing_art(ui, rect, seed, rounding),
+                }
             }
-        }
-        if !painted {
-            paint_placeholder(ui, rect, seed, title, rounding);
+            None => paint_missing_art(ui, rect, seed, rounding),
         }
     }
+    airwave::paint_focus_ring(ui, &resp, ui.visuals().selection.stroke.color, rounding);
+    resp.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Open {title}"))
+    });
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(title)
 }
 
-fn paint_placeholder(ui: &egui::Ui, rect: egui::Rect, seed: u64, title: &str, rounding: f32) {
-    let size = rect.width();
+fn paint_loading_art(ui: &egui::Ui, rect: egui::Rect, rounding: f32) {
+    let visuals = ui.visuals();
     let painter = ui.painter();
-    painter.rect_filled(rect, rounding, art_color(seed));
-    let letter = title
-        .chars()
-        .find(|c| !c.is_whitespace())
-        .map(|c| c.to_uppercase().to_string())
-        .unwrap_or_else(|| "♪".to_owned());
+    let loading_bg = if visuals.dark_mode {
+        egui::Color32::from_rgb(30, 30, 30)
+    } else {
+        egui::Color32::from_rgb(232, 232, 232)
+    };
+    painter.rect_filled(rect, rounding, loading_bg);
+    painter.rect_stroke(
+        rect.shrink(0.5),
+        rounding,
+        egui::Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color),
+        egui::StrokeKind::Inside,
+    );
+    let spinner_size = (rect.width().min(rect.height()) * 0.22).clamp(14.0, 30.0);
+    let spinner_rect = egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(spinner_size));
+    egui::Spinner::new()
+        .size(spinner_size)
+        .color(visuals.selection.stroke.color)
+        .paint_at(ui, spinner_rect);
+}
+
+fn paint_missing_art(ui: &egui::Ui, rect: egui::Rect, seed: u64, rounding: f32) {
+    let size = rect.width().min(rect.height());
+    let painter = ui.painter();
+    painter.rect_filled(rect, rounding, art_color(seed).gamma_multiply(0.48));
+    painter.circle_filled(
+        rect.center() + egui::vec2(size * 0.2, -size * 0.2),
+        size * 0.33,
+        egui::Color32::from_white_alpha(18),
+    );
     painter.text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
-        letter,
-        egui::FontId::proportional((size * 0.42).clamp(10.0, 64.0)),
-        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 230),
+        "♪",
+        egui::FontId::proportional((size * 0.34).clamp(12.0, 52.0)),
+        egui::Color32::from_white_alpha(210),
     );
 }
 
@@ -125,6 +270,7 @@ pub fn track_row(
         .interact(body.response.rect, bg_id, egui::Sense::click())
         .on_hover_cursor(egui::CursorIcon::PointingHand);
     let bg_clicked = bg.clicked();
+    airwave::paint_focus_ring(ui, &bg, app.theme.tokens.accent_hover, Metrics::RADIUS);
     if multi_picked {
         let count = multi_count;
         bg.context_menu(|ui| {
@@ -202,7 +348,7 @@ fn single_menu(app: &mut App, ui: &mut egui::Ui, track: &Track, track_id: u64) {
 
 /// Multi-track menu for a picked selection (table order, like fastpotify's
 /// `picked_menu`): one explicit liked state, queue/like/playlist for all.
-fn picked_menu(app: &mut App, ui: &mut egui::Ui, songs: &[Track], count: usize) {
+pub(super) fn picked_menu(app: &mut App, ui: &mut egui::Ui, songs: &[Track], count: usize) {
     ui.set_min_width(220.0);
     ui.label(Type::CAPTION.rich(&format!("{count} songs"), app.theme.text_dim));
     ui.separator();
@@ -576,6 +722,12 @@ pub fn follow_button(app: &mut App, ui: &mut egui::Ui, user_id: u64, name: &str)
         );
         ui.painter().galley(pos, galley, color);
     }
+    airwave::paint_focus_ring(
+        ui,
+        &resp,
+        app.theme.tokens.accent_hover,
+        rect.height() / 2.0,
+    );
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
     if resp.clicked() {
         let now = app.toggle_follow(user_id);
@@ -753,7 +905,7 @@ pub struct CardClick {
 /// A builder rather than eight positional arguments: the four strings were
 /// interchangeable at the call site, which is how a subtitle ends up in the
 /// title slot.
-pub struct Card<'a> {
+pub struct MediaCard<'a> {
     /// Cover URL, when the API gave one. The placeholder stands in otherwise.
     pub art: Option<&'a str>,
     /// Seeds the placeholder's colour and letter — usually the entity's id.
@@ -770,7 +922,7 @@ pub struct Card<'a> {
     pub title_opens: bool,
 }
 
-impl<'a> Card<'a> {
+impl<'a> MediaCard<'a> {
     /// A track card: cover, artist over title, title plays.
     pub fn track(track: &'a Track) -> Self {
         Self {
@@ -819,8 +971,8 @@ impl<'a> Card<'a> {
 /// Draw a content card: artwork with a hover play overlay, then the artist
 /// line and the title, as soundcloud.com stacks them (`.sc-text-h4` title over
 /// a `.sc-text-secondary` line). Artwork click always plays.
-pub fn card(app: &mut App, ui: &mut egui::Ui, card: Card<'_>) -> CardClick {
-    let Card {
+pub fn media_card(app: &mut App, ui: &mut egui::Ui, card: MediaCard<'_>) -> CardClick {
+    let MediaCard {
         art: art_url,
         seed,
         title,
@@ -836,7 +988,14 @@ pub fn card(app: &mut App, ui: &mut egui::Ui, card: Card<'_>) -> CardClick {
         ui.spacing_mut().item_spacing.y = 2.0;
         ui.set_min_width(size);
         ui.set_max_width(size);
-        let art = artwork_img(ui, art_url, seed, title, size, Metrics::RADIUS as f32);
+        let art = artwork_img(
+            ui,
+            art_url,
+            seed,
+            title,
+            size,
+            components::CARD_RADIUS as f32,
+        );
         if art.hovered() {
             // Play overlay disc with a triangle (avoids font glyphs).
             let rect = art.rect;
@@ -925,6 +1084,38 @@ pub fn section_header(app: &App, ui: &mut egui::Ui, title: &str) {
 /// Scrollbar hidden; arrows page by 80% of the visible width. `pending` is
 /// a one-frame scroll target (applied once so manual scrolling keeps working).
 /// Returns the inner value plus the visible/content widths for arrows.
+/// Reserve the entire strip, but build only cards near the viewport.
+/// Callers must keep each card within `size` (including its text lines).
+pub fn virtual_card_strip(
+    ui: &mut egui::Ui,
+    count: usize,
+    size: egui::Vec2,
+    mut card: impl FnMut(&mut egui::Ui, usize),
+) {
+    if count == 0 {
+        return;
+    }
+    let stride = size.x + ui.spacing().item_spacing.x;
+    let total_width = size.x + (count - 1) as f32 * stride;
+    let (_, strip) = ui.allocate_space(egui::vec2(total_width, size.y));
+    if !ui.is_rect_visible(strip) {
+        return;
+    }
+    let clip = ui.clip_rect();
+    let (first, last) = visible_range(count, stride, strip.left(), clip.left(), clip.right());
+    for index in first..last {
+        let rect =
+            egui::Rect::from_min_size(strip.min + egui::vec2(index as f32 * stride, 0.0), size);
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt(("virtual-card", index))
+                .max_rect(rect)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        card(&mut child, index);
+    }
+}
+
 pub fn carousel_plain<R>(
     ui: &mut egui::Ui,
     salt: &str,
@@ -1128,6 +1319,63 @@ pub fn visible_range(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn strip_probe(offset: f32, hidden: bool) -> (Vec<usize>, f32) {
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(300.0, 200.0))
+            .build_ui_state(
+                move |ui, state: &mut (Vec<usize>, f32)| {
+                    state.0.clear();
+                    if hidden {
+                        ui.add_space(500.0);
+                    }
+                    let out = egui::ScrollArea::horizontal()
+                        .horizontal_scroll_offset(offset)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 10.0;
+                                virtual_card_strip(
+                                    ui,
+                                    10_000,
+                                    egui::vec2(100.0, 140.0),
+                                    |ui, index| {
+                                        state.0.push(index);
+                                        ui.label(format!("Card {index}"));
+                                    },
+                                );
+                            });
+                        });
+                    state.1 = out.content_size.x;
+                },
+                (Vec::new(), 0.0),
+            );
+        harness.run();
+        harness.state().clone()
+    }
+
+    #[test]
+    fn cold_card_strip_builds_only_viewport_cards() {
+        let (cards, _) = strip_probe(0.0, false);
+        assert_eq!(cards, [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn card_strip_keeps_full_scroll_width() {
+        let (_, width) = strip_probe(0.0, false);
+        assert_eq!(width, 1_099_990.0);
+    }
+
+    #[test]
+    fn card_strip_scrolls_to_distant_items() {
+        let (cards, _) = strip_probe(10_000.0, false);
+        assert_eq!(cards, [90, 91, 92, 93, 94]);
+    }
+
+    #[test]
+    fn vertically_hidden_card_strip_builds_no_cards() {
+        let (cards, _) = strip_probe(0.0, true);
+        assert!(cards.is_empty());
+    }
 
     #[test]
     fn art_color_is_deterministic() {

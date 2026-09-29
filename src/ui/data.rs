@@ -17,7 +17,7 @@
 //! of being reinvented per view.
 
 use super::App;
-use super::theme::{Metrics, Type};
+use super::design::widgets::{self as airwave, ViewState};
 use crate::api::models::{Playlist, Track, User};
 use crate::store::{Key, Slot};
 use eframe::egui;
@@ -180,21 +180,41 @@ impl App {
 pub fn placeholder<T>(app: &App, ui: &mut egui::Ui, slot: &Slot<Vec<T>>, empty: &str) -> bool {
     match slot {
         Slot::Ready(rows) if rows.is_empty() => {
-            ui.add_space(Metrics::SP_1);
-            ui.label(Type::BODY.rich(empty, app.theme.text_dim));
+            airwave::state_panel(
+                ui,
+                app.theme,
+                ViewState::Empty {
+                    title: "Nothing here yet",
+                    detail: empty,
+                },
+            );
             true
         }
         Slot::Ready(_) => false,
         Slot::Loading => {
-            loading_row(app, ui);
+            airwave::state_panel(ui, app.theme, ViewState::Loading("Loading…"));
             true
         }
         Slot::Failed(why) => {
-            failed_row(app, ui, why);
+            airwave::state_panel(
+                ui,
+                app.theme,
+                ViewState::Error {
+                    title: "That didn't load",
+                    detail: why,
+                },
+            );
             true
         }
         Slot::Unavailable => {
-            sign_in_row(app, ui);
+            airwave::state_panel(
+                ui,
+                app.theme,
+                ViewState::Empty {
+                    title: "Account data unavailable",
+                    detail: "Sign in to load this collection.",
+                },
+            );
             true
         }
     }
@@ -205,39 +225,32 @@ pub fn placeholder_one<T>(app: &App, ui: &mut egui::Ui, slot: &Slot<T>) -> bool 
     match slot {
         Slot::Ready(_) => false,
         Slot::Loading => {
-            loading_row(app, ui);
+            airwave::state_panel(ui, app.theme, ViewState::Loading("Loading…"));
             true
         }
         Slot::Failed(why) => {
-            failed_row(app, ui, why);
+            airwave::state_panel(
+                ui,
+                app.theme,
+                ViewState::Error {
+                    title: "That didn't load",
+                    detail: why,
+                },
+            );
             true
         }
         Slot::Unavailable => {
-            sign_in_row(app, ui);
+            airwave::state_panel(
+                ui,
+                app.theme,
+                ViewState::Empty {
+                    title: "Account data unavailable",
+                    detail: "Sign in to load this item.",
+                },
+            );
             true
         }
     }
-}
-
-fn loading_row(app: &App, ui: &mut egui::Ui) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = Metrics::SP_1;
-        super::icons::spinner(ui, 16.0, app.theme.text_dim);
-        ui.label(Type::CAPTION.rich("Loading…", app.theme.text_dim));
-    });
-}
-
-fn failed_row(app: &App, ui: &mut egui::Ui, why: &str) {
-    ui.add_space(Metrics::SP_1);
-    ui.label(Type::BODY.rich("That didn't load.", app.theme.text));
-    ui.label(Type::CAPTION.rich(why, app.theme.text_dim));
-}
-
-/// The one thing an app-only token cannot do is read the account, so say so
-/// and point at the button that fixes it.
-fn sign_in_row(app: &App, ui: &mut egui::Ui) {
-    ui.add_space(Metrics::SP_1);
-    ui.label(Type::BODY.rich("This account data is unavailable.", app.theme.text_dim));
 }
 
 // ===========================================================================
@@ -307,6 +320,11 @@ fn demo_users(key: &Key) -> Vec<User> {
             username: artist.name,
             permalink: None,
             avatar_url: None,
+            full_name: None,
+            description: None,
+            city: None,
+            country_code: None,
+            permalink_url: None,
             followers_count: artist.followers,
             followings_count: 0,
             track_count: 0,

@@ -10,6 +10,8 @@
 
 use eframe::egui;
 
+use super::design::{components, widgets as airwave};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum Icon {
@@ -43,6 +45,7 @@ pub enum Icon {
     External,
     Clock,
     Cloud,
+    Globe,
     Music,
     ListPlus,
     Check,
@@ -104,6 +107,7 @@ pub fn source(icon: Icon) -> egui::ImageSource<'static> {
         Icon::External => egui::include_image!("../../assets/icons/external-link.svg"),
         Icon::Clock => egui::include_image!("../../assets/icons/clock.svg"),
         Icon::Cloud => egui::include_image!("../../assets/icons/cloud.svg"),
+        Icon::Globe => egui::include_image!("../../assets/icons/globe.svg"),
         Icon::Music => egui::include_image!("../../assets/icons/music.svg"),
         Icon::ListPlus => egui::include_image!("../../assets/icons/list-plus.svg"),
         Icon::Check => egui::include_image!("../../assets/icons/check.svg"),
@@ -178,6 +182,23 @@ pub fn icon_button(
         };
         paint(ui, icon, rect, size * scale, tint);
     }
+    airwave::paint_focus_ring(
+        ui,
+        &response,
+        ui.visuals().selection.stroke.color,
+        components::CONTROL_RADIUS,
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            true,
+            if tooltip.is_empty() {
+                "Icon button"
+            } else {
+                tooltip
+            },
+        )
+    });
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
     if tooltip.is_empty() {
         response
@@ -207,6 +228,23 @@ pub fn circle_button(
         let icon_size = diameter * 0.46;
         paint(ui, icon, rect, icon_size, icon_color);
     }
+    airwave::paint_focus_ring(
+        ui,
+        &response,
+        ui.visuals().selection.stroke.color,
+        diameter / 2.0,
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            true,
+            if tooltip.is_empty() {
+                "Icon button"
+            } else {
+                tooltip
+            },
+        )
+    });
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
     if tooltip.is_empty() {
         response
@@ -219,10 +257,20 @@ pub fn circle_button(
 pub fn spinner(ui: &mut egui::Ui, size: f32, color: egui::Color32) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(size), egui::Sense::hover());
     if ui.is_rect_visible(rect) {
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(33));
+        let reduced_motion = ui.ctx().data(|data| {
+            data.get_temp::<bool>(egui::Id::new("fastcloud::reduced-motion"))
+                .unwrap_or(false)
+        });
+        if !reduced_motion {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(33));
+        }
         let radius = size / 2.0 - 2.0;
-        let start = ui.input(|input| input.time) * std::f64::consts::TAU * 1.2;
+        let start = if reduced_motion {
+            0.0
+        } else {
+            ui.input(|input| input.time) * std::f64::consts::TAU * 1.2
+        };
         let sweep = 250_f64.to_radians();
         let points = (0..20)
             .map(|index| {
@@ -301,6 +349,7 @@ mod tests {
             Icon::External,
             Icon::Clock,
             Icon::Cloud,
+            Icon::Globe,
             Icon::Music,
             Icon::ListPlus,
             Icon::Check,
@@ -328,7 +377,7 @@ mod tests {
         ];
         // include_image! fails to compile on missing files, so reaching
         // here already proves the assets exist; this just pins the count.
-        assert_eq!(icons.len(), 54);
+        assert_eq!(icons.len(), 55);
         let _ = icons.map(source);
     }
 }

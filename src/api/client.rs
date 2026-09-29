@@ -386,6 +386,19 @@ impl ApiClient {
             if status == reqwest::StatusCode::UNAUTHORIZED {
                 return Err(ApiError::Unauthorized);
             }
+            if method == reqwest::Method::GET
+                && status.is_server_error()
+                && status != reqwest::StatusCode::GATEWAY_TIMEOUT
+                && attempt < 1
+            {
+                // One quick retry can recover a transient server error. A
+                // gateway timeout has already kept the UI waiting, so return
+                // it and let the page's retry timer try again later.
+                let wait_ms = 500u64 * (1 << attempt);
+                attempt += 1;
+                tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+                continue;
+            }
             if !status.is_success() {
                 return Err(ApiError::Http {
                     status: status.as_u16(),

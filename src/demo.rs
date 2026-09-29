@@ -45,6 +45,7 @@ pub fn demo_tracks() -> Vec<Track> {
             preview_start_ms: None,
             preview_end_ms: None,
             genre: Some("ambient".into()),
+            tag_list: None,
             description: Some("Demo track generated offline.".into()),
             created_at: Some("2025-01-01T00:00:00Z".into()),
             permalink_url: None,
@@ -70,21 +71,32 @@ pub fn demo_me() -> Me {
 pub fn demo_playlists() -> Vec<crate::api::models::Playlist> {
     use crate::api::models::Playlist;
     let names = [
-        (2001u64, "Neon Nights", 4u64),
-        (2002, "Low Tide Radio", 3),
-        (2003, "Concrete Garden Mix", 5),
+        (2001u64, "Neon Nights", 4u64, false),
+        (2002, "Low Tide Radio", 3, false),
+        (2003, "Concrete Garden Mix", 5, false),
+        (2101, "Afterglow", 8, true),
+        (2102, "Blue Hours", 6, true),
+        (2103, "Static Flowers", 9, true),
+        (2104, "Glass Horizon", 11, true),
+        (2105, "Night Transit", 7, true),
+        (2106, "Quiet Signal", 10, true),
+        (2107, "Soft Machines", 8, true),
+        (2108, "Past Midnight", 12, true),
     ];
     names
         .iter()
-        .map(|(id, title, count)| Playlist {
+        .map(|(id, title, count, is_album)| Playlist {
             id: *id,
             title: (*title).into(),
             artwork: None,
             artwork_url: None,
             user: None,
             track_count: Some(*count),
+            genre: None,
+            tag_list: None,
+            likes_count: None,
             duration_ms: None,
-            is_album: false,
+            is_album: *is_album,
             playlist_type: None,
             set_type: None,
             created_at: None,
@@ -453,6 +465,7 @@ fn demo_track_stub() -> crate::api::models::Track {
         preview_start_ms: None,
         preview_end_ms: None,
         genre: None,
+        tag_list: None,
         description: None,
         created_at: None,
         permalink_url: None,

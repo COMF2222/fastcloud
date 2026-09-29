@@ -1,0 +1,3182 @@
+#![allow(dead_code)]
+
+#[path = "../../../src/api/mod.rs"]
+mod api;
+#[path = "../../../src/audio/mod.rs"]
+mod audio;
+#[path = "../../../src/auth/mod.rs"]
+mod auth;
+#[path = "../../../src/config.rs"]
+mod config;
+#[path = "../../../src/demo.rs"]
+mod demo;
+#[path = "../../../src/desktop/discord.rs"]
+mod discord;
+#[path = "../../../src/import_yandex.rs"]
+mod import_yandex;
+#[path = "../../../src/link.rs"]
+mod link;
+mod media;
+mod offline;
+mod wave;
+#[path = "../../../src/player/mod.rs"]
+mod player;
+#[path = "../../../src/skin/zip.rs"]
+mod skin_zip;
+#[path = "../../../src/store.rs"]
+mod store;
+#[path = "../../../src/ui/vibe.rs"]
+mod vibe;
+#[path = "../../../src/vis.rs"]
+mod vis;
+mod artwork;
+mod clap;
+mod lyrics;
+
+// Legacy settings keep these enum/constant names. They are data compatibility
+// shims; no egui code is compiled into the Tauri application.
+mod ui {
+    pub mod visualiser {
+        #[derive(
+            Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize,
+        )]
+        pub enum Mode {
+            #[default]
+            Spectrum,
+            Scope,
+            Off,
+        }
+    }
+}
+mod skin {
+    pub mod layout {
+        pub mod pl {
+            pub const DEFAULT_ROWS: u32 = 8;
+        }
+    }
+}
+
+use api::models::{Comment, Me, Playlist, Track, User, WebProfile};
+use parking_lot::Mutex;
+use player::{Player, RepeatMode};
+use serde::Serialize;
+use std::sync::Arc;
+use store::{Key, Slot, Store};
+use tauri::Manager;
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+
+struct AppState {
+    rt: tokio::runtime::Runtime,
+    client: Arc<api::ApiClient>,
+    player: Option<Arc<Player>>,
+    store: Store,
+    session: Arc<Mutex<Option<Arc<auth::Session>>>>,
+    settings: Arc<Mutex<config::Settings>>,
+    connection: Arc<Mutex<Connection>>,
+    presence: discord::Presence,
+    import: Arc<Mutex<ImportStatus>>,
+    pending_link: Mutex<Option<String>>,
+    demo_reposted_tracks: Mutex<std::collections::HashSet<u64>>,
+    demo_reposted_playlists: Mutex<std::collections::HashSet<u64>>,
+    demo_liked_playlists: Mutex<std::collections::HashSet<u64>>,
+    last_eq_track: Mutex<Option<u64>>,
+    last_presence: Mutex<Option<PresenceStamp>>,
+    visualiser: Mutex<vis::Analyser>,
+    image_cache: artwork::ArtworkCache,
+    wave: Arc<wave::Engine>,
+    wave_session: Arc<Mutex<Option<WaveSession>>>,
+}
+
+struct WaveSession {
+    likes: Vec<Track>,
+    seen: std::collections::HashSet<u64>,
+    seen_identities: Vec<wave::TrackIdentity>,
+    started_at: std::time::Instant,
+    variation: u32,
+    busy: bool,
+    last_attempt: Option<std::time::Instant>,
+}
+
+#[derive(Clone, Copy)]
+struct PresenceStamp {
+    track_id: u64,
+    position_ms: u64,
+    duration_ms: u64,
+    playing: bool,
+    loading: bool,
+    speed: f32,
+    sent_at: std::time::Instant,
+}
+
+fn presence_due(previous: Option<PresenceStamp>, current: PresenceStamp) -> bool {
+    let Some(previous) = previous else { return true };
+    if previous.track_id != current.track_id
+        || previous.duration_ms != current.duration_ms
+        || previous.playing != current.playing
+        || previous.loading != current.loading
+        || previous.speed != current.speed
+    {
+        return true;
+    }
+    let elapsed = current.sent_at.saturating_duration_since(previous.sent_at);
+    if elapsed >= std::time::Duration::from_secs(30) { return true; }
+    let expected = previous.position_ms.saturating_add(
+        if current.playing && !current.loading {
+            (elapsed.as_millis() as f32 * current.speed) as u64
+        } else { 0 }
+    );
+    expected.abs_diff(current.position_ms) > 1_000
+}
+
+#[cfg(test)]
+#[test]
+fn presence_skips_regular_progress_but_updates_for_seek_and_pause() {
+    let start = PresenceStamp {
+        track_id: 7, position_ms: 0, duration_ms: 180_000,
+        playing: true, loading: false, speed: 1.0,
+        sent_at: std::time::Instant::now(),
+    };
+    assert!(presence_due(None, start));
+    let progress = PresenceStamp {
+        position_ms: 500,
+        sent_at: start.sent_at + std::time::Duration::from_millis(500),
+        ..start
+    };
+    assert!(!presence_due(Some(start), progress));
+    assert!(presence_due(Some(start), PresenceStamp { position_ms: 10_000, ..progress }));
+    assert!(presence_due(Some(start), PresenceStamp { playing: false, ..progress }));
+    assert!(presence_due(Some(start), PresenceStamp {
+        position_ms: 30_000,
+        sent_at: start.sent_at + std::time::Duration::from_secs(30),
+        ..start
+    }));
+}
+
+fn append_wave_tracks(
+    player: &Arc<Player>,
+    wave_session: &Arc<Mutex<Option<WaveSession>>>,
+    started_at: std::time::Instant,
+    generated: Result<Vec<Track>, String>,
+) {
+    let mut guard = wave_session.lock();
+    if let Some(session) = guard.as_mut().filter(|session| session.started_at == started_at) {
+        match generated {
+            Ok(tracks) => {
+                let queued: std::collections::HashSet<_> = player.state.lock().queue.iter()
+                    .map(|track| track.id).collect();
+                let mut fresh = Vec::new();
+                for track in tracks {
+                    if queued.contains(&track.id) || session.seen.contains(&track.id) { continue; }
+                    let identity = wave::track_identity(&track);
+                    if session.seen_identities.iter().any(|previous| wave::same_recording(previous, &identity)) { continue; }
+                    session.seen.insert(track.id);
+                    session.seen_identities.push(identity);
+                    fresh.push(track);
+                }
+                if !fresh.is_empty() {
+                    player.enqueue(fresh, false);
+                    player.trim_played_history(120, 15);
+                }
+            }
+            Err(error) => log::warn!("My Wave refill failed: {error}"),
+        }
+        session.busy = false;
+    }
+}
+
+#[derive(Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ImportStatus {
+    running: bool,
+    current: usize,
+    total: usize,
+    matched: usize,
+    title: String,
+    message: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LinkResult {
+    kind: String,
+    id: u64,
+    title: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum Connection {
+    Demo,
+    Public,
+    SignedIn,
+    Connecting,
+    Pairing { code: String, url: String },
+    Registering,
+    Error { message: String },
+}
+
+#[derive(Serialize, serde::Deserialize)]
+struct ApprovalUser {
+    id: u64,
+    username: String,
+    status: String,
+    updated_at: i64,
+}
+
+#[derive(serde::Deserialize)]
+struct ApprovalUsers { users: Vec<ApprovalUser> }
+
+#[derive(Serialize)]
+#[serde(tag = "status", content = "data", rename_all = "snake_case")]
+enum Data<T: Serialize> {
+    Loading,
+    Ready(T),
+    Failed(String),
+    Unavailable,
+}
+
+impl<T: Serialize> From<Slot<T>> for Data<T> {
+    fn from(slot: Slot<T>) -> Self {
+        match slot {
+            Slot::Loading => Self::Loading,
+            Slot::Ready(value) => Self::Ready(value),
+            Slot::Failed(error) => Self::Failed(error),
+            Slot::Unavailable => Self::Unavailable,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlayerView {
+    queue: Option<Vec<Track>>,
+    queue_revision: u64,
+    current: Option<usize>,
+    wave_active: bool,
+    is_playing: bool,
+    loading: bool,
+    position_ms: u64,
+    duration_ms: u64,
+    volume: f32,
+    playback_speed: f32,
+    shuffle: bool,
+    repeat: RepeatMode,
+    ab_start_ms: Option<u64>,
+    ab_end_ms: Option<u64>,
+    bitrate_kbps: u32,
+    sample_rate: u32,
+    error: Option<String>,
+}
+
+impl AppState {
+    fn new() -> anyhow::Result<Self> {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()?;
+        let mut settings = config::Settings::load().unwrap_or_default();
+        if settings.discord_client_id.is_empty() {
+            settings.discord_client_id = option_env!("FASTCLOUD_DISCORD_CLIENT_ID")
+                .unwrap_or_default()
+                .to_owned();
+        }
+        let has_credentials = auth::AppCredentials::discover().is_some();
+        let demo = !has_credentials || std::env::args().any(|arg| arg == "--demo");
+        let client = Arc::new(api::ApiClient::new(
+            auth::AppCredentials::discover().map(|creds| creds.client_id),
+            demo,
+        ));
+        let store = Store::new(client.clone(), rt.handle().clone());
+
+        let player = match (|| -> anyhow::Result<Arc<Player>> {
+            let paths = config::app_paths()?;
+            let cache = Arc::new(audio::cache::AudioCache::new(
+                paths.audio_cache,
+                settings.audio_cache_limit_mb.saturating_mul(1024 * 1024),
+            )?);
+            let output = Arc::new(audio::output::AudioOutput::open(
+                settings.eq_gains_db,
+                settings.volume,
+            )?);
+            let player = Arc::new(Player::new(
+                output,
+                client.clone(),
+                cache.clone(),
+                config::settings_path()?,
+                rt.handle().clone(),
+            ));
+            player.attach();
+            player.set_autoplay(settings.autoplay);
+            player.restore_controls(settings.volume, settings.balance, settings.mono);
+            player.set_eq(settings.eq_enabled, settings.eq_gains_db);
+            player.set_eq_preamp_db(settings.eq_preamp_db);
+            if demo {
+                player.set_demo(true);
+                let tracks = demo::demo_tracks();
+                let mut state = player.state.lock();
+                state.queue = tracks;
+                state.queue_revision = state.queue_revision.wrapping_add(1);
+                state.order = (0..state.queue.len()).collect();
+                state.current = None;
+            } else if !settings.last_queue.is_empty() {
+                player.restore_session(settings.last_queue.clone(), settings.last_queue_idx);
+            }
+            player.start_paused();
+            rt.spawn(player.clone().run());
+            rt.spawn(audio::cache::quota_task(
+                cache,
+                std::time::Duration::from_secs(300),
+            ));
+            Ok(player)
+        })() {
+            Ok(player) => Some(player),
+            Err(error) => {
+                log::error!("audio unavailable: {error:#}");
+                None
+            }
+        };
+        let presence = discord::Presence::spawn();
+        if settings.discord_presence {
+            presence.configure(Some(settings.discord_client_id.clone()));
+        }
+        let wave = Arc::new(wave::Engine::new(config::app_paths()?.root.join("my-wave-profile.json")));
+        let restored_wave = if settings.last_wave_active && !demo {
+            player.as_ref().and_then(|player| {
+                let playback = player.state.lock();
+                playback.current.map(|_| {
+                    let queue = playback.queue.clone();
+                    WaveSession {
+                        likes: queue.clone(),
+                        seen: queue.iter().map(|track| track.id).collect(),
+                        seen_identities: queue.iter().map(wave::track_identity).collect(),
+                        started_at: std::time::Instant::now(),
+                        variation: (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() / 60) as u32,
+                        busy: false,
+                        last_attempt: None,
+                    }
+                })
+            })
+        } else { None };
+        let wave_session = Arc::new(Mutex::new(restored_wave));
+        if let Some(player) = player.clone() {
+            let wave = wave.clone();
+            let wave_session = wave_session.clone();
+            let client = client.clone();
+            rt.spawn(async move {
+                loop {
+                    let snapshot = {
+                        let state = player.state.lock();
+                        let remaining = state.current.and_then(|current| state.order.iter()
+                            .position(|&index| index == current)
+                            .map(|position| state.order.len().saturating_sub(position)));
+                        (state.current.and_then(|index| state.queue.get(index)).cloned(),
+                            state.position_ms, state.duration_ms, state.is_playing, state.loading,
+                            remaining, state.repeat == RepeatMode::Off)
+                    };
+                    wave.observe(snapshot.0.as_ref(), snapshot.1, snapshot.2, snapshot.3, snapshot.4);
+                    clap::release_if_idle();
+                    if snapshot.1 >= 35_000 && snapshot.3 && !snapshot.4 && clap::available() {
+                        if let Some(track) = snapshot.0.as_ref().filter(|track| wave.begin_audio_analysis(track.id)) {
+                            let track = track.clone();
+                            let samples = player.output.tap().window(vis::ANALYSIS_SAMPLES, 0);
+                            let sample_rate = player.output.device_sample_rate();
+                            let wave = wave.clone();
+                            tokio::task::spawn_blocking(move || {
+                                let result = clap::embed_audio(track.id, &samples, sample_rate)
+                                    .map_err(|error| error.to_string());
+                                wave.finish_audio_analysis(&track, result);
+                            });
+                        }
+                    }
+                    let refill = {
+                        let mut session = wave_session.lock();
+                        session.as_mut().and_then(|session| {
+                            let near_end = snapshot.3 && snapshot.6 && snapshot.5.is_some_and(|remaining| remaining <= 10);
+                            let ready = session.last_attempt.is_none_or(|last| last.elapsed() >= std::time::Duration::from_secs(20));
+                            if near_end && ready && !session.busy {
+                                session.busy = true;
+                                session.last_attempt = Some(std::time::Instant::now());
+                                session.variation = session.variation.wrapping_add(1);
+                                if session.seen.len() > 5_000 {
+                                    let tracks = player.state.lock().queue.clone();
+                                    session.seen = tracks.iter().map(|track| track.id).collect();
+                                    session.seen_identities = tracks.iter().map(wave::track_identity).collect();
+                                }
+                                Some((session.likes.clone(), session.variation, session.started_at,
+                                    session.seen.clone(), session.seen_identities.clone()))
+                            } else { None }
+                        })
+                    };
+                    if let Some((likes, variation, started_at, avoid, avoid_identities)) = refill {
+                        let player = player.clone();
+                        let wave = wave.clone();
+                        let client = client.clone();
+                        let wave_session = wave_session.clone();
+                        tokio::spawn(async move {
+                            let generated = wave::generate(client, &wave, likes, variation, &avoid, &avoid_identities).await;
+                            append_wave_tracks(&player, &wave_session, started_at, generated);
+                        });
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            });
+        }
+        let app = Self {
+            rt,
+            client,
+            player,
+            store,
+            session: Arc::new(Mutex::new(None)),
+            settings: Arc::new(Mutex::new(settings)),
+            connection: Arc::new(Mutex::new(if demo {
+                Connection::Demo
+            } else {
+                Connection::Connecting
+            })),
+            presence,
+            import: Arc::new(Mutex::new(ImportStatus::default())),
+            pending_link: Mutex::new(
+                std::env::args()
+                    .skip(1)
+                    .find(|argument| link::parse(argument).is_ok()),
+            ),
+            demo_reposted_tracks: Mutex::new(std::collections::HashSet::new()),
+            demo_reposted_playlists: Mutex::new(std::collections::HashSet::new()),
+            demo_liked_playlists: Mutex::new(std::collections::HashSet::new()),
+            last_eq_track: Mutex::new(None),
+            last_presence: Mutex::new(None),
+            visualiser: Mutex::new(vis::Analyser::default()),
+            image_cache: artwork::ArtworkCache::new(config::app_paths()?.cover_cache.join("tauri"))?,
+            wave,
+            wave_session,
+        };
+        if !demo {
+            let client = app.client.clone();
+            let store = app.store.clone();
+            let player = app.player.clone();
+            let session_slot = app.session.clone();
+            let connection = app.connection.clone();
+            let wave_session = app.wave_session.clone();
+            app.rt.spawn(async move {
+                if let Some(session) = auth::start(client.clone()).await {
+                    let signed_in = session.signed_in().await;
+                    store.set_signed_in(signed_in);
+                    store.clear();
+                    *session_slot.lock() = Some(session);
+                    *connection.lock() = if signed_in {
+                        Connection::SignedIn
+                    } else {
+                        Connection::Public
+                    };
+                    if signed_in && wave_session.lock().is_some() {
+                        let client = client.clone();
+                        tokio::spawn(async move {
+                            match api::endpoints::my_liked_tracks(&client).await.collect_all().await {
+                                Ok(likes) if !likes.is_empty() => {
+                                    if let Some(session) = wave_session.lock().as_mut() {
+                                        session.likes = likes;
+                                    }
+                                }
+                                Ok(_) => {}
+                                Err(error) => log::warn!("Could not restore My Wave likes: {error}"),
+                            }
+                        });
+                    }
+                } else {
+                    client.set_demo(true);
+                    if let Some(player) = &player {
+                        player.set_demo(true);
+                        player.stop();
+                        let mut playback = player.state.lock();
+                        playback.queue = demo::demo_tracks();
+                        playback.queue_revision = playback.queue_revision.wrapping_add(1);
+                        playback.order = (0..playback.queue.len()).collect();
+                        playback.current = None;
+                    }
+                    *connection.lock() = Connection::Demo;
+                }
+            });
+        }
+        Ok(app)
+    }
+
+    fn player(&self) -> Result<&Arc<Player>, String> {
+        self.player
+            .as_ref()
+            .ok_or_else(|| "Audio output is unavailable".into())
+    }
+
+    fn persist_wave_active(&self, active: bool) {
+        self.settings.lock().last_wave_active = active;
+        match config::settings_path() {
+            Ok(path) => if let Err(error) = config::update_settings(&path, |settings| settings.last_wave_active = active) {
+                log::warn!("Could not save My Wave state: {error}");
+            },
+            Err(error) => log::warn!("Could not locate My Wave state: {error}"),
+        }
+    }
+}
+
+#[tauri::command]
+fn connection(state: tauri::State<'_, AppState>) -> Connection {
+    state.connection.lock().clone()
+}
+
+#[tauri::command]
+fn my_profile(state: tauri::State<'_, AppState>) -> Data<Me> {
+    if !state.store.signed_in() {
+        return Data::Unavailable;
+    }
+    state.store.poll();
+    state.store.me().into()
+}
+
+#[tauri::command]
+fn take_pending_link(state: tauri::State<'_, AppState>) -> Option<String> {
+    state.pending_link.lock().take()
+}
+
+fn queue_snapshot(queue: &[Track], revision: u64, known_revision: Option<u64>) -> Option<Vec<Track>> {
+    (known_revision != Some(revision)).then(|| queue.to_vec())
+}
+
+#[cfg(test)]
+#[test]
+fn player_queue_snapshot_is_sent_only_when_revision_changes() {
+    let queue = vec![serde_json::from_str::<Track>(r#"{"id":7,"title":"Song"}"#).unwrap()];
+    assert!(queue_snapshot(&queue, 3, Some(3)).is_none());
+    assert_eq!(queue_snapshot(&queue, 4, Some(3)).unwrap()[0].id, 7);
+    assert_eq!(queue_snapshot(&queue, 3, None).unwrap()[0].id, 7);
+}
+
+#[cfg(test)]
+#[test]
+fn shared_catalogue_lists_keep_the_json_array_contract() {
+    let tracks = serde_json::to_value(Data::Ready(Arc::new(demo::demo_tracks()))).unwrap();
+    let playlists = serde_json::to_value(Data::Ready(Arc::new(demo::demo_playlists()))).unwrap();
+    assert!(tracks["data"].is_array());
+    assert!(playlists["data"].is_array());
+}
+
+#[tauri::command]
+fn player_state(
+    state: tauri::State<'_, AppState>,
+    known_queue_revision: Option<u64>,
+) -> Result<PlayerView, String> {
+    let player = state.player()?;
+    let current = player.state.lock();
+    if state.settings.lock().discord_presence {
+        let mut last_presence = state.last_presence.lock();
+        if let Some(track) = current.current.and_then(|index| current.queue.get(index)) {
+            let stamp = PresenceStamp {
+                track_id: track.id,
+                position_ms: current.position_ms,
+                duration_ms: current.duration_ms,
+                playing: current.is_playing,
+                loading: current.loading,
+                speed: current.playback_speed,
+                sent_at: std::time::Instant::now(),
+            };
+            if presence_due(*last_presence, stamp) {
+                state.presence.update(discord::NowPlaying {
+                    title: track.title.clone(),
+                    artist: track.artist().to_owned(),
+                    artwork_url: track.artwork_url().map(str::to_owned),
+                    track_url: track.permalink_url.clone(),
+                    duration_secs: (current.duration_ms / 1000) as i64,
+                    elapsed_secs: (current.position_ms / 1000) as i64,
+                    playing: current.is_playing,
+                });
+                *last_presence = Some(stamp);
+            }
+        } else if last_presence.take().is_some() {
+            state.presence.clear();
+        }
+    }
+    let track_id = current.current.and_then(|index| current.queue.get(index)).map(|track| track.id);
+    let mut view = PlayerView {
+        queue: queue_snapshot(&current.queue, current.queue_revision, known_queue_revision),
+        queue_revision: current.queue_revision,
+        current: current.current,
+        wave_active: false,
+        is_playing: current.is_playing,
+        loading: current.loading,
+        position_ms: current.position_ms,
+        duration_ms: current.duration_ms,
+        volume: current.volume,
+        playback_speed: current.playback_speed,
+        shuffle: current.shuffle,
+        repeat: current.repeat,
+        ab_start_ms: current.ab_start_ms,
+        ab_end_ms: current.ab_end_ms,
+        bitrate_kbps: current.bitrate_kbps,
+        sample_rate: current.sample_rate,
+        error: current.error.clone(),
+    };
+    drop(current);
+    view.wave_active = state.wave_session.lock().is_some();
+    let mut last = state.last_eq_track.lock();
+    if *last != track_id {
+        *last = track_id;
+        if let Some(id) = track_id {
+            let mut settings = state.settings.lock();
+            if settings.eq_auto {
+                if let Some(preset) = settings
+                    .eq_presets
+                    .iter()
+                    .find(|preset| preset.track_id == id)
+                    .copied()
+                {
+                    settings.eq_preamp_db = preset.preamp_db;
+                    settings.eq_gains_db = preset.gains_db;
+                    player.set_eq(settings.eq_enabled, preset.gains_db);
+                    player.set_eq_preamp_db(preset.preamp_db);
+                    if let Err(error) = settings.save() {
+                        log::warn!("could not save EQ preset: {error}");
+                    }
+                }
+            }
+        }
+    }
+    Ok(view)
+}
+
+#[tauri::command]
+fn offline_tracks() -> Result<Vec<offline::OfflineEntry>, String> {
+    offline::list().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn my_wave(
+    state: tauri::State<'_, AppState>,
+    liked_tracks: Vec<Track>,
+    variation: u32,
+) -> Result<Vec<Track>, String> {
+    let seed = wave::first_seed(&state.wave, &liked_tracks, variation)
+        .ok_or_else(|| "No playable liked tracks are available for My Wave".to_string())?;
+    let player = state.player()?.clone();
+    player.play_queue(vec![seed.clone()], 0, false);
+    let started_at = std::time::Instant::now();
+    *state.wave_session.lock() = Some(WaveSession {
+        likes: liked_tracks.clone(), seen: std::collections::HashSet::from([seed.id]),
+        seen_identities: vec![wave::track_identity(&seed)],
+        started_at, variation: variation.wrapping_add(1), busy: true, last_attempt: Some(started_at),
+    });
+    state.persist_wave_active(true);
+    let client = state.client.clone();
+    let wave = state.wave.clone();
+    let wave_session = state.wave_session.clone();
+    let avoid = std::collections::HashSet::from([seed.id]);
+    let avoid_identities = vec![wave::track_identity(&seed)];
+    state.rt.spawn(async move {
+        let generated = wave::generate(client, &wave, liked_tracks, variation.wrapping_add(1),
+            &avoid, &avoid_identities).await;
+        append_wave_tracks(&player, &wave_session, started_at, generated);
+    });
+    Ok(vec![seed])
+}
+
+#[tauri::command]
+fn wave_dislike(state: tauri::State<'_, AppState>, track: Track, disliked: bool) {
+    state.wave.dislike(&track, disliked);
+}
+
+#[tauri::command]
+fn wave_disliked(state: tauri::State<'_, AppState>, track_id: u64) -> bool {
+    state.wave.disliked(track_id)
+}
+
+#[tauri::command]
+fn set_offline_like_order(track_ids: Vec<u64>) -> Result<(), String> {
+    offline::set_like_order(track_ids).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn download_offline_track(
+    state: tauri::State<'_, AppState>,
+    track: Track,
+) -> Result<offline::OfflineEntry, String> {
+    offline::download(state.client.clone(), track)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn remove_offline_track(track_id: u64) -> Result<(), String> {
+    offline::remove(track_id).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn clear_offline_tracks() -> Result<(), String> {
+    offline::clear_all().map_err(|error| error.to_string())
+}
+
+/// Fetch SoundCloud artwork in the native process. WebView image requests may
+/// fail even when the API and audio client can reach the CDN. Restrict this
+/// bridge to the artwork CDN so it cannot fetch arbitrary local addresses.
+#[tauri::command]
+async fn image_data(state: tauri::State<'_, AppState>, url: String) -> Result<String, String> {
+    state.image_cache.data_url(url).await
+}
+
+#[derive(Serialize)]
+struct WaveformSamples {
+    values: Vec<u16>,
+    height: u16,
+}
+
+/// SoundCloud exposes waveform samples beside its PNG URL. Keep this bridge
+/// restricted to the waveform CDN, and bound the response before parsing it.
+#[tauri::command]
+async fn waveform_samples(url: String) -> Result<WaveformSamples, String> {
+    let mut parsed = url::Url::parse(&url).map_err(|error| error.to_string())?;
+    if parsed.host_str() != Some("wave.sndcdn.com") || !matches!(parsed.scheme(), "http" | "https") {
+        return Err("Unsupported waveform URL".into());
+    }
+    let path = parsed.path().to_owned();
+    if !path.ends_with("_m.png") && !path.ends_with("_m.json") {
+        return Err("Unsupported waveform format".into());
+    }
+    parsed.set_scheme("https").map_err(|_| "Invalid waveform scheme")?;
+    if path.ends_with("_m.png") {
+        parsed.set_path(&path.replace("_m.png", "_m.json"));
+    }
+    // Reuse the connection pool across waveforms instead of creating a new
+    // TLS client for every track detail view.
+    static WAVEFORM_HTTP: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    let mut response = WAVEFORM_HTTP.get_or_init(reqwest::Client::new)
+        .get(parsed)
+        .timeout(std::time::Duration::from_secs(8))
+        .send()
+        .await
+        .map_err(|error| error.to_string())?
+        .error_for_status()
+        .map_err(|error| error.to_string())?;
+    if response.content_length().unwrap_or(0) > 512_000 {
+        return Err("Waveform is too large".into());
+    }
+    let mut body = Vec::with_capacity(response.content_length().unwrap_or(0).min(64 * 1024) as usize);
+    while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+        if chunk.len() > 512_000usize.saturating_sub(body.len()) {
+            return Err("Waveform is too large".into());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    #[derive(serde::Deserialize)]
+    struct SoundCloudWaveform {
+        height: u16,
+        samples: Vec<u16>,
+    }
+    let waveform: SoundCloudWaveform = serde_json::from_slice(&body).map_err(|error| error.to_string())?;
+    if waveform.samples.is_empty() || waveform.samples.len() > 20_000 {
+        return Err("Invalid waveform samples".into());
+    }
+    Ok(WaveformSamples { values: waveform.samples, height: waveform.height.max(1) })
+}
+
+#[derive(Serialize)]
+struct VisualiserFrame {
+    bars: Vec<u8>,
+    peaks: Vec<Option<u8>>,
+    scope: Vec<u8>,
+}
+
+#[tauri::command]
+fn visualiser_frame(state: tauri::State<'_, AppState>) -> Result<VisualiserFrame, String> {
+    let player = state.player()?;
+    let mode = state.settings.lock().visualiser;
+    let playing = player.state.lock().is_playing;
+    let tap = player.output_handle().tap();
+    let wave = if playing {
+        tap.window(vis::FFT_SAMPLES, vis::LAG)
+    } else {
+        vec![0.0; vis::FFT_SAMPLES]
+    };
+    let bars = if mode == ui::visualiser::Mode::Spectrum {
+        state
+            .visualiser
+            .lock()
+            .step(&wave, std::time::Instant::now())
+    } else {
+        [vis::Bar::default(); vis::BARS]
+    };
+    let scope = if mode == ui::visualiser::Mode::Scope && playing {
+        vis::scope(&tap.window(vis::SCOPE_SAMPLES, vis::LAG)).to_vec()
+    } else {
+        vec![7; vis::COLUMNS]
+    };
+    Ok(VisualiserFrame {
+        bars: bars.iter().map(|bar| bar.height).collect(),
+        peaks: bars.iter().map(|bar| bar.peak).collect(),
+        scope,
+    })
+}
+
+async fn public_profile_id(state: &AppState) -> Result<Option<u64>, String> {
+    let Some(raw) = state.settings.lock().soundcloud_profile_url.clone() else {
+        return Ok(None);
+    };
+    let parsed = link::parse(&raw).map_err(|error| error.to_string())?;
+    match parsed {
+        link::ParsedLink::UserId(id) => Ok(Some(id)),
+        link::ParsedLink::RemoteUrl(url) => {
+            let value = api::endpoints::resolve(&state.client, &url)
+                .await
+                .map_err(|error| error.to_string())?;
+            if value.get("kind").and_then(|kind| kind.as_str()) != Some("user") {
+                return Err("The configured SoundCloud link is not a profile".into());
+            }
+            value
+                .get("id")
+                .and_then(|id| id.as_u64())
+                .ok_or("SoundCloud profile has no ID".into())
+                .map(Some)
+        }
+        _ => Err("The configured SoundCloud link is not a profile".into()),
+    }
+}
+
+#[tauri::command]
+async fn tracks(
+    state: tauri::State<'_, AppState>,
+    view: String,
+    query: Option<String>,
+    id: Option<u64>,
+) -> Result<Data<Arc<Vec<Track>>>, String> {
+    Ok(tracks_data(&state, view, query, id).await)
+}
+
+async fn tracks_data(
+    state: &AppState,
+    view: String,
+    query: Option<String>,
+    id: Option<u64>,
+) -> Data<Arc<Vec<Track>>> {
+    if !state.client.is_demo() && matches!(*state.connection.lock(), Connection::Connecting) {
+        return Data::Loading;
+    }
+    if state.client.is_demo() {
+        let tracks = demo::demo_tracks();
+        let search_query = query.as_deref().unwrap_or_default().to_lowercase();
+        let result = match view.as_str() {
+            "feed" => {
+                let activity = demo::demo_feed();
+                activity
+                    .into_iter()
+                    .filter_map(|item| {
+                        tracks
+                            .iter()
+                            .find(|track| track.id == item.track_id)
+                            .cloned()
+                            .map(|mut track| {
+                                track.feed_reposted = item.kind == "reposted";
+                                track
+                            })
+                    })
+                    .collect()
+            }
+            "search" => tracks
+                .into_iter()
+                .filter(|track| track.title.to_lowercase().contains(&search_query))
+                .collect(),
+            "related" => tracks
+                .into_iter()
+                .filter(|track| Some(track.id) != id)
+                .collect(),
+            "likes" => {
+                let liked = state.settings.lock().liked_ids.clone();
+                tracks
+                    .into_iter()
+                    .filter(|track| liked.contains(&track.id))
+                    .collect()
+            }
+            "reposts" => tracks
+                .into_iter()
+                .filter(|track| state.demo_reposted_tracks.lock().contains(&track.id))
+                .collect(),
+            "playlist" => {
+                if let Some(custom) = state
+                    .settings
+                    .lock()
+                    .custom_playlists
+                    .iter()
+                    .find(|item| Some(item.id) == id)
+                    .cloned()
+                {
+                    return Data::Ready(Arc::new(
+                        custom
+                            .track_ids
+                            .iter()
+                            .filter_map(|track_id| {
+                                tracks.iter().find(|track| track.id == *track_id).cloned()
+                            })
+                            .collect(),
+                    ));
+                }
+                let count = demo::demo_playlists()
+                    .into_iter()
+                    .find(|playlist| Some(playlist.id) == id)
+                    .and_then(|playlist| playlist.track_count)
+                    .unwrap_or(0);
+                tracks.into_iter().take(count as usize).collect()
+            }
+            "artist" => tracks
+                .into_iter()
+                .filter(|track| track.user.as_ref().is_some_and(|user| Some(user.id) == id))
+                .collect(),
+            _ => tracks,
+        };
+        return Data::Ready(Arc::new(result));
+    }
+    state.store.poll();
+    if view == "likes" && !state.store.signed_in() {
+        return match public_profile_id(&state).await {
+            Ok(Some(id)) => state.store.tracks_shared(Key::UserLikes(id)).into(),
+            Ok(None) => Data::Unavailable,
+            Err(error) => Data::Failed(error),
+        };
+    }
+    let key = match view.as_str() {
+        "likes" => Key::Likes,
+        "feed" => Key::Feed,
+        "history" => Key::History,
+        "following" => Key::FollowingTracks,
+        "uploads" => Key::MyTracks,
+        "reposts" => Key::MyRepostedTracks,
+        "artist_likes" => Key::UserLikes(id.unwrap_or(0)),
+        "artist_reposts" => Key::UserRepostedTracks(id.unwrap_or(0)),
+        "search" => Key::SearchTracks(query.unwrap_or_default()),
+        "related" => Key::Related(id.unwrap_or(0)),
+        "playlist" => Key::PlaylistTracks(id.unwrap_or(0)),
+        "artist" => Key::UserTracks(id.unwrap_or(0)),
+        "genre" => Key::Genre(query.unwrap_or_else(|| "Electronic".into())),
+        _ => Key::Genre("electronic".into()),
+    };
+    state.store.tracks_shared(key).into()
+}
+
+#[tauri::command]
+async fn playlists(
+    state: tauri::State<'_, AppState>,
+    view: String,
+    query: Option<String>,
+) -> Result<Data<Arc<Vec<Playlist>>>, String> {
+    Ok(playlists_data(&state, view, query).await)
+}
+
+async fn playlists_data(
+    state: &AppState,
+    view: String,
+    query: Option<String>,
+) -> Data<Arc<Vec<Playlist>>> {
+    if !state.client.is_demo() && matches!(*state.connection.lock(), Connection::Connecting) {
+        return Data::Loading;
+    }
+    if state.client.is_demo() {
+        let search = query.unwrap_or_default().to_lowercase();
+        let custom = state.settings.lock().custom_playlists.clone();
+        let playlists = demo::demo_playlists()
+            .into_iter()
+            .chain(custom.into_iter().map(|item| Playlist {
+                id: item.id,
+                title: item.title,
+                artwork: None,
+                artwork_url: None,
+                user: None,
+                track_count: Some(item.track_ids.len() as u64),
+                genre: None,
+                tag_list: None,
+                likes_count: None,
+                duration_ms: None,
+                is_album: false,
+                playlist_type: None,
+                set_type: None,
+                created_at: None,
+                permalink_url: None,
+                tracks: Vec::new(),
+                feed_reposted: false,
+            }))
+            .filter(|playlist| match view.as_str() {
+                "feed" => false,
+                "search" => playlist.title.to_lowercase().contains(&search),
+                "liked" => state.demo_liked_playlists.lock().contains(&playlist.id),
+                "reposts" => state.demo_reposted_playlists.lock().contains(&playlist.id),
+                "artist" | "artist_liked" | "artist_reposts" => false,
+                _ => true,
+            })
+            .collect();
+        return Data::Ready(Arc::new(playlists));
+    }
+    state.store.poll();
+    if view == "mine" && !state.store.signed_in() {
+        return match public_profile_id(&state).await {
+            Ok(Some(id)) => state.store.playlists_shared(Key::UserPlaylists(id)).into(),
+            Ok(None) => Data::Unavailable,
+            Err(error) => Data::Failed(error),
+        };
+    }
+    let key = match view.as_str() {
+        "feed" => Key::Feed,
+        "liked" => Key::LikedPlaylists,
+        "reposts" => Key::MyRepostedPlaylists,
+        "artist" => Key::UserPlaylists(
+            query
+                .as_deref()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0),
+        ),
+        "artist_liked" => Key::UserLikedPlaylists(
+            query
+                .as_deref()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0),
+        ),
+        "artist_reposts" => Key::UserRepostedPlaylists(
+            query
+                .as_deref()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0),
+        ),
+        "search" => Key::SearchPlaylists(query.unwrap_or_default()),
+        _ => Key::MyPlaylists,
+    };
+    state.store.playlists_shared(key).into()
+}
+
+#[tauri::command]
+async fn catalog_releases(state: tauri::State<'_, AppState>, day: u32) -> Result<Data<Vec<Playlist>>, String> {
+    if state.client.is_demo() { return Ok(Data::Ready(demo::demo_playlists())); }
+    if matches!(*state.connection.lock(), Connection::Connecting) { return Ok(Data::Loading); }
+    let mut rows = Vec::new();
+    let mut pager = api::endpoints::browse_playlists(&state.client).await;
+    match pager.next_page().await {
+        Ok(page) => {
+            rows.extend(page);
+            for _ in 0..(day % 3 + 1) {
+                let next = pager.next_page().await.unwrap_or_default();
+                if next.is_empty() { break; }
+                rows.extend(next);
+            }
+        }
+        Err(_) => {
+            rows.extend(api::endpoints::search_playlists(&state.client, "album").await.next_page().await.map_err(|error| error.to_string())?);
+        }
+    }
+    if rows.is_empty() {
+        rows.extend(api::endpoints::search_playlists(&state.client, "album").await.next_page().await.map_err(|error| error.to_string())?);
+    }
+    let rotating = ["album", "ep", "single", "compilation"][day as usize % 4];
+    if let Ok(extra) = api::endpoints::search_playlists(&state.client, rotating).await.next_page().await {
+        rows.extend(extra);
+    }
+    let mut seen = std::collections::HashSet::new();
+    rows.retain(|item| seen.insert(item.id));
+    Ok(Data::Ready(rows))
+}
+
+#[tauri::command]
+fn users(state: tauri::State<'_, AppState>, query: String) -> Data<Vec<User>> {
+    if !state.client.is_demo() && matches!(*state.connection.lock(), Connection::Connecting) {
+        return Data::Loading;
+    }
+    if state.client.is_demo() {
+        return Data::Ready(
+            demo_users()
+                .into_iter()
+                .filter(|user| user.username.to_lowercase().contains(&query.to_lowercase()))
+                .collect(),
+        );
+    }
+    state.store.poll();
+    state.store.users(Key::SearchUsers(query)).into()
+}
+
+#[tauri::command]
+fn track_detail(state: tauri::State<'_, AppState>, id: u64) -> Data<Track> {
+    if !state.client.is_demo() && matches!(*state.connection.lock(), Connection::Connecting) {
+        return Data::Loading;
+    }
+    if state.client.is_demo() {
+        return demo::demo_tracks()
+            .into_iter()
+            .find(|track| track.id == id)
+            .map(Data::Ready)
+            .unwrap_or_else(|| Data::Failed("Track not found".into()));
+    }
+    state.store.poll();
+    state.store.track(id).into()
+}
+
+#[tauri::command]
+fn following(state: tauri::State<'_, AppState>) -> Data<Vec<User>> {
+    if state.client.is_demo() {
+        let ids = state.settings.lock().followed_user_ids.clone();
+        return Data::Ready(
+            demo_users()
+                .into_iter()
+                .filter(|user| ids.contains(&user.id))
+                .collect(),
+        );
+    }
+    state.store.poll();
+    state.store.users(Key::Following).into()
+}
+
+#[tauri::command]
+fn refresh_following(state: tauri::State<'_, AppState>) {
+    state.store.invalidate(&Key::Following);
+    state.store.invalidate(&Key::FollowingTracks);
+}
+
+#[tauri::command]
+fn user_detail(state: tauri::State<'_, AppState>, id: u64) -> Data<User> {
+    if state.client.is_demo() {
+        return demo_users()
+            .into_iter()
+            .find(|user| user.id == id)
+            .map(Data::Ready)
+            .unwrap_or_else(|| Data::Failed("User not found".into()));
+    }
+    state.store.poll();
+    state.store.user(id).into()
+}
+
+#[tauri::command]
+fn playlist_detail(state: tauri::State<'_, AppState>, id: u64) -> Data<Playlist> {
+    if state.client.is_demo() {
+        let custom = state
+            .settings
+            .lock()
+            .custom_playlists
+            .iter()
+            .find(|item| item.id == id)
+            .cloned();
+        return demo::demo_playlists()
+            .into_iter()
+            .find(|item| item.id == id)
+            .or_else(|| {
+                custom.map(|item| Playlist {
+                    id: item.id,
+                    title: item.title,
+                    artwork: None,
+                    artwork_url: None,
+                    user: None,
+                    track_count: Some(item.track_ids.len() as u64),
+                    genre: None,
+                    tag_list: None,
+                    likes_count: None,
+                    duration_ms: None,
+                    is_album: false,
+                    playlist_type: None,
+                    set_type: None,
+                    created_at: None,
+                    permalink_url: None,
+                    tracks: Vec::new(),
+                    feed_reposted: false,
+                })
+            })
+            .map(Data::Ready)
+            .unwrap_or_else(|| Data::Failed("Playlist not found".into()));
+    }
+    state.store.poll();
+    state.store.playlist(id).into()
+}
+
+#[tauri::command]
+fn comments(state: tauri::State<'_, AppState>, id: u64) -> Data<Vec<Comment>> {
+    if state.client.is_demo() {
+        return Data::Ready(Vec::new());
+    }
+    state.store.poll();
+    state.store.comments(Key::Comments(id)).into()
+}
+
+#[tauri::command]
+async fn track_lyrics(artist: String, title: String, duration_ms: u64) -> Result<Option<lyrics::LyricsRecord>, String> {
+    lyrics::lookup(artist, title, duration_ms).await
+}
+
+#[tauri::command]
+async fn search_lyrics(query: String) -> Result<Vec<lyrics::LyricsRecord>, String> {
+    lyrics::search(query).await
+}
+
+#[tauri::command]
+fn user_profiles(state: tauri::State<'_, AppState>, id: u64) -> Data<Vec<WebProfile>> {
+    if state.client.is_demo() {
+        return Data::Ready(Vec::new());
+    }
+    state.store.poll();
+    state.store.web_profiles(Key::UserWebProfiles(id)).into()
+}
+
+#[tauri::command]
+fn related_users(state: tauri::State<'_, AppState>, id: u64) -> Data<Vec<User>> {
+    if state.client.is_demo() {
+        return Data::Ready(demo_users());
+    }
+    state.store.poll();
+    state.store.users(Key::RelatedUsers(id)).into()
+}
+
+#[tauri::command]
+async fn open_link(state: tauri::State<'_, AppState>, raw: String) -> Result<LinkResult, String> {
+    let parsed = link::parse(&raw).map_err(|error| error.to_string())?;
+    let (kind, id) = match parsed {
+        link::ParsedLink::TrackId(id) => ("track", id),
+        link::ParsedLink::PlaylistId(id) => ("playlist", id),
+        link::ParsedLink::UserId(id) => ("user", id),
+        link::ParsedLink::RemoteUrl(url) => {
+            if state.client.is_demo() {
+                return Err("Connect SoundCloud to resolve web links".into());
+            }
+            let resolved = api::endpoints::resolve(&state.client, &url)
+                .await
+                .map_err(|error| error.to_string())?;
+            let id = resolved
+                .get("id")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or("Unsupported SoundCloud link")?;
+            let kind = match resolved.get("kind").and_then(serde_json::Value::as_str) {
+                Some("playlist") => "playlist",
+                Some("user") => "user",
+                _ => "track",
+            };
+            (kind, id)
+        }
+    };
+    let title = match kind {
+        "track" => {
+            let track = if state.client.is_demo() {
+                demo::demo_tracks()
+                    .into_iter()
+                    .find(|track| track.id == id)
+                    .ok_or("Track not found")?
+            } else {
+                api::endpoints::track(&state.client, id)
+                    .await
+                    .map_err(|error| error.to_string())?
+            };
+            let title = track.title.clone();
+            *state.wave_session.lock() = None;
+            state.persist_wave_active(false);
+            state.player()?.play_queue(vec![track], 0, false);
+            title
+        }
+        "playlist" => format!("Playlist {id}"),
+        _ => format!("Profile {id}"),
+    };
+    {
+        let mut settings = state.settings.lock();
+        settings.inbox.retain(|item| item.link != raw);
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|time| time.as_secs())
+            .unwrap_or(0);
+        settings.inbox.push(config::InboxItem {
+            label: title.clone(),
+            link: raw,
+            at,
+        });
+        if settings.inbox.len() > 50 {
+            settings.inbox.remove(0);
+        }
+        settings.save().map_err(|error| error.to_string())?;
+    }
+    Ok(LinkResult {
+        kind: kind.into(),
+        id,
+        title,
+    })
+}
+
+#[tauri::command]
+fn open_soundcloud_url(raw: String) -> Result<(), String> {
+    let url = url::Url::parse(&raw).map_err(|error| error.to_string())?;
+    let host = url.host_str().unwrap_or_default();
+    if url.scheme() != "https"
+        || url.username() != ""
+        || url.password().is_some()
+        || !(host == "soundcloud.com" || host.ends_with(".soundcloud.com"))
+    {
+        return Err("Only SoundCloud HTTPS links can be opened here".into());
+    }
+    webbrowser::open(url.as_str()).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn vibe_search(
+    state: tauri::State<'_, AppState>,
+    query: String,
+) -> Result<Vec<Track>, String> {
+    let query = query.trim();
+    if query.len() < 2 {
+        return Ok(Vec::new());
+    }
+    let profile = vibe::profile(query);
+    if state.client.is_demo() {
+        return Ok(vibe::rank(&profile, demo::demo_tracks()));
+    }
+    let mut candidates = api::endpoints::search_tracks(&state.client, query)
+        .await
+        .next_page()
+        .await
+        .map_err(|error| error.to_string())?;
+    for genre in profile.genres.iter().take(4) {
+        let mut rows = api::endpoints::tracks_by_genre(&state.client, genre, 30)
+            .await
+            .next_page()
+            .await
+            .map_err(|error| error.to_string())?;
+        if rows.is_empty() && profile.exact_genre.is_some() {
+            rows = api::endpoints::tracks_by_genre(&state.client, genre, 365)
+                .await.next_page().await.map_err(|error| error.to_string())?;
+        }
+        candidates.extend(rows);
+    }
+    let mut result = vibe::rank(&profile, candidates);
+    result.truncate(80);
+    Ok(result)
+}
+
+#[tauri::command]
+async fn post_comment(
+    state: tauri::State<'_, AppState>,
+    id: u64,
+    body: String,
+    timestamp_ms: Option<u64>,
+) -> Result<(), String> {
+    if !state.store.signed_in() {
+        return Err("Sign in to comment".into());
+    }
+    let body = body.trim();
+    if body.is_empty() {
+        return Err("Comment cannot be empty".into());
+    }
+    api::endpoints::post_comment(&state.client, id, body, timestamp_ms)
+        .await
+        .map_err(|error| error.to_string())?;
+    state.store.invalidate(&Key::Comments(id));
+    Ok(())
+}
+
+#[tauri::command]
+async fn repost(
+    state: tauri::State<'_, AppState>,
+    kind: String,
+    id: u64,
+    active: bool,
+) -> Result<(), String> {
+    if state.client.is_demo() {
+        let mut ids = match kind.as_str() {
+            "track" => state.demo_reposted_tracks.lock(),
+            "playlist" => state.demo_reposted_playlists.lock(),
+            _ => return Err("Unknown repost type".into()),
+        };
+        if active {
+            ids.insert(id);
+        } else {
+            ids.remove(&id);
+        }
+        return Ok(());
+    }
+    if !state.store.signed_in() {
+        return Err("Sign in to repost".into());
+    }
+    let result = match (kind.as_str(), active) {
+        ("track", true) => api::endpoints::repost_track(&state.client, id).await,
+        ("track", false) => api::endpoints::unrepost_track(&state.client, id).await,
+        ("playlist", true) => api::endpoints::repost_playlist(&state.client, id).await,
+        ("playlist", false) => api::endpoints::unrepost_playlist(&state.client, id).await,
+        _ => return Err("Unknown repost type".into()),
+    };
+    result.map_err(|error| error.to_string())?;
+    state.store.invalidate(&Key::MyRepostedTracks);
+    state.store.invalidate(&Key::MyRepostedPlaylists);
+    Ok(())
+}
+
+#[tauri::command]
+async fn like_playlist(
+    state: tauri::State<'_, AppState>,
+    id: u64,
+    liked: bool,
+) -> Result<(), String> {
+    if state.client.is_demo() {
+        let mut ids = state.demo_liked_playlists.lock();
+        if liked {
+            ids.insert(id);
+        } else {
+            ids.remove(&id);
+        }
+        return Ok(());
+    }
+    if !state.store.signed_in() {
+        return Err("Sign in to like playlists".into());
+    }
+    let result = if liked {
+        api::endpoints::like_playlist(&state.client, id).await
+    } else {
+        api::endpoints::unlike_playlist(&state.client, id).await
+    };
+    result.map_err(|error| error.to_string())?;
+    state.store.invalidate(&Key::LikedPlaylists);
+    Ok(())
+}
+
+fn demo_users() -> Vec<User> {
+    let mut users = std::collections::BTreeMap::new();
+    for track in demo::demo_tracks() {
+        if let Some(user) = track.user {
+            users.entry(user.id).or_insert_with(|| User {
+                id: user.id,
+                username: user.username,
+                permalink: user.permalink,
+                avatar_url: user.avatar_url,
+                full_name: None,
+                description: None,
+                city: None,
+                country_code: None,
+                permalink_url: None,
+                followers_count: 0,
+                followings_count: 0,
+                track_count: 10,
+                public_playlists_count: None,
+            });
+        }
+    }
+    users.into_values().collect()
+}
+
+#[tauri::command]
+async fn set_followed(
+    state: tauri::State<'_, AppState>,
+    user_id: u64,
+    followed: bool,
+) -> Result<(), String> {
+    if !state.client.is_demo() {
+        if !state.store.signed_in() {
+            return Err("Sign in to follow artists".into());
+        }
+        if followed {
+            api::endpoints::follow_user(&state.client, user_id).await
+        } else {
+            api::endpoints::unfollow_user(&state.client, user_id).await
+        }
+        .map_err(|error| error.to_string())?;
+        state.store.invalidate(&Key::Following);
+        state.store.invalidate(&Key::FollowingTracks);
+    }
+    let mut settings = state.settings.lock();
+    if followed && !settings.followed_user_ids.contains(&user_id) {
+        settings.followed_user_ids.push(user_id);
+    } else if !followed {
+        settings.followed_user_ids.retain(|id| *id != user_id);
+    }
+    settings.save().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn create_playlist(
+    state: tauri::State<'_, AppState>,
+    title: String,
+    track_id: Option<u64>,
+) -> Result<Playlist, String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("Enter a playlist name".into());
+    }
+    let ids: Vec<u64> = track_id.into_iter().collect();
+    if state.client.is_demo() {
+        let mut settings = state.settings.lock();
+        let id = settings
+            .custom_playlists
+            .iter()
+            .map(|item| item.id)
+            .max()
+            .unwrap_or(8999)
+            .max(8999)
+            + 1;
+        settings.custom_playlists.push(config::CustomPlaylist {
+            id,
+            title: title.into(),
+            track_ids: ids.clone(),
+        });
+        settings.save().map_err(|error| error.to_string())?;
+        return Ok(Playlist {
+            id,
+            title: title.into(),
+            artwork: None,
+            artwork_url: None,
+            user: None,
+            track_count: Some(ids.len() as u64),
+            genre: None,
+            tag_list: None,
+            likes_count: None,
+            duration_ms: None,
+            is_album: false,
+            playlist_type: None,
+            set_type: None,
+            created_at: None,
+            permalink_url: None,
+            tracks: Vec::new(),
+            feed_reposted: false,
+        });
+    }
+    if !state.store.signed_in() {
+        return Err("Sign in to create playlists".into());
+    }
+    let result = api::endpoints::create_playlist(&state.client, title, true, &ids)
+        .await
+        .map_err(|error| error.to_string())?;
+    state.store.invalidate(&Key::MyPlaylists);
+    Ok(result)
+}
+
+#[tauri::command]
+async fn add_to_playlist(
+    state: tauri::State<'_, AppState>,
+    playlist_id: u64,
+    track_id: u64,
+) -> Result<(), String> {
+    if state.client.is_demo() {
+        let mut settings = state.settings.lock();
+        let playlist = settings
+            .custom_playlists
+            .iter_mut()
+            .find(|item| item.id == playlist_id)
+            .ok_or("Choose a playlist you created")?;
+        if !playlist.track_ids.contains(&track_id) {
+            playlist.track_ids.push(track_id);
+        }
+        return settings.save().map_err(|error| error.to_string());
+    }
+    let mut ids = editable_playlist_track_ids(&state, playlist_id).await?;
+    if !ids.contains(&track_id) {
+        ids.push(track_id);
+        api::endpoints::update_playlist(&state.client, playlist_id, None, None, &ids)
+            .await
+            .map_err(|error| error.to_string())?;
+        state.store.invalidate(&Key::PlaylistTracks(playlist_id));
+        state.store.invalidate(&Key::MyPlaylists);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn add_tracks_to_playlist(
+    state: tauri::State<'_, AppState>,
+    playlist_id: u64,
+    track_ids: Vec<u64>,
+) -> Result<(), String> {
+    if track_ids.is_empty() {
+        return Ok(());
+    }
+    if state.client.is_demo() {
+        let mut settings = state.settings.lock();
+        let playlist = settings
+            .custom_playlists
+            .iter_mut()
+            .find(|item| item.id == playlist_id)
+            .ok_or("Choose a playlist you created")?;
+        for track_id in track_ids {
+            if !playlist.track_ids.contains(&track_id) {
+                playlist.track_ids.push(track_id);
+            }
+        }
+        return settings.save().map_err(|error| error.to_string());
+    }
+    let mut ids = editable_playlist_track_ids(&state, playlist_id).await?;
+    let original_len = ids.len();
+    for track_id in track_ids {
+        if !ids.contains(&track_id) {
+            ids.push(track_id);
+        }
+    }
+    if ids.len() != original_len {
+        api::endpoints::update_playlist(&state.client, playlist_id, None, None, &ids)
+            .await
+            .map_err(|error| error.to_string())?;
+        state.store.invalidate(&Key::PlaylistTracks(playlist_id));
+        state.store.invalidate(&Key::MyPlaylists);
+    }
+    Ok(())
+}
+
+async fn editable_playlist_track_ids(
+    state: &AppState,
+    playlist_id: u64,
+) -> Result<Vec<u64>, String> {
+    if !state.store.signed_in() {
+        return Err("Sign in to edit playlists".into());
+    }
+    let playlist = api::endpoints::playlist(&state.client, playlist_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let tracks = api::endpoints::playlist_tracks(&state.client, playlist_id)
+        .await
+        .collect_all()
+        .await
+        .map_err(|error| error.to_string())?;
+    if playlist
+        .track_count
+        .is_some_and(|count| count != tracks.len() as u64)
+    {
+        return Err("Playlist contains tracks that could not be loaded; edit was cancelled".into());
+    }
+    Ok(tracks.iter().map(|track| track.id).collect())
+}
+
+#[tauri::command]
+async fn remove_from_playlist(
+    state: tauri::State<'_, AppState>,
+    playlist_id: u64,
+    track_id: u64,
+) -> Result<(), String> {
+    if state.client.is_demo() {
+        let mut settings = state.settings.lock();
+        let playlist = settings
+            .custom_playlists
+            .iter_mut()
+            .find(|item| item.id == playlist_id)
+            .ok_or("Choose a playlist you created")?;
+        playlist.track_ids.retain(|id| *id != track_id);
+        return settings.save().map_err(|error| error.to_string());
+    }
+    let mut ids = editable_playlist_track_ids(&state, playlist_id).await?;
+    if ids.contains(&track_id) {
+        ids.retain(|id| *id != track_id);
+        api::endpoints::update_playlist(&state.client, playlist_id, None, None, &ids)
+            .await
+            .map_err(|error| error.to_string())?;
+        state.store.invalidate(&Key::PlaylistTracks(playlist_id));
+        state.store.invalidate(&Key::MyPlaylists);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn move_in_playlist(
+    state: tauri::State<'_, AppState>,
+    playlist_id: u64,
+    from: usize,
+    to: usize,
+) -> Result<(), String> {
+    if state.client.is_demo() {
+        let mut settings = state.settings.lock();
+        let playlist = settings
+            .custom_playlists
+            .iter_mut()
+            .find(|item| item.id == playlist_id)
+            .ok_or("Choose a playlist you created")?;
+        if from >= playlist.track_ids.len() || to >= playlist.track_ids.len() {
+            return Err("Track position is out of range".into());
+        }
+        let id = playlist.track_ids.remove(from);
+        playlist.track_ids.insert(to, id);
+        return settings.save().map_err(|error| error.to_string());
+    }
+    let mut ids = editable_playlist_track_ids(&state, playlist_id).await?;
+    if from >= ids.len() || to >= ids.len() {
+        return Err("Track position is out of range".into());
+    }
+    let id = ids.remove(from);
+    ids.insert(to, id);
+    api::endpoints::update_playlist(&state.client, playlist_id, None, None, &ids)
+        .await
+        .map_err(|error| error.to_string())?;
+    state.store.invalidate(&Key::PlaylistTracks(playlist_id));
+    state.store.invalidate(&Key::MyPlaylists);
+    Ok(())
+}
+
+#[tauri::command]
+async fn rename_playlist(
+    state: tauri::State<'_, AppState>,
+    playlist_id: u64,
+    title: String,
+) -> Result<(), String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("Enter a playlist name".into());
+    }
+    if state.client.is_demo() {
+        let mut settings = state.settings.lock();
+        let playlist = settings
+            .custom_playlists
+            .iter_mut()
+            .find(|item| item.id == playlist_id)
+            .ok_or("Choose a playlist you created")?;
+        playlist.title = title.into();
+        return settings.save().map_err(|error| error.to_string());
+    }
+    let ids = editable_playlist_track_ids(&state, playlist_id).await?;
+    api::endpoints::update_playlist(&state.client, playlist_id, Some(title), None, &ids)
+        .await
+        .map_err(|error| error.to_string())?;
+    state.store.invalidate(&Key::MyPlaylists);
+    state.store.invalidate(&Key::PlaylistTracks(playlist_id));
+    Ok(())
+}
+
+#[tauri::command]
+async fn delete_playlist(
+    state: tauri::State<'_, AppState>,
+    playlist_id: u64,
+) -> Result<(), String> {
+    if state.client.is_demo() {
+        let mut settings = state.settings.lock();
+        let len = settings.custom_playlists.len();
+        settings
+            .custom_playlists
+            .retain(|item| item.id != playlist_id);
+        if settings.custom_playlists.len() == len {
+            return Err("Choose a playlist you created".into());
+        }
+        return settings.save().map_err(|error| error.to_string());
+    }
+    if !state.store.signed_in() {
+        return Err("Sign in to delete playlists".into());
+    }
+    api::endpoints::delete_playlist(&state.client, playlist_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    state.store.invalidate(&Key::MyPlaylists);
+    state.store.invalidate(&Key::PlaylistTracks(playlist_id));
+    Ok(())
+}
+
+#[tauri::command]
+fn transport(
+    state: tauri::State<'_, AppState>,
+    action: String,
+    value: Option<f32>,
+    index: Option<usize>,
+    target: Option<usize>,
+) -> Result<(), String> {
+    let player = state.player()?;
+    match action.as_str() {
+        "toggle" => player.play_pause(),
+        "next" => {
+            player.next();
+        }
+        "previous" => {
+            player.prev();
+        }
+        "shuffle" => player.toggle_shuffle(),
+        "repeat" => player.cycle_repeat(),
+        "ab_loop" => player.cycle_ab_loop(),
+        "ab_clear" => player.clear_ab_loop(),
+        "seek" => player.seek_ms(value.unwrap_or_default().max(0.0) as u64),
+        "volume" => player.set_volume(value.unwrap_or_default().clamp(0.0, 1.0)),
+        "speed" => player.set_playback_speed(value.unwrap_or(1.0)),
+        "skip_to" => {
+            player.skip_to(index.ok_or("Missing queue index")?);
+        }
+        "remove" => {
+            player.remove_at(index.ok_or("Missing queue index")?);
+        }
+        "move" => {
+            player.move_at(
+                index.ok_or("Missing queue index")?,
+                target.ok_or("Missing target index")?,
+            );
+        }
+        "clear_upcoming" => {
+            *state.wave_session.lock() = None;
+            state.persist_wave_active(false);
+            player.clear_upcoming();
+        }
+        "clear_queue" => {
+            *state.wave_session.lock() = None;
+            state.persist_wave_active(false);
+            player.clear_queue();
+        }
+        "stop" => {
+            *state.wave_session.lock() = None;
+            state.persist_wave_active(false);
+            player.stop();
+        }
+        _ => return Err("Unknown player action".into()),
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn play_tracks(
+    state: tauri::State<'_, AppState>,
+    tracks: Vec<Track>,
+    index: usize,
+) -> Result<(), String> {
+    if tracks.is_empty() || index >= tracks.len() {
+        return Err("Choose a track to play".into());
+    }
+    *state.wave_session.lock() = None;
+    state.persist_wave_active(false);
+    state.player()?.play_queue(tracks, index, false);
+    Ok(())
+}
+
+#[tauri::command]
+fn enqueue(state: tauri::State<'_, AppState>, track: Track, next: bool) -> Result<(), String> {
+    state.player()?.enqueue(vec![track], next);
+    Ok(())
+}
+
+#[tauri::command]
+fn enqueue_tracks(
+    state: tauri::State<'_, AppState>,
+    tracks: Vec<Track>,
+    next: bool,
+) -> Result<(), String> {
+    if !tracks.is_empty() {
+        state.player()?.enqueue(tracks, next);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_liked(
+    state: tauri::State<'_, AppState>,
+    track_id: u64,
+    liked: bool,
+) -> Result<(), String> {
+    if !state.client.is_demo() {
+        if !state.store.signed_in() {
+            return Err("Sign in to like tracks".into());
+        }
+        if liked {
+            api::endpoints::like_track(&state.client, track_id)
+                .await
+                .map_err(|error| error.to_string())?;
+        } else {
+            api::endpoints::unlike_track(&state.client, track_id)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        state.store.invalidate(&Key::Likes);
+    }
+    let mut settings = state.settings.lock();
+    if liked && !settings.liked_ids.contains(&track_id) {
+        settings.liked_ids.push(track_id);
+    } else if !liked {
+        settings.liked_ids.retain(|id| *id != track_id);
+    }
+    settings.save().map_err(|error| error.to_string())?;
+    drop(settings);
+    // Likes on the current track affect the next refill immediately.
+    let playing_track = state.player.as_ref().and_then(|player| {
+        let playback = player.state.lock();
+        playback.queue.iter().find(|track| track.id == track_id).cloned()
+    });
+    if let Some(session) = state.wave_session.lock().as_mut() {
+        if liked {
+            if let Some(track) = playing_track.filter(|_| !session.likes.iter().any(|item| item.id == track_id)) {
+                session.likes.insert(0, track);
+            }
+        } else {
+            session.likes.retain(|track| track.id != track_id);
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn settings(state: tauri::State<'_, AppState>) -> config::Settings {
+    state.settings.lock().clone()
+}
+
+#[tauri::command]
+fn toggle_quick_access(
+    state: tauri::State<'_, AppState>,
+    item: config::QuickAccessShortcut,
+) -> Result<bool, String> {
+    let mut settings = state.settings.lock();
+    let pinned = settings.toggle_quick_access(item);
+    settings.save().map_err(|error| error.to_string())?;
+    Ok(pinned)
+}
+
+#[tauri::command]
+async fn save_background(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<String, String> {
+    let source = if path.starts_with("file://") {
+        url::Url::parse(&path)
+            .map_err(|error| error.to_string())?
+            .to_file_path()
+            .map_err(|_| "Invalid background file URL".to_owned())?
+    } else {
+        std::path::PathBuf::from(path)
+    };
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .filter(|value| {
+            matches!(
+                value.as_str(),
+                "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp"
+            )
+        })
+        .ok_or("Choose a PNG, JPEG, WebP, GIF or BMP image")?;
+    let destination = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join(format!("background.{extension}"));
+    let settings = state.settings.clone();
+    tokio::task::spawn_blocking(move || {
+        let metadata = std::fs::metadata(&source).map_err(|error| error.to_string())?;
+        if !metadata.is_file() || metadata.len() > 25 * 1024 * 1024 {
+            return Err("Choose an image smaller than 25 MiB".to_owned());
+        }
+        if source != destination {
+            if let Some(parent) = destination.parent() {
+                std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            }
+            std::fs::copy(&source, &destination).map_err(|error| error.to_string())?;
+        }
+        let stored = destination.to_string_lossy().into_owned();
+        let mut current = settings.lock();
+        current.background_image = Some(stored.clone());
+        current.save().map_err(|error| error.to_string())?;
+        Ok(stored)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn save_font(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<String, String> {
+    let source = std::path::PathBuf::from(path);
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .filter(|value| {
+            matches!(
+                value.as_str(),
+                "ttf" | "otf" | "ttc" | "otc" | "woff" | "woff2"
+            )
+        })
+        .ok_or("Choose a font file")?;
+    let destination = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join(format!("interface-font.{extension}"));
+    let settings = state.settings.clone();
+    tokio::task::spawn_blocking(move || {
+        let metadata = std::fs::metadata(&source).map_err(|error| error.to_string())?;
+        if !metadata.is_file() || metadata.len() > 20 * 1024 * 1024 {
+            return Err("Choose a font smaller than 20 MiB".to_owned());
+        }
+        if source != destination {
+            if let Some(parent) = destination.parent() {
+                std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            }
+            std::fs::copy(&source, &destination).map_err(|error| error.to_string())?;
+        }
+        let stored = destination.to_string_lossy().into_owned();
+        let mut current = settings.lock();
+        current.interface_font = Some(destination);
+        current.save().map_err(|error| error.to_string())?;
+        Ok(stored)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn save_skin(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<(), String> {
+    let source = std::path::PathBuf::from(path);
+    let directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let settings = state.settings.clone();
+    tokio::task::spawn_blocking(move || {
+        let meta = std::fs::metadata(&source).map_err(|error| error.to_string())?;
+        if !meta.is_file() || meta.len() > 25 * 1024 * 1024 {
+            return Err("Choose a skin smaller than 25 MiB".to_owned());
+        }
+        let data = std::fs::read(&source).map_err(|error| error.to_string())?;
+        let digest = {
+            use sha2::Digest as _;
+            format!("{:x}", sha2::Sha256::digest(&data))
+        };
+        let archive = skin_zip::Archive::open(data).map_err(|error| error.to_string())?;
+        let main = archive
+            .read("main.bmp")
+            .ok_or("The skin has no main.bmp")?
+            .map_err(|error| error.to_string())?;
+        if !main.starts_with(b"BM") {
+            return Err("main.bmp is not a BMP image".to_owned());
+        }
+        let destination = directory.join(format!("winamp-skin-{}.wsz", &digest[..16]));
+        if source != destination && !destination.exists() {
+            std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+            std::fs::copy(&source, &destination).map_err(|error| error.to_string())?;
+        }
+        let mut current = settings.lock();
+        current.winamp_skin = Some(destination);
+        current.save().map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn skin_images(
+    state: tauri::State<'_, AppState>,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    use base64::Engine as _;
+    let path = state.settings.lock().winamp_skin.clone();
+    tokio::task::spawn_blocking(move || {
+        let Some(path) = path else {
+            return Ok(std::collections::HashMap::new());
+        };
+        let data = std::fs::read(path).map_err(|error| error.to_string())?;
+        if data.len() > 25 * 1024 * 1024 {
+            return Err("Skin archive is too large".to_owned());
+        }
+        let archive = skin_zip::Archive::open(data).map_err(|error| error.to_string())?;
+        let mut images = std::collections::HashMap::new();
+        let mut total_bytes = 0usize;
+        for name in [
+            "main", "titlebar", "cbuttons", "shufrep", "posbar", "volume", "balance", "eqmain",
+            "pledit", "playpaus", "numbers", "nums_ex", "text", "monoster",
+        ] {
+            if let Some(sheet) = archive.read(&format!("{name}.bmp")) {
+                let sheet = sheet.map_err(|error| error.to_string())?;
+                total_bytes += sheet.len();
+                if sheet.len() > 4 * 1024 * 1024 || total_bytes > 16 * 1024 * 1024 {
+                    return Err("Skin image data is too large".to_owned());
+                }
+                if sheet.starts_with(b"BM") {
+                    images.insert(
+                        name.to_owned(),
+                        format!(
+                            "data:image/bmp;base64,{}",
+                            base64::engine::general_purpose::STANDARD.encode(sheet)
+                        ),
+                    );
+                }
+            }
+        }
+        Ok(images)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn set_setting(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    key: String,
+    value: serde_json::Value,
+) -> Result<(), String> {
+    let mut settings = state.settings.lock();
+    match key.as_str() {
+        "autoplay" => {
+            settings.autoplay = value.as_bool().ok_or("Expected true or false")?;
+            if let Some(player) = &state.player {
+                player.set_autoplay(settings.autoplay);
+            }
+        }
+        "compact_rows" => {
+            settings.compact_rows = value.as_bool().ok_or("Expected true or false")?
+        }
+        "close_to_tray" => {
+            settings.close_to_tray = value.as_bool().ok_or("Expected true or false")?
+        }
+        "main_window_bounds" => {
+            let bounds: config::MainWindowBounds =
+                serde_json::from_value(value).map_err(|error| error.to_string())?;
+            if bounds.width < 850 || bounds.height < 580 {
+                return Err("Main window bounds are too small".into());
+            }
+            settings.main_window_bounds = Some(bounds);
+        }
+        "visualiser" => {
+            settings.visualiser =
+                serde_json::from_value(value).map_err(|error| error.to_string())?
+        }
+        "mono" => {
+            settings.mono = value.as_bool().ok_or("Expected true or false")?;
+            if let Some(player) = &state.player {
+                player.set_mono(settings.mono);
+            }
+        }
+        "balance" => {
+            settings.balance = (value.as_f64().ok_or("Expected a number")? as f32).clamp(-1.0, 1.0);
+            if let Some(player) = &state.player {
+                player.set_balance(settings.balance);
+            }
+        }
+        "eq_enabled" => {
+            settings.eq_enabled = value.as_bool().ok_or("Expected true or false")?;
+            if let Some(player) = &state.player {
+                player.set_eq(settings.eq_enabled, settings.eq_gains_db);
+            }
+        }
+        "eq_preamp_db" => {
+            settings.eq_preamp_db =
+                (value.as_f64().ok_or("Expected a number")? as f32).clamp(-12.0, 12.0);
+            if let Some(player) = &state.player {
+                player.set_eq_preamp_db(settings.eq_preamp_db);
+            }
+        }
+        "eq_gains_db" => {
+            let gains: [f32; 10] = serde_json::from_value(value).map_err(|e| e.to_string())?;
+            settings.eq_gains_db = gains.map(|gain| gain.clamp(-12.0, 12.0));
+            if let Some(player) = &state.player {
+                player.set_eq(settings.eq_enabled, settings.eq_gains_db);
+            }
+        }
+        "theme" => settings.theme = serde_json::from_value(value).map_err(|e| e.to_string())?,
+        "language" => {
+            settings.language = serde_json::from_value(value).map_err(|e| e.to_string())?
+        }
+        "startup_page" => {
+            settings.startup_page = serde_json::from_value(value).map_err(|e| e.to_string())?
+        }
+        "memory_profile" => {
+            settings.memory_profile = serde_json::from_value(value).map_err(|e| e.to_string())?
+        }
+        "reduced_motion" => {
+            settings.reduced_motion = value.as_bool().ok_or("Expected true or false")?
+        }
+        "accent_rgb" => {
+            settings.accent_rgb = serde_json::from_value(value).map_err(|e| e.to_string())?
+        }
+        "background_image" => {
+            settings.background_image = serde_json::from_value(value).map_err(|e| e.to_string())?
+        }
+        "interface_font" => {
+            settings.interface_font = serde_json::from_value(value).map_err(|e| e.to_string())?
+        }
+        "background_opacity" => {
+            settings.background_opacity =
+                (value.as_f64().ok_or("Expected a number")? as f32).clamp(0.0, 0.7)
+        }
+        "background_dim" => {
+            settings.background_dim =
+                (value.as_f64().ok_or("Expected a number")? as f32).clamp(0.0, 0.85)
+        }
+        "background_blur" => {
+            settings.background_blur = value.as_u64().ok_or("Expected a number")?.min(50) as u8
+        }
+        "show_track_numbers" => {
+            settings.show_track_numbers = value.as_bool().ok_or("Expected true or false")?
+        }
+        "soundcloud_profile_url" => {
+            settings.soundcloud_profile_url =
+                serde_json::from_value(value).map_err(|e| e.to_string())?
+        }
+        "discord_client_id" => {
+            settings.discord_client_id = value.as_str().ok_or("Expected text")?.to_owned();
+            *state.last_presence.lock() = None;
+            if settings.discord_presence {
+                state
+                    .presence
+                    .configure(Some(settings.discord_client_id.clone()));
+            }
+        }
+        "discord_presence" => {
+            settings.discord_presence = value.as_bool().ok_or("Expected true or false")?;
+            *state.last_presence.lock() = None;
+            state.presence.configure(
+                settings
+                    .discord_presence
+                    .then(|| settings.discord_client_id.clone()),
+            );
+        }
+        "audio_cache_limit_mb" => {
+            settings.audio_cache_limit_mb = value.as_u64().ok_or("Expected a number")?.min(10240);
+            if let Some(player) = &state.player {
+                player.set_audio_cache_limit_mb(settings.audio_cache_limit_mb);
+            }
+        }
+        "eq_auto" => settings.eq_auto = value.as_bool().ok_or("Expected true or false")?,
+        "mini_player_style" => {
+            settings.mini_player_style = serde_json::from_value(value).map_err(|e| e.to_string())?
+        }
+        "winamp_window" => {
+            let mini = value.as_bool().ok_or("Expected true or false")?;
+            if let Some(window) = app.get_webview_window("main") {
+                if mini && !settings.winamp_window {
+                    record_main_window_bounds(&window, &mut settings)?;
+                }
+                resize_player_window(&window, mini, settings.main_window_bounds)?;
+            }
+            settings.winamp_window = mini;
+        }
+        "winamp_on_top" => {
+            settings.winamp_on_top = value.as_bool().ok_or("Expected true or false")?
+        }
+        "winamp_skin" => {
+            if !value.is_null() {
+                return Err("Choose a skin file to install it".into());
+            }
+            settings.winamp_skin = None;
+        }
+        "winamp_shade" => {
+            settings.winamp_shade = value.as_bool().ok_or("Expected true or false")?
+        }
+        "winamp_eq_window" => {
+            settings.winamp_eq_window = value.as_bool().ok_or("Expected true or false")?
+        }
+        "winamp_eq_shade" => {
+            settings.winamp_eq_shade = value.as_bool().ok_or("Expected true or false")?
+        }
+        "winamp_pl_window" => {
+            settings.winamp_pl_window = value.as_bool().ok_or("Expected true or false")?
+        }
+        "winamp_pl_shade" => {
+            settings.winamp_pl_shade = value.as_bool().ok_or("Expected true or false")?
+        }
+        "winamp_pl_rows" => {
+            settings.winamp_pl_rows = value.as_u64().ok_or("Expected a number")?.clamp(4, 64) as u32
+        }
+        "winamp_scale" => {
+            settings.winamp_scale = value.as_u64().ok_or("Expected a number")?.clamp(1, 4) as u32
+        }
+        _ => return Err("Unknown setting".into()),
+    }
+    settings.save().map_err(|e| e.to_string())?;
+    drop(settings);
+    if key == "eq_auto" {
+        *state.last_eq_track.lock() = None;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn eq_preset(state: tauri::State<'_, AppState>, clear: bool) -> Result<(), String> {
+    let track = state
+        .player()?
+        .current_track()
+        .ok_or("Choose a track first")?;
+    let mut settings = state.settings.lock();
+    settings
+        .eq_presets
+        .retain(|preset| preset.track_id != track.id);
+    if !clear {
+        let preset = config::EqPreset {
+            track_id: track.id,
+            preamp_db: settings.eq_preamp_db,
+            gains_db: settings.eq_gains_db,
+        };
+        settings.eq_presets.push(preset);
+        if settings.eq_presets.len() > 500 {
+            settings.eq_presets.remove(0);
+        }
+    }
+    settings.save().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn audio_cache(state: tauri::State<'_, AppState>, clear: bool) -> Result<u64, String> {
+    let player = state.player()?;
+    Ok(if clear {
+        player.clear_audio_cache()
+    } else {
+        player.audio_cache_size()
+    })
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StorageReport {
+    installation_bytes: u64,
+    clap_model_bytes: u64,
+    clap_preparation_bytes: u64,
+    offline_bytes: u64,
+    audio_cache_bytes: u64,
+    artwork_cache_bytes: u64,
+    other_data_bytes: u64,
+    other_cache_bytes: u64,
+    extra_app_data_bytes: u64,
+    installation_path: String,
+    data_path: String,
+    cache_path: String,
+    extra_app_data_path: String,
+}
+
+fn folder_bytes(path: &std::path::Path) -> std::io::Result<u64> {
+    if !path.exists() { return Ok(0); }
+    let mut size = 0u64;
+    let mut pending = vec![path.to_path_buf()];
+    while let Some(folder) = pending.pop() {
+        for entry in std::fs::read_dir(folder)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            if kind.is_dir() { pending.push(entry.path()); }
+            else if kind.is_file() { size = size.saturating_add(entry.metadata()?.len()); }
+        }
+    }
+    Ok(size)
+}
+
+#[tauri::command]
+async fn storage_report(app: tauri::AppHandle) -> Result<StorageReport, String> {
+    let extra = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || -> Result<StorageReport, String> {
+        let paths = config::app_paths().map_err(|error| error.to_string())?;
+        let installation = std::env::current_exe().map_err(|error| error.to_string())?
+            .parent().ok_or("Installation path unavailable")?.to_path_buf();
+        let offline = paths.root.join("offline");
+        let data_bytes = folder_bytes(&paths.root).map_err(|error| error.to_string())?;
+        let cache_bytes = folder_bytes(&paths.cache).map_err(|error| error.to_string())?;
+        let offline_bytes = folder_bytes(&offline).map_err(|error| error.to_string())?;
+        let audio_cache_bytes = folder_bytes(&paths.audio_cache).map_err(|error| error.to_string())?;
+        let artwork_cache_bytes = folder_bytes(&paths.cover_cache).map_err(|error| error.to_string())?;
+        let installation_bytes = folder_bytes(&installation).map_err(|error| error.to_string())?
+            .saturating_sub(if paths.cache.starts_with(&installation) { cache_bytes } else { 0 })
+            .saturating_sub(if paths.root.starts_with(&installation) { data_bytes } else { 0 });
+        let extra_app_data_bytes = if extra.starts_with(&installation) || extra.starts_with(&paths.root) || extra.starts_with(&paths.cache) {
+            0
+        } else { folder_bytes(&extra).map_err(|error| error.to_string())? };
+        let clap_preparation_bytes = ["clap-build-venv", "clap-lite-venv", "clap-pyi-build", "clap-lite-pyi-build"]
+            .iter().try_fold(0u64, |sum, name| folder_bytes(&installation.join(name)).map(|bytes| sum.saturating_add(bytes)))
+            .map_err(|error| error.to_string())?;
+        Ok(StorageReport {
+            installation_bytes,
+            clap_model_bytes: folder_bytes(&installation.join("resources").join("clap")).map_err(|error| error.to_string())?,
+            clap_preparation_bytes,
+            offline_bytes,
+            audio_cache_bytes,
+            artwork_cache_bytes,
+            other_data_bytes: data_bytes.saturating_sub(offline_bytes),
+            other_cache_bytes: cache_bytes.saturating_sub(audio_cache_bytes).saturating_sub(artwork_cache_bytes),
+            extra_app_data_bytes,
+            installation_path: installation.display().to_string(),
+            data_path: paths.root.display().to_string(),
+            cache_path: paths.cache.display().to_string(),
+            extra_app_data_path: extra.display().to_string(),
+        })
+    }).await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn clear_clap_preparation() -> Result<(), String> {
+    let installation = std::env::current_exe().map_err(|error| error.to_string())?
+        .parent().ok_or("Installation path unavailable")?.to_path_buf();
+    for name in ["clap-build-venv", "clap-lite-venv", "clap-pyi-build", "clap-lite-pyi-build"] {
+        let path = installation.join(name);
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_dir() => std::fs::remove_dir_all(path).map_err(|error| error.to_string())?,
+            Ok(_) => return Err(format!("Unexpected file at {name}")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn clear_artwork_cache() -> Result<(), String> {
+    let base = config::app_paths().map_err(|error| error.to_string())?.cover_cache;
+    for entry in std::fs::read_dir(base).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let kind = entry.file_type().map_err(|error| error.to_string())?;
+        if kind.is_dir() { std::fs::remove_dir_all(entry.path()).map_err(|error| error.to_string())?; }
+        else if kind.is_file() { std::fs::remove_file(entry.path()).map_err(|error| error.to_string())?; }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn import_status(state: tauri::State<'_, AppState>) -> ImportStatus {
+    state.import.lock().clone()
+}
+
+#[tauri::command]
+fn start_yandex_import(state: tauri::State<'_, AppState>, token: String) -> Result<(), String> {
+    if token.trim().is_empty() {
+        return Err("Paste a Yandex Music OAuth token".into());
+    }
+    if !state.client.is_demo() && !state.store.signed_in() {
+        return Err("Sign in to SoundCloud first".into());
+    }
+    {
+        let mut status = state.import.lock();
+        if status.running {
+            return Err("Import is already running".into());
+        }
+        *status = ImportStatus {
+            running: true,
+            title: "Loading Yandex likes…".into(),
+            ..ImportStatus::default()
+        };
+    }
+    let status = state.import.clone();
+    let settings = state.settings.clone();
+    let client = state.client.clone();
+    let store = state.store.clone();
+    let demo = client.is_demo();
+    state.rt.spawn(async move {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        tokio::spawn(import_yandex::import_likes(token, client.clone(), tx));
+        loop {
+            match rx.try_recv() {
+                Ok(import_yandex::Event::Progress { current, total, matched, title }) => {
+                    let mut value = status.lock();
+                    value.current = current; value.total = total; value.matched = matched; value.title = title;
+                }
+                Ok(import_yandex::Event::Finished { track_ids, not_found }) => {
+                    let count = track_ids.len();
+                    let result = if count == 0 { Ok(()) } else if demo {
+                        let mut settings = settings.lock();
+                        let id = settings.custom_playlists.iter().map(|item| item.id).max().unwrap_or(8999).max(8999) + 1;
+                        settings.custom_playlists.push(config::CustomPlaylist { id, title: "Yandex Music likes".into(), track_ids });
+                        settings.save().map_err(|error| error.to_string())
+                    } else {
+                        api::endpoints::create_playlist(&client, "Yandex Music likes", true, &track_ids).await
+                            .map(|_| ()).map_err(|error| error.to_string())
+                    };
+                    store.invalidate(&Key::MyPlaylists);
+                    let mut value = status.lock();
+                    value.running = false;
+                    value.message = match result {
+                        Ok(()) => format!("Imported {count} tracks into Yandex Music likes ({not_found} not found)"),
+                        Err(error) => format!("Could not create playlist: {error}"),
+                    };
+                    break;
+                }
+                Ok(import_yandex::Event::Failed(error)) => {
+                    let mut value = status.lock(); value.running = false; value.message = error; break;
+                }
+                Err(crossbeam_channel::TryRecvError::Empty) => tokio::time::sleep(std::time::Duration::from_millis(150)).await,
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    let mut value = status.lock(); value.running = false; value.message = "Import stopped unexpectedly".into(); break;
+                }
+            }
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+async fn upload_track(
+    state: tauri::State<'_, AppState>,
+    path: String,
+    title: String,
+    artist: String,
+    description: String,
+    genre: String,
+    tags: String,
+    public: bool,
+) -> Result<Track, String> {
+    if !state.store.signed_in() {
+        return Err("Sign in to upload".into());
+    }
+    let path = std::path::Path::new(path.trim());
+    if !path.is_file() {
+        return Err("Choose an existing audio file".into());
+    }
+    if title.trim().is_empty() {
+        return Err("Enter a track title".into());
+    }
+    let result = api::endpoints::upload_track(
+        &state.client,
+        path,
+        api::endpoints::TrackUpload {
+            title: title.trim(),
+            artist: Some(artist.trim()),
+            description: Some(description.trim()),
+            genre: Some(genre.trim()),
+            tags: Some(tags.trim()),
+            public,
+        },
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    state.store.invalidate(&Key::MyTracks);
+    Ok(result)
+}
+
+#[tauri::command]
+async fn edit_track(
+    state: tauri::State<'_, AppState>,
+    id: u64,
+    title: String,
+    artist: String,
+    description: String,
+) -> Result<Track, String> {
+    if !state.store.signed_in() {
+        return Err("Sign in to edit tracks".into());
+    }
+    if title.trim().is_empty() {
+        return Err("Enter a track title".into());
+    }
+    let result = api::endpoints::update_track_metadata(
+        &state.client,
+        id,
+        title.trim(),
+        Some(description.trim()),
+        Some(artist.trim()),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    state.store.invalidate(&Key::Track(id));
+    state.store.invalidate(&Key::MyTracks);
+    Ok(result)
+}
+
+#[tauri::command]
+async fn delete_track(state: tauri::State<'_, AppState>, id: u64) -> Result<(), String> {
+    if !state.store.signed_in() {
+        return Err("Sign in to delete tracks".into());
+    }
+    api::endpoints::delete_track(&state.client, id)
+        .await
+        .map_err(|error| error.to_string())?;
+    state.store.invalidate(&Key::Track(id));
+    state.store.invalidate(&Key::MyTracks);
+    Ok(())
+}
+
+#[tauri::command]
+async fn save_storefront(
+    state: tauri::State<'_, AppState>,
+    id: u64,
+    title: String,
+    kind: String,
+    link: String,
+    link_title: String,
+    description: String,
+    price: String,
+) -> Result<(), String> {
+    if !state.store.signed_in() {
+        return Err("Sign in to edit tracks".into());
+    }
+    if title.trim().is_empty() || kind.trim().is_empty() || link.trim().is_empty() {
+        return Err("Title, type and link are required".into());
+    }
+    api::endpoints::update_track_storefront(
+        &state.client,
+        id,
+        api::endpoints::StorefrontUpdate {
+            title: title.trim(),
+            kind: kind.trim(),
+            link: link.trim(),
+            link_title: Some(link_title.trim()),
+            description: Some(description.trim()),
+            price: Some(price.trim()),
+        },
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    state.store.invalidate(&Key::Track(id));
+    Ok(())
+}
+
+#[tauri::command]
+fn connect_account(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    if !matches!(
+        *state.connection.lock(),
+        Connection::Demo | Connection::Error { .. }
+    ) {
+        return Err("Connection is already available or in progress".into());
+    }
+    *state.connection.lock() = Connection::Connecting;
+    let client = state.client.clone();
+    let store = state.store.clone();
+    let player = state.player.clone();
+    let app = state.inner().connection.clone();
+    let session_slot = state.inner().session.clone();
+    state.rt.spawn(async move {
+        let result = async {
+            let http = reqwest::Client::new();
+            let pairing = auth::register::begin(&http)
+                .await
+                .map_err(|e| e.to_string())?;
+            *app.lock() = Connection::Pairing {
+                code: pairing.code.clone(),
+                url: pairing.url.clone(),
+            };
+            let url = pairing.url.clone();
+            let _ = tokio::task::spawn_blocking(move || webbrowser::open(&url)).await;
+            let (cancel_tx, cancel) = tokio::sync::watch::channel(false);
+            let registered = auth::register::finish(&http, &pairing, cancel)
+                .await
+                .map_err(|e| e.to_string())?;
+            drop(cancel_tx);
+            *app.lock() = Connection::Registering;
+            registered
+                .credentials
+                .save_to_keyring()
+                .map_err(|e| e.to_string())?;
+            client.set_client_id(registered.credentials.client_id.clone());
+            let session = auth::start(client.clone())
+                .await
+                .ok_or("Could not start SoundCloud session")?;
+            if let Some(player) = &player {
+                player.stop();
+                {
+                    let mut player_state = player.state.lock();
+                    player_state.queue.clear();
+                    player_state.queue_revision = player_state.queue_revision.wrapping_add(1);
+                    player_state.order.clear();
+                    player_state.current = None;
+                }
+                player.set_demo(false);
+            }
+            client.set_demo(false);
+            let signed_in = session.signed_in().await;
+            store.set_signed_in(signed_in);
+            store.clear();
+            *session_slot.lock() = Some(session);
+            *app.lock() = if signed_in {
+                Connection::SignedIn
+            } else {
+                Connection::Public
+            };
+            Ok::<(), String>(())
+        }
+        .await;
+        if let Err(message) = result {
+            *app.lock() = Connection::Error { message };
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+async fn sign_in(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let session = state
+        .session
+        .lock()
+        .clone()
+        .ok_or("Connect SoundCloud first")?;
+    session.sign_in().await.map_err(|error| error.to_string())?;
+    state.store.set_signed_in(true);
+    state.store.clear();
+    *state.connection.lock() = Connection::SignedIn;
+    Ok(())
+}
+
+#[tauri::command]
+async fn sign_out(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let session = state
+        .session
+        .lock()
+        .clone()
+        .ok_or("No SoundCloud session")?;
+    session
+        .sign_out()
+        .await
+        .map_err(|error| error.to_string())?;
+    state.store.set_signed_in(false);
+    state.store.clear();
+    *state.wave_session.lock() = None;
+    state.persist_wave_active(false);
+    if session.is_remote() {
+        state.client.set_demo(true);
+        if let Some(player) = &state.player {
+            player.stop();
+            player.set_demo(true);
+            let tracks = demo::demo_tracks();
+            let mut playback = player.state.lock();
+            playback.queue = tracks;
+            playback.queue_revision = playback.queue_revision.wrapping_add(1);
+            playback.order = (0..playback.queue.len()).collect();
+            playback.current = None;
+        }
+        *state.connection.lock() = Connection::Demo;
+    } else {
+        *state.connection.lock() = Connection::Public;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn approval_server_url() -> Option<String> {
+    auth::saved_server_url()
+}
+
+#[tauri::command]
+async fn connect_server(state: tauri::State<'_, AppState>, server_url: String) -> Result<(), String> {
+    let previous = state.connection.lock().clone();
+    *state.connection.lock() = Connection::Connecting;
+    let result = async {
+        let creds = auth::AppCredentials::from_server(&server_url).await
+            .map_err(|error| error.to_string())?;
+        let session = auth::Session::new(creds.clone(), state.client.clone());
+        session.sign_in().await.map_err(|error| error.to_string())?;
+        creds.save_remote().map_err(|error| error.to_string())?;
+        state.client.set_client_id(creds.client_id);
+        state.client.set_demo(false);
+        if let Some(player) = &state.player {
+            player.stop();
+            let mut playback = player.state.lock();
+            playback.queue.clear();
+            playback.queue_revision = playback.queue_revision.wrapping_add(1);
+            playback.order.clear();
+            playback.current = None;
+            drop(playback);
+            player.set_demo(false);
+        }
+        state.store.set_signed_in(true);
+        state.store.clear();
+        *state.session.lock() = Some(session);
+        *state.connection.lock() = Connection::SignedIn;
+        Ok::<(), String>(())
+    }.await;
+    if let Err(message) = &result {
+        if let Some(old) = state.session.lock().as_ref() {
+            state.client.attach_session(old);
+        }
+        *state.connection.lock() = match previous {
+            Connection::Demo | Connection::Error { .. } => Connection::Error { message: message.clone() },
+            other => other,
+        };
+    }
+    result
+}
+
+async fn approval_admin_token(state: &AppState) -> Result<String, String> {
+    let session = state.session.lock().clone().ok_or("Sign in to SoundCloud first")?;
+    if !session.signed_in().await { return Err("Sign in to SoundCloud first".into()); }
+    session.access_token().await.map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn approval_users(state: tauri::State<'_, AppState>, server_url: String) -> Result<Vec<ApprovalUser>, String> {
+    let url = auth::save_server_url(&server_url).map_err(|error| error.to_string())?;
+    let token = approval_admin_token(&state).await?;
+    let response = reqwest::Client::new().get(format!("{url}/v1/admin/users"))
+        .header(reqwest::header::AUTHORIZATION, format!("OAuth {token}"))
+        .send().await.map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("Approval server returned {}", response.status()));
+    }
+    response.json::<ApprovalUsers>().await.map(|body| body.users)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn approval_set_user(state: tauri::State<'_, AppState>, server_url: String, user_id: u64, status: String) -> Result<(), String> {
+    if !matches!(status.as_str(), "approved" | "denied" | "pending") {
+        return Err("Invalid approval status".into());
+    }
+    let url = auth::save_server_url(&server_url).map_err(|error| error.to_string())?;
+    let token = approval_admin_token(&state).await?;
+    let response = reqwest::Client::new().post(format!("{url}/v1/admin/users/{user_id}"))
+        .header(reqwest::header::AUTHORIZATION, format!("OAuth {token}"))
+        .json(&serde_json::json!({ "status": status }))
+        .send().await.map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("Approval server returned {}", response.status()));
+    }
+    Ok(())
+}
+
+fn record_main_window_bounds(
+    window: &tauri::WebviewWindow,
+    settings: &mut config::Settings,
+) -> Result<(), String> {
+    if settings.winamp_window {
+        return Ok(());
+    }
+    let maximized = window.is_maximized().map_err(|error| error.to_string())?;
+    if maximized {
+        let mut bounds = settings.main_window_bounds.unwrap_or_default();
+        bounds.maximized = true;
+        settings.main_window_bounds = Some(bounds);
+    } else if !window.is_minimized().map_err(|error| error.to_string())? {
+        let size = window.inner_size().map_err(|error| error.to_string())?;
+        if size.width >= 850 && size.height >= 580 {
+            let position = window.outer_position().map_err(|error| error.to_string())?;
+            settings.main_window_bounds = Some(config::MainWindowBounds {
+                x: position.x,
+                y: position.y,
+                width: size.width,
+                height: size.height,
+                maximized: false,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn resize_player_window(
+    window: &tauri::WebviewWindow,
+    mini: bool,
+    saved_bounds: Option<config::MainWindowBounds>,
+) -> Result<(), String> {
+    if mini {
+        window
+            .set_fullscreen(false)
+            .map_err(|error| error.to_string())?;
+        window.unmaximize().map_err(|error| error.to_string())?;
+        window
+            .set_min_size(Some(tauri::LogicalSize::new(420.0, 104.0)))
+            .map_err(|error| error.to_string())?;
+        window
+            .set_size(tauri::LogicalSize::new(420.0, 104.0))
+            .map_err(|error| error.to_string())?;
+        window.set_resizable(false).map_err(|error| error.to_string())?;
+        window.set_maximizable(false).map_err(|error| error.to_string())?;
+    } else {
+        window.set_resizable(true).map_err(|error| error.to_string())?;
+        window.set_maximizable(true).map_err(|error| error.to_string())?;
+        window
+            .set_min_size(Some(tauri::LogicalSize::new(850.0, 580.0)))
+            .map_err(|error| error.to_string())?;
+        let bounds = saved_bounds.unwrap_or_default();
+        window
+            .set_size(tauri::PhysicalSize::new(bounds.width, bounds.height))
+            .map_err(|error| error.to_string())?;
+        if bounds.maximized {
+            window.maximize().map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+pub fn run() {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_single_instance::init(
+            |app, arguments, _cwd| {
+                if let Some(link) = arguments
+                    .iter()
+                    .skip(1)
+                    .find(|argument| link::parse(argument).is_ok())
+                {
+                    if let Some(state) = app.try_state::<AppState>() {
+                        *state.pending_link.lock() = Some(link.clone());
+                    }
+                }
+                show_window(app);
+            },
+        ))
+        .plugin(tauri_plugin_deep_link::init())
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let close_to_tray = if let Some(state) = window.app_handle().try_state::<AppState>() {
+                    let mut settings = state.settings.lock();
+                    if let Some(webview_window) = window.app_handle().get_webview_window("main") {
+                        if let Err(error) = record_main_window_bounds(&webview_window, &mut settings) {
+                            log::warn!("Could not capture main window bounds: {error}");
+                        }
+                    }
+                    if let Err(error) = settings.save() {
+                        log::warn!("Could not save window settings: {error}");
+                    }
+                    let close_to_tray = settings.close_to_tray;
+                    drop(settings);
+                    if !close_to_tray {
+                        state.persist_wave_active(state.wave_session.lock().is_some());
+                        if let Some(player) = &state.player { player.shutdown(); }
+                    }
+                    close_to_tray
+                } else {
+                    false
+                };
+                if close_to_tray {
+                    if let Err(error) = window.hide() {
+                        log::error!("Could not hide Fastcloud in the tray: {error}");
+                    }
+                } else {
+                    window.app_handle().exit(0);
+                }
+            }
+        })
+        .setup(|app| {
+            if let Ok(resource_dir) = app.path().resource_dir() {
+                clap::configure(&resource_dir);
+            }
+            app.manage(AppState::new()?);
+            let (mini, saved_bounds) = {
+                let state = app.state::<AppState>();
+                let settings = state.settings.lock();
+                (settings.winamp_window, settings.main_window_bounds)
+            };
+            if mini {
+                if let Some(window) = app.get_webview_window("main") {
+                    resize_player_window(&window, true, saved_bounds)?;
+                }
+            } else {
+                if let (Some(window), Some(bounds)) = (app.get_webview_window("main"), saved_bounds) {
+                    window.set_size(tauri::PhysicalSize {
+                        width: bounds.width,
+                        height: bounds.height,
+                    })?;
+                    window.set_position(tauri::PhysicalPosition {
+                        x: bounds.x,
+                        y: bounds.y,
+                    })?;
+                    if bounds.maximized {
+                        window.maximize()?;
+                    }
+                }
+            }
+            if let Some(player) = app.state::<AppState>().player.clone() {
+                #[cfg(windows)]
+                let hwnd = app
+                    .get_webview_window("main")
+                    .and_then(|window| window.hwnd().ok())
+                    .map(|handle| handle.0 as usize);
+                #[cfg(not(windows))]
+                let hwnd = None;
+                media::spawn(app.handle().clone(), player, hwnd);
+            }
+            let modifiers = Some(Modifiers::CONTROL | Modifiers::ALT);
+            let hotkeys = [
+                (Shortcut::new(modifiers, Code::KeyP), "toggle"),
+                (Shortcut::new(modifiers, Code::ArrowRight), "next"),
+                (Shortcut::new(modifiers, Code::ArrowLeft), "previous"),
+                (Shortcut::new(modifiers, Code::KeyS), "stop"),
+                (Shortcut::new(modifiers, Code::ArrowUp), "volume_up"),
+                (Shortcut::new(modifiers, Code::ArrowDown), "volume_down"),
+                (Shortcut::new(modifiers, Code::KeyM), "mute"),
+                (Shortcut::new(modifiers, Code::KeyH), "shuffle"),
+                (Shortcut::new(modifiers, Code::KeyR), "repeat"),
+            ];
+            app.handle().plugin(
+                tauri_plugin_global_shortcut::Builder::new()
+                    .with_handler(move |app, shortcut, event| {
+                        if event.state() != ShortcutState::Pressed {
+                            return;
+                        }
+                        let Some((_, action)) = hotkeys.iter().find(|(key, _)| key == shortcut)
+                        else {
+                            return;
+                        };
+                        let Some(state) = app.try_state::<AppState>() else {
+                            return;
+                        };
+                        let Some(player) = &state.player else {
+                            return;
+                        };
+                        match *action {
+                            "toggle" => player.play_pause(),
+                            "next" => {
+                                player.next();
+                            }
+                            "previous" => {
+                                player.prev();
+                            }
+                            "stop" => {
+                                *state.wave_session.lock() = None;
+                                state.persist_wave_active(false);
+                                player.stop();
+                            }
+                            "volume_up" => {
+                                let volume = player.state.lock().volume;
+                                player.set_volume((volume + 0.1).min(1.0));
+                            }
+                            "volume_down" => {
+                                let volume = player.state.lock().volume;
+                                player.set_volume((volume - 0.1).max(0.0));
+                            }
+                            "mute" => player.set_volume(0.0),
+                            "shuffle" => player.toggle_shuffle(),
+                            "repeat" => player.cycle_repeat(),
+                            _ => {}
+                        }
+                    })
+                    .build(),
+            )?;
+            for (shortcut, _) in &hotkeys {
+                if let Err(error) = app.global_shortcut().register(*shortcut) {
+                    log::warn!("shortcut {shortcut:?} unavailable: {error}");
+                }
+            }
+            let show = MenuItem::with_id(app, "show", "Show Fastcloud", true, None::<&str>)?;
+            let toggle = MenuItem::with_id(app, "toggle", "Play/Pause", true, None::<&str>)?;
+            let next = MenuItem::with_id(app, "next", "Next", true, None::<&str>)?;
+            let previous = MenuItem::with_id(app, "previous", "Previous", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show, &toggle, &next, &previous, &quit])?;
+            let mut tray = TrayIconBuilder::new()
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .tooltip("Fastcloud")
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "show" => show_window(app),
+                    "toggle" | "next" | "previous" => {
+                        if let Some(state) = app.try_state::<AppState>() {
+                            if let Some(player) = &state.player {
+                                match event.id().as_ref() {
+                                    "toggle" => player.play_pause(),
+                                    "next" => {
+                                        player.next();
+                                    }
+                                    _ => {
+                                        player.prev();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "quit" => {
+                        if let (Some(window), Some(state)) =
+                            (app.get_webview_window("main"), app.try_state::<AppState>())
+                        {
+                            {
+                                let mut settings = state.settings.lock();
+                                if let Err(error) = record_main_window_bounds(&window, &mut settings) {
+                                    log::warn!("Could not capture main window bounds: {error}");
+                                }
+                                if let Err(error) = settings.save() {
+                                    log::warn!("Could not save window settings: {error}");
+                                }
+                            }
+                            state.persist_wave_active(state.wave_session.lock().is_some());
+                            if let Some(player) = &state.player { player.shutdown(); }
+                        }
+                        app.exit(0);
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if matches!(
+                        event,
+                        TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        }
+                    ) {
+                        show_window(tray.app_handle());
+                    }
+                });
+            if let Some(icon) = app.default_window_icon() {
+                tray = tray.icon(icon.clone());
+            }
+            tray.build(app)?;
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            connection,
+            my_profile,
+            take_pending_link,
+            player_state,
+            image_data,
+            waveform_samples,
+            offline_tracks,
+            my_wave,
+            wave_dislike,
+            wave_disliked,
+            set_offline_like_order,
+            download_offline_track,
+            remove_offline_track,
+            clear_offline_tracks,
+            visualiser_frame,
+            tracks,
+            playlists,
+            catalog_releases,
+            users,
+            track_detail,
+            playlist_detail,
+            user_detail,
+            comments,
+            track_lyrics,
+            search_lyrics,
+            user_profiles,
+            related_users,
+            open_link,
+            open_soundcloud_url,
+            vibe_search,
+            following,
+            refresh_following,
+            post_comment,
+            repost,
+            like_playlist,
+            set_followed,
+            create_playlist,
+            add_to_playlist,
+            add_tracks_to_playlist,
+            remove_from_playlist,
+            move_in_playlist,
+            rename_playlist,
+            delete_playlist,
+            transport,
+            play_tracks,
+            enqueue,
+            enqueue_tracks,
+            set_liked,
+            settings,
+            toggle_quick_access,
+            save_background,
+            save_font,
+            save_skin,
+            skin_images,
+            set_setting,
+            eq_preset,
+            audio_cache,
+            storage_report,
+            clear_artwork_cache,
+            clear_clap_preparation,
+            import_status,
+            start_yandex_import,
+            upload_track,
+            edit_track,
+            delete_track,
+            save_storefront,
+            connect_account,
+            sign_in,
+            sign_out,
+            approval_server_url,
+            connect_server,
+            approval_users,
+            approval_set_user
+        ])
+        .run(tauri::generate_context!())
+        .expect("Fastcloud failed to start");
+}
+
+fn show_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+#[cfg(test)]
+#[tokio::test]
+#[ignore = "requires a saved SoundCloud account and network access"]
+async fn live_account_library_smoke() {
+    let credentials = auth::AppCredentials::discover().expect("SoundCloud credentials are missing");
+    let client = Arc::new(api::ApiClient::new(Some(credentials.client_id), false));
+    let session = auth::start(client.clone()).await.expect("saved session could not be resumed");
+    assert!(session.signed_in().await, "saved session is not signed in");
+
+    let profile = api::endpoints::me(&client).await.expect("/me failed");
+    assert!(profile.id > 0);
+    let playlists = api::endpoints::my_playlists(&client).await.next_page().await.expect("/me/playlists failed");
+    let public_playlists = api::endpoints::user_playlists(&client, profile.id).await.next_page().await.expect("/users/:id/playlists failed");
+    let saved = api::endpoints::my_liked_playlists(&client).await.next_page().await.expect("/me/likes/playlists failed");
+    let likes = api::endpoints::my_liked_tracks(&client).await.next_page().await.expect("/me/likes/tracks failed");
+    println!("live library: my_playlists={}, public_profile_playlists={}, saved_playlists={}, liked_tracks={}", playlists.len(), public_playlists.len(), saved.len(), likes.len());
+    assert!(!likes.is_empty(), "account likes unexpectedly empty");
+}

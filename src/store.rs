@@ -38,6 +38,7 @@ use crate::api::{ApiClient, endpoints};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// Rows fetched per list. SoundCloud allows up to 200; 50 is its default page
@@ -162,12 +163,13 @@ pub enum State {
 
 /// One cached list.
 struct Entry {
+    request_id: u64,
     state: State,
     fetched_at: Instant,
     last_used: Instant,
-    tracks: Vec<Track>,
+    tracks: Arc<Vec<Track>>,
     comments: Vec<Comment>,
-    playlists: Vec<Playlist>,
+    playlists: Arc<Vec<Playlist>>,
     users: Vec<User>,
     web_profiles: Vec<WebProfile>,
     me: Option<crate::api::models::Me>,
@@ -175,15 +177,16 @@ struct Entry {
 }
 
 impl Entry {
-    fn loading() -> Self {
+    fn loading(request_id: u64) -> Self {
         let now = Instant::now();
         Self {
+            request_id,
             state: State::Loading,
             fetched_at: now,
             last_used: now,
-            tracks: Vec::new(),
+            tracks: Arc::new(Vec::new()),
             comments: Vec::new(),
-            playlists: Vec::new(),
+            playlists: Arc::new(Vec::new()),
             users: Vec::new(),
             web_profiles: Vec::new(),
             me: None,
@@ -219,6 +222,7 @@ enum Payload {
 
 struct Done {
     key: Key,
+    request_id: u64,
     result: Result<Payload, String>,
 }
 
@@ -237,6 +241,7 @@ struct Inner {
     entries: Mutex<HashMap<Key, Entry>>,
     tx: crossbeam_channel::Sender<Done>,
     rx: crossbeam_channel::Receiver<Done>,
+    next_request_id: AtomicU64,
     /// False while only an app-only token is held, so account lists are not
     /// requested just to be refused.
     signed_in: std::sync::atomic::AtomicBool,
@@ -252,6 +257,7 @@ impl Store {
                 entries: Mutex::new(HashMap::new()),
                 tx,
                 rx,
+                next_request_id: AtomicU64::new(1),
                 signed_in: std::sync::atomic::AtomicBool::new(false),
             }),
         }
@@ -281,11 +287,18 @@ impl Store {
         let mut landed = 0;
         while let Ok(done) = self.inner.rx.try_recv() {
             let mut entries = self.inner.entries.lock();
-            let entry = entries.entry(done.key).or_insert_with(Entry::loading);
+            let Some(entry) = entries.get_mut(&done.key) else {
+                // Invalidated, evicted, or removed when the account changed.
+                continue;
+            };
+            if entry.request_id != done.request_id || entry.state != State::Loading {
+                // A newer request owns this key; an older response must not win.
+                continue;
+            }
             entry.fetched_at = Instant::now();
             match done.result {
                 Ok(Payload::Tracks(tracks)) => {
-                    entry.tracks = tracks;
+                    entry.tracks = Arc::new(tracks);
                     entry.state = State::Ready;
                 }
                 Ok(Payload::Comments(comments)) => {
@@ -293,12 +306,12 @@ impl Store {
                     entry.state = State::Ready;
                 }
                 Ok(Payload::Playlists(playlists)) => {
-                    entry.playlists = playlists;
+                    entry.playlists = Arc::new(playlists);
                     entry.state = State::Ready;
                 }
                 Ok(Payload::Feed { tracks, playlists }) => {
-                    entry.tracks = tracks;
-                    entry.playlists = playlists;
+                    entry.tracks = Arc::new(tracks);
+                    entry.playlists = Arc::new(playlists);
                     entry.state = State::Ready;
                 }
                 Ok(Payload::Users(users)) => {
@@ -329,6 +342,12 @@ impl Store {
 
     /// A list's tracks, fetching if needed. `Loading` on the first ask.
     pub fn tracks(&self, key: Key) -> Slot<Vec<Track>> {
+        self.slot(key, |entry| entry.tracks.as_ref().clone())
+    }
+
+    /// The desktop bridge can serialize cached tracks without a deep copy.
+    #[allow(dead_code)] // The legacy executable does not use the Tauri bridge.
+    pub fn tracks_shared(&self, key: Key) -> Slot<Arc<Vec<Track>>> {
         self.slot(key, |entry| entry.tracks.clone())
     }
 
@@ -338,6 +357,12 @@ impl Store {
     }
 
     pub fn playlists(&self, key: Key) -> Slot<Vec<Playlist>> {
+        self.slot(key, |entry| entry.playlists.as_ref().clone())
+    }
+
+    /// Share a playlist collection with the desktop serializer.
+    #[allow(dead_code)] // The legacy executable does not use the Tauri bridge.
+    pub fn playlists_shared(&self, key: Key) -> Slot<Arc<Vec<Playlist>>> {
         self.slot(key, |entry| entry.playlists.clone())
     }
 
@@ -351,8 +376,8 @@ impl Store {
 
     /// One track. `Key::Track(id)` holds it as a one-row list.
     pub fn track(&self, id: u64) -> Slot<Track> {
-        match self.slot(Key::Track(id), |entry| entry.tracks.clone()) {
-            Slot::Ready(tracks) => match tracks.into_iter().next() {
+        match self.slot(Key::Track(id), |entry| entry.tracks.first().cloned()) {
+            Slot::Ready(track) => match track {
                 Some(track) => Slot::Ready(track),
                 None => Slot::Failed("that track is not available".to_owned()),
             },
@@ -363,8 +388,8 @@ impl Store {
     }
 
     pub fn playlist(&self, id: u64) -> Slot<Playlist> {
-        match self.slot(Key::Playlist(id), |entry| entry.playlists.clone()) {
-            Slot::Ready(lists) => match lists.into_iter().next() {
+        match self.slot(Key::Playlist(id), |entry| entry.playlists.first().cloned()) {
+            Slot::Ready(list) => match list {
                 Some(playlist) => Slot::Ready(playlist),
                 None => Slot::Failed("that playlist is not available".to_owned()),
             },
@@ -438,21 +463,24 @@ impl Store {
             let stale = (entry.state == State::Ready).then(|| take(entry));
             entry.state = State::Loading;
             entry.fetched_at = Instant::now();
+            let request_id = self.inner.next_request_id.fetch_add(1, Ordering::Relaxed);
+            entry.request_id = request_id;
             drop(entries);
-            self.spawn(key);
+            self.spawn(key, request_id);
             return match stale {
                 Some(value) => Slot::Ready(value),
                 None => Slot::Loading,
             };
         }
-        entries.insert(key.clone(), Entry::loading());
+        let request_id = self.inner.next_request_id.fetch_add(1, Ordering::Relaxed);
+        entries.insert(key.clone(), Entry::loading(request_id));
         drop(entries);
-        self.spawn(key);
+        self.spawn(key, request_id);
         Slot::Loading
     }
 
     /// Start the fetch for a key on the runtime.
-    fn spawn(&self, key: Key) {
+    fn spawn(&self, key: Key, request_id: u64) {
         let store = self.clone();
         let client = self.inner.client.clone();
         let tx = self.inner.tx.clone();
@@ -461,7 +489,11 @@ impl Store {
                 log::warn!("catalogue {key:?}: {e}");
                 e.user_message()
             });
-            let _ = tx.send(Done { key, result });
+            let _ = tx.send(Done {
+                key,
+                request_id,
+                result,
+            });
             drop(store);
         });
     }
@@ -732,6 +764,12 @@ mod tests {
         Store::new(Arc::new(ApiClient::demo()), handle)
     }
 
+    impl Store {
+        fn request_id(&self, key: &Key) -> u64 {
+            self.inner.entries.lock()[key].request_id
+        }
+    }
+
     /// Account lists must not be requested with an app-only token: the answer
     /// would be a 401 and the user would see an error instead of a prompt.
     #[test]
@@ -787,12 +825,16 @@ mod tests {
             .tx
             .send(Done {
                 key: key.clone(),
+                request_id: store.request_id(&key),
                 result: Ok(Payload::Tracks(vec![track(1), track(2)])),
             })
             .unwrap();
         assert_eq!(store.poll(), 1);
         let rows = store.tracks(key.clone()).ready().expect("ready");
         assert_eq!(rows.len(), 2);
+        let shared_a = store.tracks_shared(key.clone()).ready().expect("shared ready");
+        let shared_b = store.tracks_shared(key.clone()).ready().expect("shared ready");
+        assert!(Arc::ptr_eq(&shared_a, &shared_b));
 
         let bad = Key::SearchTracks("bad".into());
         assert!(store.tracks(bad.clone()).is_loading());
@@ -801,6 +843,7 @@ mod tests {
             .tx
             .send(Done {
                 key: bad.clone(),
+                request_id: store.request_id(&bad),
                 result: Err("HTTP 500".into()),
             })
             .unwrap();
@@ -820,6 +863,7 @@ mod tests {
             .tx
             .send(Done {
                 key: key.clone(),
+                request_id: store.request_id(&key),
                 result: Ok(Payload::Tracks(vec![track(9)])),
             })
             .unwrap();
@@ -861,6 +905,7 @@ mod tests {
                 .tx
                 .send(Done {
                     key: Key::Related(i),
+                    request_id: store.request_id(&Key::Related(i)),
                     result: Ok(Payload::Tracks(vec![track(i)])),
                 })
                 .unwrap();
@@ -891,6 +936,7 @@ mod tests {
             .tx
             .send(Done {
                 key: key.clone(),
+                request_id: store.request_id(&key),
                 result: Ok(Payload::Tracks(vec![track(1)])),
             })
             .unwrap();
@@ -898,6 +944,63 @@ mod tests {
         assert!(store.tracks(key.clone()).ready().is_some());
         store.invalidate(&key);
         assert!(store.tracks(key).is_loading());
+    }
+
+    #[test]
+    fn invalidated_request_cannot_restore_stale_rows() {
+        let store = store();
+        let key = Key::PlaylistTracks(5);
+        assert!(store.tracks(key.clone()).is_loading());
+        let old_request_id = store.request_id(&key);
+        store.invalidate(&key);
+        assert!(store.tracks(key.clone()).is_loading());
+        let new_request_id = store.request_id(&key);
+        assert_ne!(old_request_id, new_request_id);
+
+        store
+            .inner
+            .tx
+            .send(Done {
+                key: key.clone(),
+                request_id: old_request_id,
+                result: Ok(Payload::Tracks(vec![track(1)])),
+            })
+            .unwrap();
+        assert_eq!(store.poll(), 0);
+        assert!(store.tracks(key.clone()).is_loading());
+
+        store
+            .inner
+            .tx
+            .send(Done {
+                key: key.clone(),
+                request_id: new_request_id,
+                result: Ok(Payload::Tracks(vec![track(2)])),
+            })
+            .unwrap();
+        assert_eq!(store.poll(), 1);
+        assert_eq!(store.tracks(key).ready().unwrap()[0].id, 2);
+    }
+
+    #[test]
+    fn signed_out_account_request_cannot_restore_private_rows() {
+        let store = store();
+        store.set_signed_in(true);
+        assert!(store.tracks(Key::Likes).is_loading());
+        let request_id = store.request_id(&Key::Likes);
+        store.set_signed_in(false);
+        store
+            .inner
+            .tx
+            .send(Done {
+                key: Key::Likes,
+                request_id,
+                result: Ok(Payload::Tracks(vec![track(1)])),
+            })
+            .unwrap();
+        assert_eq!(store.poll(), 0);
+        assert!(matches!(store.tracks(Key::Likes), Slot::Unavailable));
+        assert_eq!(store.len(), 0);
     }
 
     /// `rows()` lets a view lay out without matching, and must never panic on
@@ -933,6 +1036,7 @@ mod tests {
             preview_start_ms: None,
             preview_end_ms: None,
             genre: None,
+            tag_list: None,
             description: None,
             created_at: None,
             permalink_url: None,

@@ -1,7 +1,8 @@
 //! Audio tap and Winamp-style spectrum and oscilloscope data.
 //!
-//! The tap stores half a second of post-EQ, pre-volume audio, so a
-//! visualiser shows the music rather than the volume knob. The analyser
+//! The tap stores ten seconds of post-EQ, pre-volume audio, so a
+//! local audio model can inspect a track without downloading it again.
+//! The analyser
 //! follows Winamp's classic constants and behaviour: 512 samples under a
 //! Hann window, 256 magnitudes, seventy-five semitone-spaced bands folded
 //! into nineteen bars that fall at a fixed rate with peaks that pick up
@@ -19,8 +20,9 @@ use std::time::{Duration, Instant};
 /// HLS streams.
 pub const SAMPLE_RATE: u32 = 44_100;
 
-/// Half a second of audio.
-const KEPT: usize = SAMPLE_RATE as usize / 2;
+/// Ten seconds of audio for optional local preference analysis.
+pub const ANALYSIS_SAMPLES: usize = SAMPLE_RATE as usize * 10;
+const KEPT: usize = ANALYSIS_SAMPLES;
 /// How far behind the newest sample the visualiser looks, so it shows what
 /// the speaker is playing rather than what the output has queued.
 pub const LAG: usize = SAMPLE_RATE as usize * 3 / 20;
@@ -49,7 +51,7 @@ const CHANNEL_SUM: f32 = 2.0;
 /// Winamp's own scale on every magnitude.
 const SPEC_SCALE: f32 = 0.5;
 
-/// The last half second of sound, shared between the audio callback and the
+/// The last ten seconds of sound, shared between the audio callback and the
 /// interface. Interleaved stereo goes in, a mono mix comes out.
 pub struct AudioTap {
     samples: Mutex<VecDeque<f32>>,
@@ -401,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn the_tap_keeps_half_a_second_at_most() {
+    fn the_tap_keeps_ten_seconds_at_most() {
         let tap = AudioTap::new();
         tap.push(&vec![0.25f32; 2 * (KEPT + 100)], 1.0);
         assert_eq!(tap.samples.lock().unwrap().len(), KEPT);

@@ -6,37 +6,61 @@ use egui::{Align, Layout, Margin, Rect, UiBuilder, pos2, vec2};
 use super::icons::{self, Icon};
 use super::theme::{Metrics, Type};
 
-/// Bottom player bar in SoundCloud order: transport left, progress middle,
-/// track right. Engineering (not layout) taken from fastpotify's
-/// `player_bar.rs`: three explicit rect bands, fixed transport slots,
-/// painted times, thin slider with drag-preview.
-///
-/// Metrics are SoundCloud's own: `--play-controls-height: 48px`, a 2px
-/// timeline (`.playbackTimeline__progressBackground`) in `--special-color`,
-/// `--highlight-color` behind the bar, and a white play disc with a dark
-/// glyph.
-///
-/// Why explicit rects: egui centres each widget in the row height known
-/// when it is added, so pure flow layouts leave icons riding high next to
-/// the play disc and the bar width jumps when title/volume text changes.
-/// Fixed bands never depend on flow order, so nothing drifts.
+/// Airwave's persistent bottom player deck. Fixed bands keep artwork,
+/// transport, timeline and actions stable while labels and window width vary.
 pub const BAR_HEIGHT: f32 = Metrics::PLAYER_H;
-const LEFT_W: f32 = 220.0;
-
-/// The now-playing cluster's parts, in the order they sit from the right edge:
-/// three 28px icon cells (queue, follow, like), the two-line text column, and
-/// the cover.
-#[cfg(test)]
-const ICON_CELL: f32 = 28.0;
-const TEXT_W: f32 = 144.0;
-const COVER: f32 = 40.0;
+const COVER: f32 = 52.0;
+const WAVEFORM_AT: f32 = 1_000.0;
+const MIN_CENTER_W: f32 = 300.0;
+const COMPACT_ACTIONS_W: f32 = 88.0;
+const WIDE_ACTIONS_W: f32 = 140.0;
 
 const TIME_W: f32 = 40.0;
 const VOLUME_ICON_W: f32 = 28.0;
-const VOLUME_TRACK_GAP: f32 = 16.0;
-const VOLUME_BAND_W: f32 = VOLUME_ICON_W + VOLUME_TRACK_GAP;
 const CONTROL_GAP: f32 = 8.0;
 const MIN_PROGRESS_W: f32 = 40.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TimelineStyle {
+    Line,
+    Waveform,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct DeckLayout {
+    now_playing_width: f32,
+    center_width: f32,
+    actions_width: f32,
+    timeline: TimelineStyle,
+}
+
+impl DeckLayout {
+    fn resolve(width: f32) -> Self {
+        let wide = width >= WAVEFORM_AT;
+        let actions_width = if wide {
+            WIDE_ACTIONS_W
+        } else {
+            COMPACT_ACTIONS_W
+        };
+        let preferred_now_playing = if wide {
+            (width * 0.28).clamp(280.0, 340.0)
+        } else {
+            (width * 0.30).clamp(210.0, 240.0)
+        };
+        let now_playing_width =
+            preferred_now_playing.min((width - actions_width - MIN_CENTER_W).max(0.0));
+        Self {
+            now_playing_width,
+            center_width: (width - now_playing_width - actions_width).max(0.0),
+            actions_width,
+            timeline: if wide {
+                TimelineStyle::Waveform
+            } else {
+                TimelineStyle::Line
+            },
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 struct ProgressLayout {
@@ -53,13 +77,6 @@ fn progress_layout(width: f32, preview: bool) -> ProgressLayout {
     ProgressLayout { bar_width }
 }
 
-/// The track cluster's band, wide enough for everything in it.
-///
-/// This used to be 268 while the contents came to ~278, so the cluster spilled
-/// left over the volume slider and stole its clicks. Sized from the parts
-/// instead, and `the_track_cluster_fits_its_band` keeps it that way.
-const RIGHT_W: f32 = 352.0;
-
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let st = app.player.state.lock();
     let track = st.current.and_then(|i| st.queue.get(i).cloned());
@@ -73,6 +90,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let preview = st.preview_fallback;
     let error = st.error.clone();
     drop(st);
+    let waveform_seed = track.as_ref().map_or(0, |track| track.id);
+    let waveform = track
+        .as_ref()
+        .and_then(|track| track.waveform_url.as_deref())
+        .and_then(|url| app.waveforms.get(ui.ctx(), url));
 
     egui::Panel::bottom(egui::Id::new("player_bar"))
         .exact_size(BAR_HEIGHT)
@@ -80,37 +102,84 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         .show_separator_line(false)
         .frame(
             egui::Frame::new()
-                .fill(app.theme.surface)
-                .inner_margin(Margin::symmetric(Metrics::SP_175 as i8, 0)),
+                .fill(egui::Color32::TRANSPARENT)
+                .inner_margin(Margin::ZERO),
         )
         .show(ui, |ui| {
             let full = ui.max_rect();
-            ui.painter().hline(
-                full.x_range(),
-                full.top() + 0.5,
-                egui::Stroke::new(1.0, app.theme.separator),
+            let deck_width = (full.width() - 28.0).clamp(0.0, 1_000.0);
+            let rect = Rect::from_center_size(full.center(), vec2(deck_width, 76.0));
+            ui.painter().add(
+                egui::epaint::Shadow {
+                    offset: [0, 9],
+                    blur: 30,
+                    spread: 2,
+                    color: egui::Color32::from_black_alpha(150),
+                }
+                .as_shape(rect, Metrics::RADIUS_LG),
             );
-            // Use the full window width. The old 1220 px cap left unused space
-            // on the right while squeezing the cover against the volume hitbox.
-            let rect = full;
-            let left = Rect::from_min_max(rect.min, pos2(rect.left() + LEFT_W, rect.bottom()));
-            let right = Rect::from_min_max(
-                pos2(rect.right() - RIGHT_W, rect.top()),
-                pos2(rect.right(), rect.bottom()),
+            ui.painter()
+                .rect_filled(rect, Metrics::RADIUS_LG, app.theme.tokens.glass_strong);
+            ui.painter().rect_stroke(
+                rect,
+                Metrics::RADIUS_LG,
+                egui::Stroke::new(1.0, app.theme.tokens.glass_border),
+                egui::StrokeKind::Inside,
             );
-            let volume_rect = Rect::from_min_max(
-                pos2(right.left() - VOLUME_BAND_W, rect.top()),
-                pos2(right.left(), rect.bottom()),
+            ui.painter().line_segment(
+                [
+                    pos2(rect.left() + 20.0, rect.top() + 1.0),
+                    pos2(rect.right() - 20.0, rect.top() + 1.0),
+                ],
+                egui::Stroke::new(1.0, app.theme.tokens.glass_highlight),
             );
-            let mid = Rect::from_min_max(
-                pos2(left.right(), rect.top()),
-                pos2(volume_rect.left(), rect.bottom()),
+            ui.painter().line_segment(
+                [
+                    pos2(rect.left() + 18.0, rect.top() + 0.5),
+                    pos2(rect.left() + 150.0, rect.top() + 0.5),
+                ],
+                egui::Stroke::new(1.0, app.theme.accent.gamma_multiply(0.55)),
+            );
+            let layout = DeckLayout::resolve(rect.width());
+            let now_playing = Rect::from_min_max(
+                rect.min,
+                pos2(rect.left() + layout.now_playing_width, rect.bottom()),
+            );
+            let actions = Rect::from_min_max(
+                pos2(rect.right() - layout.actions_width, rect.top()),
+                rect.max,
+            );
+            let center = Rect::from_min_max(
+                pos2(now_playing.right(), rect.top()),
+                pos2(actions.left(), rect.bottom()),
+            );
+            let transport_rect =
+                Rect::from_min_max(center.min, pos2(center.right(), center.top() + 45.0));
+            let timeline_rect = Rect::from_min_max(
+                pos2(center.left(), transport_rect.bottom() - 3.0),
+                center.max,
             );
 
-            transport(app, ui, left, loading, playing, shuffle, repeat);
-            progress(app, ui, mid, pos, dur, preview);
-            volume_control(app, ui, volume_rect, volume);
-            track_cluster(app, ui, right, track.as_ref());
+            track_cluster(app, ui, now_playing, track.as_ref());
+            transport(app, ui, transport_rect, loading, playing, shuffle, repeat);
+            progress(
+                app,
+                ui,
+                timeline_rect,
+                pos,
+                dur,
+                preview,
+                layout.timeline,
+                waveform_seed,
+                waveform.as_deref(),
+            );
+            player_actions(
+                app,
+                ui,
+                actions,
+                volume,
+                layout.timeline == TimelineStyle::Waveform,
+            );
 
             if let Some(err) = error {
                 app.toast_once(err);
@@ -120,7 +189,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         });
 }
 
-// ===== Left: transport, fixed slots centred as a group (SC order) =====
+// ===== Centre: transport above the adaptive timeline =====
 
 fn transport(
     app: &mut App,
@@ -136,8 +205,8 @@ fn transport(
     let dim = app.theme.text_dim;
     let accent = app.theme.accent;
 
-    let widths = [28.0, 32.0, 28.0, 26.0, 26.0];
-    let gap = 4.0;
+    let widths = [30.0, 40.0, 30.0, 28.0, 28.0];
+    let gap = 6.0;
     let total: f32 = widths.iter().sum::<f32>() + gap * 4.0;
     let mut x = rect.center().x - total / 2.0;
     let mut slot = |width: f32| {
@@ -173,18 +242,18 @@ fn transport(
     // reads on both; the glyph takes the bar colour.)
     let disc = slot(widths[1]);
     if loading {
-        ui.painter().circle_filled(disc.center(), 16.0, ink);
+        ui.painter().circle_filled(disc.center(), 20.0, ink);
         let mut cell = centered(ui, disc);
-        icons::spinner(&mut cell, 18.0, app.theme.surface);
+        icons::spinner(&mut cell, 20.0, app.theme.tokens.surface_raised);
     } else {
         let mut cell = centered(ui, disc);
         if icons::circle_button(
             &mut cell,
             if playing { Icon::Pause } else { Icon::Play },
-            32.0,
+            40.0,
             ink,
             ink,
-            app.theme.surface,
+            app.theme.tokens.surface_raised,
             if playing {
                 "Pause (Space)"
             } else {
@@ -253,9 +322,23 @@ fn transport(
     }
 }
 
-// ===== Middle: elapsed + thin progress + duration =====
+// ===== Timeline: waveform on wide windows, hairline on compact ones =====
 
-fn progress(app: &mut App, ui: &mut egui::Ui, rect: Rect, pos: u64, dur: u64, preview: bool) {
+#[expect(
+    clippy::too_many_arguments,
+    reason = "timeline state is frame-local UI data"
+)]
+fn progress(
+    app: &mut App,
+    ui: &mut egui::Ui,
+    rect: Rect,
+    pos: u64,
+    dur: u64,
+    preview: bool,
+    style: TimelineStyle,
+    waveform_seed: u64,
+    waveform: Option<&[f32]>,
+) {
     // Fixed reservations: times and gaps. The slider takes the rest; volume
     // has its own non-overlapping band to the right.
     let layout = progress_layout(rect.width(), preview);
@@ -296,13 +379,26 @@ fn progress(app: &mut App, ui: &mut egui::Ui, rect: Rect, pos: u64, dur: u64, pr
     } else {
         0.0
     };
-    match thin_slider(
-        &mut bar_ui,
-        frac,
-        bar_w,
-        app.theme.accent,
-        app.theme.separator,
-    ) {
+    let shown_frac = app.seek_preview.unwrap_or(frac);
+    let event = match style {
+        TimelineStyle::Line => thin_slider(
+            &mut bar_ui,
+            shown_frac,
+            bar_w,
+            app.theme.accent,
+            app.theme.separator,
+        ),
+        TimelineStyle::Waveform => waveform_slider(
+            &mut bar_ui,
+            shown_frac,
+            bar_w,
+            waveform_seed,
+            waveform,
+            app.theme.accent,
+            app.theme.tokens.text_tertiary,
+        ),
+    };
+    match event {
         SliderEvent::Dragging(v) => {
             app.seek_preview = Some(v);
         }
@@ -335,7 +431,77 @@ fn progress(app: &mut App, ui: &mut egui::Ui, rect: Rect, pos: u64, dur: u64, pr
     }
 }
 
-// ===== Volume: dedicated band between timeline and track metadata =====
+// ===== Right: queue, mini-player and volume =====
+
+fn player_actions(app: &mut App, ui: &mut egui::Ui, rect: Rect, volume: f32, show_mini: bool) {
+    let cell = 36.0;
+    let gap = 4.0;
+    let count = if show_mini { 3.0 } else { 2.0 };
+    let total = cell * count + gap * (count - 1.0);
+    let mut x = rect.center().x - total / 2.0;
+    let mut take = || {
+        let area = Rect::from_center_size(pos2(x + cell / 2.0, rect.center().y), vec2(cell, cell));
+        x += cell + gap;
+        area
+    };
+    let child = |ui: &mut egui::Ui, area: Rect| {
+        ui.new_child(
+            UiBuilder::new()
+                .max_rect(area)
+                .layout(Layout::centered_and_justified(egui::Direction::LeftToRight)),
+        )
+    };
+
+    if show_mini {
+        let mut mini_ui = child(ui, take());
+        let tint = if app.mini_open() {
+            app.theme.accent
+        } else {
+            app.theme.text_dim
+        };
+        if icons::icon_button(
+            &mut mini_ui,
+            Icon::Shrink,
+            16.0,
+            cell,
+            tint,
+            app.theme.text,
+            "Open mini-player (Ctrl+M)",
+        )
+        .clicked()
+        {
+            app.toggle_mini();
+        }
+    }
+
+    let mut queue_ui = child(ui, take());
+    let queue_tint = if app.show_queue {
+        app.theme.accent
+    } else {
+        app.theme.text_dim
+    };
+    if icons::icon_button(
+        &mut queue_ui,
+        Icon::Queue,
+        17.0,
+        cell,
+        queue_tint,
+        app.theme.text,
+        if app.show_queue {
+            "Close Next up (Q)"
+        } else {
+            "Open Next up (Q)"
+        },
+    )
+    .clicked()
+    {
+        app.show_queue = !app.show_queue;
+    }
+
+    volume_control(app, ui, take(), volume);
+}
+
+// ===== Volume: compact popover with a tapered gain curve =====
 
 fn volume_control(app: &mut App, ui: &mut egui::Ui, rect: Rect, volume: f32) {
     let cy = rect.center().y;
@@ -502,7 +668,7 @@ pub fn notches_of(unit: egui::MouseWheelUnit, delta_y: f32) -> f32 {
     }
 }
 
-// ===== Right: track cluster (SC order) =====
+// ===== Left: artwork, metadata and Like =====
 
 fn track_cluster(
     app: &mut App,
@@ -510,24 +676,19 @@ fn track_cluster(
     rect: Rect,
     track: Option<&crate::api::models::Track>,
 ) {
-    // Every part owns a fixed, disjoint hit box. This keeps the artwork and
-    // metadata visible regardless of title length and makes it impossible for
-    // the volume slider immediately to the left to be covered by this group.
     let cover_rect = Rect::from_center_size(
-        pos2(rect.left() + 12.0 + COVER / 2.0, rect.center().y),
+        pos2(rect.left() + COVER / 2.0, rect.center().y),
         vec2(COVER, COVER),
     );
-    let text_rect = Rect::from_min_max(
-        pos2(cover_rect.right() + 10.0, rect.top()),
-        pos2(cover_rect.right() + 10.0 + TEXT_W, rect.bottom()),
-    );
-    let icon_size = 32.0;
-    let queue_rect = Rect::from_center_size(
-        pos2(rect.right() - 16.0, rect.center().y),
+    let icon_size = 36.0;
+    let heart_rect = Rect::from_center_size(
+        pos2(rect.right() - icon_size / 2.0, rect.center().y),
         vec2(icon_size, icon_size),
     );
-    let follow_rect = queue_rect.translate(vec2(-36.0, 0.0));
-    let heart_rect = follow_rect.translate(vec2(-36.0, 0.0));
+    let text_rect = Rect::from_min_max(
+        pos2(cover_rect.right() + Metrics::SP_125, rect.top()),
+        pos2(heart_rect.left() - Metrics::SP_HALF, rect.bottom()),
+    );
     let child = |ui: &mut egui::Ui, area: Rect| {
         ui.new_child(
             UiBuilder::new()
@@ -535,55 +696,6 @@ fn track_cluster(
                 .layout(Layout::centered_and_justified(egui::Direction::LeftToRight)),
         )
     };
-    let queue_tint = if app.show_queue {
-        app.theme.accent
-    } else {
-        app.theme.text_dim
-    };
-    let mut queue_ui = child(ui, queue_rect);
-    if icons::icon_button(
-        &mut queue_ui,
-        Icon::Queue,
-        16.0,
-        icon_size,
-        queue_tint,
-        app.theme.text,
-        "Next up",
-    )
-    .clicked()
-    {
-        app.show_queue = !app.show_queue;
-    }
-
-    let follow = track.and_then(|t| t.user.as_ref().map(|u| (u.id, u.username.clone())));
-    if let Some((uid, name)) = follow {
-        let tint = if app.is_following(uid) {
-            app.theme.accent
-        } else {
-            app.theme.text_dim
-        };
-        let mut follow_ui = child(ui, follow_rect);
-        if icons::icon_button(
-            &mut follow_ui,
-            Icon::UserPlus,
-            16.0,
-            icon_size,
-            tint,
-            app.theme.text,
-            "",
-        )
-        .on_hover_text(format!("Follow {name}"))
-        .clicked()
-        {
-            let now = app.toggle_follow(uid);
-            app.toast(if now {
-                format!("Following {name}")
-            } else {
-                format!("Unfollowed {name}")
-            });
-        }
-    }
-
     let Some(t) = track else {
         let mut text_ui = ui.new_child(UiBuilder::new().max_rect(text_rect));
         text_ui.centered_and_justified(|ui| {
@@ -624,10 +736,10 @@ fn track_cluster(
     let mut text_ui = ui.new_child(UiBuilder::new().max_rect(text_rect));
     let title_clicked = text_ui
         .vertical(|ui| {
-            ui.set_min_width(TEXT_W);
-            ui.set_max_width(TEXT_W);
+            ui.set_min_width(text_rect.width());
+            ui.set_max_width(text_rect.width());
             ui.spacing_mut().item_spacing.y = 1.0;
-            ui.add_space(6.0);
+            ui.add_space(13.0);
             let title_clicked = ui
                 .add(
                     egui::Label::new(Type::H5.rich(&crate::bidi::owned(&t.title), app.theme.text))
@@ -675,7 +787,7 @@ fn track_cluster(
     }
 }
 
-// ===== Thin slider: fastpotify's thin_slider, SoundCloud colors =====
+// ===== Timeline painters =====
 
 enum SliderEvent {
     None,
@@ -745,6 +857,82 @@ fn thin_slider(
     SliderEvent::None
 }
 
+fn waveform_slider(
+    ui: &mut egui::Ui,
+    frac: f32,
+    width: f32,
+    seed: u64,
+    samples: Option<&[f32]>,
+    fill: egui::Color32,
+    track_col: egui::Color32,
+) -> SliderEvent {
+    let frac = frac.clamp(0.0, 1.0);
+    let (rect, response) =
+        ui.allocate_exact_size(vec2(width.max(40.0), 20.0), egui::Sense::click_and_drag());
+    if ui.is_rect_visible(rect) {
+        let bars = ((rect.width() / 4.0).round() as usize).clamp(24, 160);
+        let step = rect.width() / bars as f32;
+        let center = rect.center().y;
+        for index in 0..bars {
+            let peak = waveform_peak(samples, seed, index, bars);
+            let height = 3.0 + peak * (rect.height() - 4.0);
+            let x = rect.left() + (index as f32 + 0.5) * step;
+            let played = (index as f32 + 0.5) / bars as f32 <= frac;
+            ui.painter().vline(
+                x,
+                (center - height / 2.0)..=(center + height / 2.0),
+                egui::Stroke::new(
+                    (step * 0.46).clamp(1.0, 2.0),
+                    if played { fill } else { track_col },
+                ),
+            );
+        }
+        if response.hovered() || response.dragged() {
+            let x = rect.left() + rect.width() * frac;
+            ui.painter().circle_filled(pos2(x, center), 4.0, fill);
+        }
+    }
+    if response.drag_stopped() {
+        if let Some(pointer) = response.interact_pointer_pos() {
+            return SliderEvent::Committed(seek_frac(pointer.x, rect.left(), rect.width()));
+        }
+        return SliderEvent::Committed(frac);
+    }
+    if response.dragged()
+        && let Some(pointer) = response.interact_pointer_pos()
+    {
+        return SliderEvent::Dragging(seek_frac(pointer.x, rect.left(), rect.width()));
+    }
+    if response.clicked()
+        && let Some(pointer) = response.interact_pointer_pos()
+    {
+        return SliderEvent::Committed(seek_frac(pointer.x, rect.left(), rect.width()));
+    }
+    SliderEvent::None
+}
+
+fn waveform_peak(samples: Option<&[f32]>, seed: u64, index: usize, bars: usize) -> f32 {
+    if let Some(samples) = samples.filter(|samples| !samples.is_empty()) {
+        let start = index * samples.len() / bars;
+        let end = ((index + 1) * samples.len() / bars)
+            .max(start + 1)
+            .min(samples.len());
+        return samples[start.min(samples.len() - 1)..end]
+            .iter()
+            .copied()
+            .fold(0.0_f32, f32::max)
+            .clamp(0.05, 1.0);
+    }
+
+    let mut value = seed ^ (index as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    value ^= value >> 30;
+    value = value.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    value ^= value >> 27;
+    value = value.wrapping_mul(0x94D0_49BB_1331_11EB);
+    value ^= value >> 31;
+    0.18 + 0.82 * (value as f64 / u64::MAX as f64) as f32
+}
+
 fn seek_frac(pointer_x: f32, left: f32, width: f32) -> f32 {
     if width <= 0.0 {
         return 0.0;
@@ -755,22 +943,33 @@ fn seek_frac(pointer_x: f32, left: f32, width: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        COVER, ICON_CELL, Metrics, RIGHT_W, TEXT_W, VOLUME_STEP, notches_of, progress_fixed_width,
-        progress_layout, seek_frac, volume_gain_from_position, volume_position_from_gain,
+        DeckLayout, MIN_CENTER_W, TimelineStyle, VOLUME_STEP, WAVEFORM_AT, notches_of,
+        progress_fixed_width, progress_layout, seek_frac, volume_gain_from_position,
+        volume_position_from_gain, waveform_peak,
     };
     use eframe::egui::MouseWheelUnit;
 
-    /// The cluster must fit the band reserved for it: when it did not, it
-    /// spilled left over the volume slider and swallowed its clicks.
     #[test]
-    fn the_track_cluster_fits_its_band() {
-        // Three icon cells, the text column, the cover, and the gaps between
-        // the five items.
-        let contents = 3.0 * ICON_CELL + TEXT_W + COVER + 4.0 * Metrics::SP_075;
-        assert!(
-            contents <= RIGHT_W,
-            "the cluster is {contents} wide in a {RIGHT_W} band"
-        );
+    fn compact_deck_preserves_the_transport_band() {
+        let layout = DeckLayout::resolve(760.0);
+
+        assert!(layout.center_width >= MIN_CENTER_W);
+        assert_eq!(layout.timeline, TimelineStyle::Line);
+    }
+
+    #[test]
+    fn wide_deck_uses_the_airwave_timeline() {
+        let layout = DeckLayout::resolve(WAVEFORM_AT);
+
+        assert_eq!(layout.timeline, TimelineStyle::Waveform);
+    }
+
+    #[test]
+    fn deck_bands_consume_the_available_width() {
+        let layout = DeckLayout::resolve(1_280.0);
+        let occupied = layout.now_playing_width + layout.center_width + layout.actions_width;
+
+        assert!((occupied - 1_280.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -822,5 +1021,12 @@ mod tests {
         assert_eq!(notches_of(MouseWheelUnit::Point, -50.0), -1.0);
         assert_eq!(notches_of(MouseWheelUnit::Point, 12.0), 1.0);
         assert_eq!(notches_of(MouseWheelUnit::Point, 150.0), 3.0);
+    }
+
+    #[test]
+    fn waveform_resampling_preserves_a_short_peak() {
+        let samples = [0.1, 0.9, 0.2, 0.3];
+
+        assert_eq!(waveform_peak(Some(&samples), 0, 0, 2), 0.9);
     }
 }

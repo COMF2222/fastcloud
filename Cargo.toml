@@ -1,6 +1,6 @@
 [package]
 name = "fastcloud"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2024"
 description = "Native SoundCloud client"
 license = "MIT"
@@ -56,6 +56,7 @@ skrifa = "0.44"
 memmap2 = "0.9"
 # Right-to-left track titles.
 unicode-bidi = "0.3"
+discord-rich-presence = "1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni = { version = "0.3", default-features = false, features = ["async-io", "blocking"] }
@@ -86,10 +87,15 @@ opt-level = 3
 strip = true
 codegen-units = 1
 
+# Keep the enlarged UI test binary linkable on memory-constrained Windows hosts.
+[profile.test]
+debug = 0
+
 [dev-dependencies]
 tempfile = "3"
 read-fonts = "0.41"
 epaint_default_fonts = "0.36"
+egui_kittest = { version = "0.36.1", features = ["eframe", "snapshot", "wgpu"] }
 
 [build-dependencies]
 winresource = "0.1"

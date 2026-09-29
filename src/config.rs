@@ -14,11 +14,83 @@ fn settings_write_lock() -> &'static Mutex<()> {
     SETTINGS_WRITE_LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// Last normal-size window rectangle plus its maximized state.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct MainWindowBounds {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub maximized: bool,
+}
+
+impl Default for MainWindowBounds {
+    fn default() -> Self {
+        Self {
+            x: 100,
+            y: 100,
+            width: 1280,
+            height: 800,
+            maximized: false,
+        }
+    }
+}
+
 /// User-editable settings persisted to disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub theme: ThemeMode,
+    /// Language used by the application interface.
+    #[serde(default)]
+    pub language: Language,
+    /// Artwork/network memory policy. Balanced is the migration-safe default;
+    /// Eco favours small working sets, Quality favours high-DPI artwork.
+    #[serde(default)]
+    pub memory_profile: MemoryProfile,
+    /// Stop optional continuous motion (spinners become static and idle
+    /// playback UI uses the slowest useful cadence).
+    #[serde(default)]
+    pub reduced_motion: bool,
+    /// Visual shell used when the main window switches into mini-player mode.
+    #[serde(default)]
+    pub mini_player_style: MiniPlayerStyle,
+    /// Page shown after a normal application launch.
+    #[serde(default)]
+    pub startup_page: StartupPage,
+    #[serde(default)]
+    pub main_window_bounds: Option<MainWindowBounds>,
+    /// Hide the main window in the system tray when its close button is used.
+    #[serde(default = "default_true")]
+    pub close_to_tray: bool,
+    /// User-selected semantic accent. Kept as RGB so it stays renderer-agnostic.
+    #[serde(default = "default_accent_rgb")]
+    pub accent_rgb: [u8; 3],
+    /// HTTP(S) or file URI painted behind the main content area.
+    #[serde(default)]
+    pub background_image: Option<String>,
+    /// Strength of the donor's vignette and chrome-edge framing (0..=0.7).
+    #[serde(default = "default_background_opacity")]
+    pub background_opacity: f32,
+    /// Uniform dark layer over the full image (0..=0.85).
+    #[serde(default = "default_background_dim")]
+    pub background_dim: f32,
+    /// Blur radius applied to the wallpaper before it reaches the renderer.
+    #[serde(default = "default_background_blur")]
+    pub background_blur: u8,
+    /// Wallpaper renderer semantics. Version zero was Fastcloud's old global
+    /// opacity + forced-dim implementation; version one matches the donor.
+    #[serde(default = "default_background_style_version")]
+    pub background_style_version: u8,
+    /// Discord application id. It is intentionally user/project supplied:
+    /// borrowing another application's public id would attribute Fastcloud to it.
+    #[serde(default)]
+    pub discord_client_id: String,
+    #[serde(default)]
+    pub discord_presence: bool,
+    /// Audio segment cache quota in MiB. Zero disables persistent audio caching.
+    #[serde(default = "default_audio_cache_limit_mb")]
+    pub audio_cache_limit_mb: u64,
     pub volume: f32,
     /// Stereo balance, -1 hard left to 1 hard right. Only the mini player's
     /// second slider sets it; the app's own interface has no control.
@@ -37,6 +109,9 @@ pub struct Settings {
     pub eq_auto: bool,
     pub last_track_urn: Option<String>,
     pub last_position_ms: Option<u64>,
+    /// Whether the saved queue belongs to an active My Wave session.
+    #[serde(default)]
+    pub last_wave_active: bool,
     pub client_id: Option<String>,
     /// SoundCloud profile used for public library fallback when SoundCloud's
     /// user OAuth flow is unavailable. Public likes, tracks and playlists can
@@ -119,12 +194,31 @@ pub struct Settings {
     /// Index into `last_queue` that was current.
     #[serde(default)]
     pub last_queue_idx: Option<usize>,
+    /// Tracks and collections explicitly pinned by the listener.
+    #[serde(default)]
+    pub quick_access: Vec<QuickAccessShortcut>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             theme: ThemeMode::Dark,
+            language: Language::English,
+            memory_profile: MemoryProfile::Balanced,
+            reduced_motion: false,
+            mini_player_style: MiniPlayerStyle::Airwave,
+            startup_page: StartupPage::Home,
+            main_window_bounds: None,
+            close_to_tray: true,
+            accent_rgb: default_accent_rgb(),
+            background_image: None,
+            background_opacity: default_background_opacity(),
+            background_dim: default_background_dim(),
+            background_blur: default_background_blur(),
+            background_style_version: 1,
+            discord_client_id: String::new(),
+            discord_presence: false,
+            audio_cache_limit_mb: default_audio_cache_limit_mb(),
             volume: 0.8,
             balance: 0.0,
             mono: false,
@@ -134,6 +228,7 @@ impl Default for Settings {
             eq_auto: false,
             last_track_urn: None,
             last_position_ms: None,
+            last_wave_active: false,
             client_id: None,
             soundcloud_profile_url: None,
             show_track_numbers: false,
@@ -158,12 +253,54 @@ impl Default for Settings {
             winamp_scale: default_scale(),
             last_queue: Vec::new(),
             last_queue_idx: None,
+            quick_access: Vec::new(),
+        }
+    }
+}
+
+impl Settings {
+    /// Pin or unpin one media item. Returns whether it is pinned afterward.
+    pub fn toggle_quick_access(&mut self, shortcut: QuickAccessShortcut) -> bool {
+        if let Some(index) = self
+            .quick_access
+            .iter()
+            .position(|candidate| candidate.same_target(&shortcut))
+        {
+            self.quick_access.remove(index);
+            false
+        } else {
+            self.quick_access.push(shortcut);
+            true
         }
     }
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_accent_rgb() -> [u8; 3] {
+    [0xFF, 0x5B, 0x24]
+}
+
+fn default_background_opacity() -> f32 {
+    0.15
+}
+
+fn default_background_dim() -> f32 {
+    0.0
+}
+
+fn default_background_blur() -> u8 {
+    0
+}
+
+fn default_background_style_version() -> u8 {
+    1
+}
+
+fn default_audio_cache_limit_mb() -> u64 {
+    512
 }
 
 /// 2× is the classic window at a size a modern screen can read.
@@ -202,12 +339,112 @@ pub struct InboxItem {
     pub at: u64,
 }
 
+/// A listener-managed media item shown in Quick Access. The legacy unit
+/// variants remain deserializable so older settings files still load.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuickAccessShortcut {
+    Track {
+        id: u64,
+        title: String,
+        artist: String,
+        artwork_url: Option<String>,
+    },
+    Playlist {
+        id: u64,
+        title: String,
+        artist: String,
+        artwork_url: Option<String>,
+    },
+    Album {
+        id: u64,
+        title: String,
+        artist: String,
+        artwork_url: Option<String>,
+    },
+    Likes,
+    DailyMix,
+    Fresh,
+    Vibe,
+    History,
+    Station,
+}
+
+impl QuickAccessShortcut {
+    pub fn same_target(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Track { id: left, .. }, Self::Track { id: right, .. })
+            | (Self::Playlist { id: left, .. }, Self::Playlist { id: right, .. })
+            | (Self::Album { id: left, .. }, Self::Album { id: right, .. }) => left == right,
+            _ => self == other,
+        }
+    }
+
+    pub fn is_media(&self) -> bool {
+        matches!(
+            self,
+            Self::Track { .. } | Self::Playlist { .. } | Self::Album { .. }
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ThemeMode {
     #[default]
     Dark,
     Light,
     System,
+}
+
+/// Language used for interface copy, independent of SoundCloud metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum Language {
+    #[default]
+    English,
+    Russian,
+}
+
+impl Language {
+    pub const fn text<'a>(self, english: &'a str, russian: &'a str) -> &'a str {
+        match self {
+            Self::English => english,
+            Self::Russian => russian,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum MemoryProfile {
+    Eco,
+    #[default]
+    Balanced,
+    Quality,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum MiniPlayerStyle {
+    #[default]
+    Airwave,
+    Winamp,
+}
+
+impl MemoryProfile {
+    pub const fn playback_refresh_ms(self) -> u64 {
+        match self {
+            Self::Eco => 250,
+            Self::Balanced => 125,
+            Self::Quality => 67,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum StartupPage {
+    #[default]
+    Home,
+    Search,
+    Library,
+    Settings,
 }
 
 impl Settings {
@@ -221,23 +458,36 @@ impl Settings {
             let backup = path.with_extension("json.bak");
             if backup.exists() {
                 let raw = std::fs::read_to_string(backup)?;
-                return Ok(serde_json::from_str(&raw)?);
+                return Self::decode(&raw);
             }
             return Ok(Self::default());
         }
         let raw = std::fs::read_to_string(path)?;
-        match serde_json::from_str(&raw) {
+        match Self::decode(&raw) {
             Ok(settings) => Ok(settings),
             Err(primary) => {
                 let backup = path.with_extension("json.bak");
                 if !backup.exists() {
-                    return Err(primary.into());
+                    return Err(primary);
                 }
                 log::warn!("settings file is invalid; recovering {}", backup.display());
                 let raw = std::fs::read_to_string(backup)?;
-                Ok(serde_json::from_str(&raw)?)
+                Self::decode(&raw)
             }
         }
+    }
+
+    fn decode(raw: &str) -> Result<Self> {
+        let value: serde_json::Value = serde_json::from_str(raw)?;
+        let legacy_wallpaper = value.get("background_style_version").is_none();
+        let mut settings: Self = serde_json::from_value(value)?;
+        if legacy_wallpaper || settings.background_style_version == 0 {
+            settings.background_opacity = default_background_opacity();
+            settings.background_dim = default_background_dim();
+            settings.background_blur = default_background_blur();
+            settings.background_style_version = 1;
+        }
+        Ok(settings)
     }
 
     pub fn save(&self) -> Result<()> {
@@ -255,6 +505,7 @@ impl Settings {
             // save must not roll back the newer playback session on disk.
             next.last_track_urn = current.last_track_urn;
             next.last_position_ms = current.last_position_ms;
+            next.last_wave_active = current.last_wave_active;
             next.last_queue = current.last_queue;
             next.last_queue_idx = current.last_queue_idx;
         }
@@ -299,9 +550,8 @@ fn write_settings(path: &std::path::Path, settings: &Settings) -> Result<()> {
         }
         return Err(error.into());
     }
-    if backup.exists() {
-        std::fs::remove_file(backup)?;
-    }
+    // Keep the previous valid version for recovery if the new primary is
+    // damaged later (for example by an interrupted write outside this process).
     Ok(())
 }
 
@@ -363,10 +613,103 @@ mod tests {
     }
 
     #[test]
+    fn quick_access_only_changes_when_explicitly_toggled() {
+        let mut settings = Settings::default();
+        assert!(settings.quick_access.is_empty());
+        let track = QuickAccessShortcut::Track {
+            id: 42,
+            title: "First title".into(),
+            artist: "Artist".into(),
+            artwork_url: None,
+        };
+        assert!(settings.toggle_quick_access(track.clone()));
+        assert_eq!(settings.quick_access, [track]);
+        assert!(!settings.toggle_quick_access(QuickAccessShortcut::Track {
+            id: 42,
+            title: "Updated title".into(),
+            artist: "Artist".into(),
+            artwork_url: None,
+        }));
+        assert!(settings.quick_access.is_empty());
+    }
+
+    #[test]
+    fn quick_access_reads_legacy_entries_without_showing_them_as_media() {
+        let old: QuickAccessShortcut = serde_json::from_str("\"daily_mix\"").unwrap();
+        let track: QuickAccessShortcut = serde_json::from_str(
+            r#"{"track":{"id":42,"title":"Song","artist":"Artist","artwork_url":null}}"#,
+        )
+        .unwrap();
+        assert!(!old.is_media());
+        assert!(track.is_media());
+    }
+
+    #[test]
     fn parse_theme() {
         let json = r#"{"theme":"Light"}"#;
         let s: Settings = serde_json::from_str(json).unwrap();
         assert_eq!(s.theme, ThemeMode::Light);
+    }
+
+    #[test]
+    fn language_defaults_to_english_and_roundtrips_russian() {
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.language, Language::English);
+
+        let russian: Settings = serde_json::from_str(r#"{"language":"Russian"}"#).unwrap();
+        assert_eq!(russian.language, Language::Russian);
+        assert_eq!(russian.language.text("Settings", "Настройки"), "Настройки");
+        let encoded = serde_json::to_string(&russian).unwrap();
+        let restored: Settings = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(restored.language, Language::Russian);
+    }
+
+    #[test]
+    fn older_settings_receive_new_personalisation_defaults() {
+        let settings: Settings = serde_json::from_str(r#"{"theme":"Dark"}"#).unwrap();
+
+        assert_eq!(settings.startup_page, StartupPage::Home);
+        assert_eq!(settings.accent_rgb, [0xFF, 0x5B, 0x24]);
+        assert_eq!(settings.background_blur, 0);
+        assert_eq!(settings.audio_cache_limit_mb, 512);
+        assert_eq!(settings.memory_profile, MemoryProfile::Balanced);
+    }
+
+    #[test]
+    fn older_settings_receive_the_donor_wallpaper_edge_darkening() {
+        let settings: Settings = serde_json::from_str(r#"{"theme":"Dark"}"#).unwrap();
+
+        assert!((settings.background_opacity - 0.15).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn older_settings_do_not_dim_the_wallpaper() {
+        let settings: Settings = serde_json::from_str(r#"{"theme":"Dark"}"#).unwrap();
+
+        assert!(settings.background_dim.abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn loading_the_old_wallpaper_renderer_migrates_to_donor_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"theme":"Dark","background_image":"file:///wall.jpg","background_opacity":0.62,"background_dim":0.42,"background_blur":12}"#,
+        )
+        .unwrap();
+
+        let settings = Settings::load_from(&path).unwrap();
+
+        assert_eq!(
+            (
+                settings.background_opacity,
+                settings.background_dim,
+                settings.background_blur,
+                settings.background_style_version,
+            ),
+            (0.15, 0.0, 0, 1)
+        );
     }
 
     /// A settings file written before the mini player grew its three states
@@ -382,6 +725,42 @@ mod tests {
         assert!(!s.winamp_on_top);
         assert_eq!(s.balance, 0.0, "centred");
         assert_eq!(s.winamp_scale, 2, "the default scale, not zero");
+        assert!(s.close_to_tray, "existing installs default to the tray");
+    }
+
+    #[test]
+    fn close_to_tray_choice_roundtrips() {
+        let settings = Settings {
+            close_to_tray: false,
+            ..Settings::default()
+        };
+        let restored: Settings =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert!(!restored.close_to_tray);
+    }
+
+    #[test]
+    fn main_window_bounds_roundtrip_and_old_settings_default() {
+        let bounds = MainWindowBounds {
+            x: -1200,
+            y: 80,
+            width: 1600,
+            height: 900,
+            maximized: true,
+        };
+        let settings = Settings {
+            main_window_bounds: Some(bounds),
+            ..Settings::default()
+        };
+        let restored: Settings =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        let actual = restored.main_window_bounds.unwrap();
+        assert_eq!((actual.x, actual.y, actual.width, actual.height, actual.maximized),
+            (bounds.x, bounds.y, bounds.width, bounds.height, bounds.maximized));
+        assert!(serde_json::from_str::<Settings>(r#"{"theme":"Dark"}"#)
+            .unwrap()
+            .main_window_bounds
+            .is_none());
     }
 
     /// The window's own three flags survive a round trip, since they are what
@@ -408,6 +787,7 @@ mod tests {
             last_track_urn: Some("soundcloud:tracks:42".into()),
             last_position_ms: Some(12_345),
             last_queue_idx: Some(0),
+            last_wave_active: true,
             ..Settings::default()
         };
         write_settings(&path, &player_state).unwrap();
@@ -423,6 +803,7 @@ mod tests {
         assert_eq!(saved.last_track_urn, player_state.last_track_urn);
         assert_eq!(saved.last_position_ms, player_state.last_position_ms);
         assert_eq!(saved.last_queue_idx, player_state.last_queue_idx);
+        assert_eq!(saved.last_wave_active, player_state.last_wave_active);
     }
 
     #[test]
@@ -442,5 +823,25 @@ mod tests {
 
         assert_eq!(recovered.theme, ThemeMode::Light);
         assert!((recovered.volume - 0.37).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn successful_write_keeps_a_recoverable_previous_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let first = Settings {
+            volume: 0.37,
+            ..Settings::default()
+        };
+        let second = Settings {
+            volume: 0.73,
+            ..Settings::default()
+        };
+        write_settings(&path, &first).unwrap();
+        write_settings(&path, &second).unwrap();
+        assert!((Settings::load_from(&path).unwrap().volume - 0.73).abs() < f32::EPSILON);
+
+        std::fs::write(&path, b"{not json").unwrap();
+        assert!((Settings::load_from(&path).unwrap().volume - 0.37).abs() < f32::EPSILON);
     }
 }

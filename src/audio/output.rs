@@ -84,6 +84,8 @@ pub struct OutputState {
     pub source_rate: u32,
     pub playing: bool,
     pub volume: f32,
+    /// Playback rate. Resampling also shifts pitch; the UI labels this clearly.
+    pub playback_speed: f32,
     /// Stereo balance, -1 hard left to 1 hard right. Applied with the volume.
     pub balance: f32,
     /// Fold both source channels to their average before volume/balance.
@@ -107,6 +109,7 @@ impl Default for OutputState {
             source_rate: 44_100,
             playing: false,
             volume: 0.8,
+            playback_speed: 1.0,
             balance: 0.0,
             mono: false,
             eq_gains: [0.0; 10],
@@ -131,8 +134,12 @@ impl OutputState {
     /// already clipping.
     fn channel_gain(&self) -> (f32, f32) {
         let balance = self.balance.clamp(-1.0, 1.0);
-        let left = self.volume * (1.0 - balance.max(0.0));
-        let right = self.volume * (1.0 + balance.min(0.0));
+        // A linear slider leaves the first few percent surprisingly loud.
+        // Square the control value so the low end has useful precision, while
+        // zero still produces exact silence.
+        let gain = self.volume.clamp(0.0, 1.0).powi(2);
+        let left = gain * (1.0 - balance.max(0.0));
+        let right = gain * (1.0 + balance.min(0.0));
         (left, right)
     }
 
@@ -267,7 +274,7 @@ impl AudioOutput {
                     data.fill(0.0);
                     return;
                 }
-                let sr_ratio = state.source_rate as f64 / config_rate as f64;
+                let sr_ratio = state.source_rate as f64 / config_rate as f64 * f64::from(state.playback_speed);
                 let (gain_l, gain_r) = state.channel_gain();
                 tapped.clear();
                 for frame in data.chunks_mut(output_channels) {
@@ -349,6 +356,10 @@ impl AudioOutput {
 
     pub fn set_volume(&self, volume: f32) {
         self.state.lock().volume = volume.clamp(0.0, 1.0);
+    }
+
+    pub fn set_playback_speed(&self, speed: f32) {
+        self.state.lock().playback_speed = speed.clamp(0.5, 2.0);
     }
 
     /// Stereo balance, -1 hard left to 1 hard right.
@@ -662,10 +673,21 @@ mod tests {
         // Volume still scales both, and out-of-range balance clamps.
         s.volume = 0.5;
         s.balance = -4.0;
-        assert_eq!(s.channel_gain(), (0.5, 0.0));
+        assert_eq!(s.channel_gain(), (0.25, 0.0));
         for gain in [s.channel_gain().0, s.channel_gain().1] {
             assert!((0.0..=1.0).contains(&gain), "gain {gain} can clip");
         }
+    }
+
+    #[test]
+    fn low_volume_is_quiet_and_zero_is_silent() {
+        let mut s = OutputState::default();
+        s.volume = 0.1;
+        let (left, right) = s.channel_gain();
+        assert!((left - 0.01).abs() < f32::EPSILON);
+        assert!((right - 0.01).abs() < f32::EPSILON);
+        s.volume = 0.0;
+        assert_eq!(s.channel_gain(), (0.0, 0.0));
     }
 
     #[test]

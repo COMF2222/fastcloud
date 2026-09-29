@@ -1,2 +1,12 @@
 /target
+/desktop/node_modules
+/desktop/dist
+/desktop/release
+/desktop/*.tsbuildinfo
+/desktop/src-tauri/target
+/desktop/src-tauri/gen
+/desktop/src-tauri/resources/clap/
+/desktop/src-tauri/tauri.private.conf.json
 *.log
+**/tests/snapshots/**/*.diff.png
+**/tests/snapshots/**/*.new.png

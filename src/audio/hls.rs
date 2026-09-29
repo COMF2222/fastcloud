@@ -136,6 +136,10 @@ impl HlsDownloader {
 
     /// Fetch and parse a media playlist.
     pub async fn playlist(&self, url: &str) -> Result<MediaPlaylist> {
+        if let Some(path) = local_file(url) {
+            let text = std::fs::read_to_string(path)?;
+            return parse(&text, url);
+        }
         let text = self
             .request(url)
             .send()
@@ -148,6 +152,9 @@ impl HlsDownloader {
 
     /// Download one segment, using the disk cache when possible.
     pub async fn segment(&self, track_urn: &str, url: &str) -> Result<Vec<u8>> {
+        if let Some(path) = local_file(url) {
+            return Ok(std::fs::read(path)?);
+        }
         let cached = tokio::task::spawn_blocking({
             let cache = self.cache.clone();
             let track_urn = track_urn.to_owned();
@@ -171,6 +178,9 @@ impl HlsDownloader {
 
     /// Download the fMP4 init segment (cached).
     pub async fn init_segment(&self, track_urn: &str, url: &str) -> Result<Vec<u8>> {
+        if let Some(path) = local_file(url) {
+            return Ok(std::fs::read(path)?);
+        }
         let cached = tokio::task::spawn_blocking({
             let cache = self.cache.clone();
             let track_urn = track_urn.to_owned();
@@ -196,6 +206,21 @@ impl HlsDownloader {
         let _ =
             tokio::task::spawn_blocking(move || cache.put_segment(&track_urn, &url, &bytes)).await;
     }
+}
+
+fn local_file(url: &str) -> Option<std::path::PathBuf> {
+    let parsed = url::Url::parse(url).ok()?;
+    if parsed.scheme() != "file" {
+        return None;
+    }
+    let path = parsed.to_file_path().ok()?.canonicalize().ok()?;
+    let root = crate::config::app_paths()
+        .ok()?
+        .root
+        .join("offline")
+        .canonicalize()
+        .ok()?;
+    path.starts_with(root).then_some(path)
 }
 
 fn needs_oauth(url: &str) -> bool {
@@ -244,5 +269,34 @@ mod tests {
         assert_eq!(pl.seek_point(9_899), (0, 0));
         assert_eq!(pl.seek_point(9_900), (1, 9_900));
         assert_eq!(pl.seek_point(15_000), (1, 9_900));
+    }
+
+    #[tokio::test]
+    async fn saved_playlist_plays_from_app_offline_directory() {
+        let root = crate::config::app_paths().unwrap().root.join("offline");
+        std::fs::create_dir_all(&root).unwrap();
+        let directory = tempfile::tempdir_in(root).unwrap();
+        std::fs::write(directory.path().join("segment-0000.bin"), b"saved audio").unwrap();
+        std::fs::write(
+            directory.path().join("playlist.m3u8"),
+            "#EXTM3U\n#EXTINF:3.0,\nsegment-0000.bin\n#EXT-X-ENDLIST\n",
+        )
+        .unwrap();
+        let url = url::Url::from_file_path(directory.path().join("playlist.m3u8"))
+            .unwrap()
+            .to_string();
+        let downloader = HlsDownloader::new(
+            reqwest::Client::new(),
+            std::sync::Arc::new(super::super::cache::AudioCache::disabled()),
+        );
+        let playlist = downloader.playlist(&url).await.unwrap();
+        assert_eq!(playlist.segments.len(), 1);
+        assert_eq!(
+            downloader
+                .segment("track", &playlist.segments[0])
+                .await
+                .unwrap(),
+            b"saved audio"
+        );
     }
 }

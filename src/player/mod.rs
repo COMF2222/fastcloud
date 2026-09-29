@@ -23,6 +23,19 @@ const TARGET_BUFFER_MS: u64 = 8_000;
 /// Coalesce slider events before serializing the queue and settings to disk.
 const CONTROL_SAVE_DELAY: Duration = Duration::from_millis(750);
 
+fn offline_playlist_url(track_id: u64) -> Option<String> {
+    let path = crate::config::app_paths()
+        .ok()?
+        .root
+        .join("offline")
+        .join(track_id.to_string())
+        .join("playlist.m3u8");
+    path.exists()
+        .then(|| url::Url::from_file_path(path).ok())
+        .flatten()
+        .map(String::from)
+}
+
 fn initial_decode_target_ms(start_ms: u64) -> u64 {
     start_ms.saturating_add(START_BUFFER_MS)
 }
@@ -63,11 +76,15 @@ pub struct QueueItem {
 
 pub struct PlayerState {
     pub queue: Vec<Track>,
+    /// Changes whenever the queue contents or order change. The desktop UI
+    /// uses this to avoid copying the whole queue on position-only polls.
+    pub queue_revision: u64,
     pub order: Vec<usize>,
     pub current: Option<usize>,
     pub shuffle: bool,
     pub repeat: RepeatMode,
     pub volume: f32,
+    pub playback_speed: f32,
     /// Stereo balance, -1 hard left to 1 hard right.
     pub balance: f32,
     pub mono: bool,
@@ -82,6 +99,10 @@ pub struct PlayerState {
     pub sample_rate: u32,
     /// The chosen stream's bitrate in kbps, as the API names it.
     pub bitrate_kbps: u32,
+    /// Active A-B repeat belongs to this track, so it cannot leak into the next one.
+    pub ab_track_id: Option<u64>,
+    pub ab_start_ms: Option<u64>,
+    pub ab_end_ms: Option<u64>,
     /// How many channels the source has, before the upmix to stereo. Winamp's
     /// mono/stereo lamp.
     pub channels: u16,
@@ -91,11 +112,13 @@ impl Default for PlayerState {
     fn default() -> Self {
         Self {
             queue: Vec::new(),
+            queue_revision: 0,
             order: Vec::new(),
             current: None,
             shuffle: false,
             repeat: RepeatMode::Off,
             volume: 0.8,
+            playback_speed: 1.0,
             balance: 0.0,
             mono: false,
             position_ms: 0,
@@ -106,6 +129,9 @@ impl Default for PlayerState {
             preview_fallback: false,
             sample_rate: 0,
             bitrate_kbps: 0,
+            ab_track_id: None,
+            ab_start_ms: None,
+            ab_end_ms: None,
             channels: 0,
         }
     }
@@ -231,6 +257,20 @@ impl Player {
         &self.rt
     }
 
+    pub fn audio_cache_size(&self) -> u64 {
+        self.hls.cache.total_size()
+    }
+
+    pub fn clear_audio_cache(&self) -> u64 {
+        self.hls.cache.clear()
+    }
+
+    pub fn set_audio_cache_limit_mb(&self, limit_mb: u64) {
+        self.hls
+            .cache
+            .set_max_bytes(limit_mb.saturating_mul(1024 * 1024));
+    }
+
     /// Enable synthesized offline playback (demo mode).
     pub fn set_demo(&self, demo: bool) {
         *self.demo.lock() = demo;
@@ -274,6 +314,7 @@ impl Player {
     pub fn play_queue(&self, tracks: Vec<Track>, start: usize, shuffle: bool) {
         let mut st = self.state.lock();
         st.queue = tracks;
+        st.queue_revision = st.queue_revision.wrapping_add(1);
         st.shuffle = shuffle;
         st.order = build_order(st.queue.len(), shuffle);
         st.current = Some(start);
@@ -291,17 +332,43 @@ impl Player {
         }
         if play_next {
             let cur = st.current.unwrap_or(0);
-            let mut merged = st.queue.clone();
-            let mut tail = merged.split_off(cur + 1);
-            for t in tracks {
-                merged.push(t);
-            }
-            merged.append(&mut tail);
-            st.queue = merged;
+            let split = (cur + 1).min(st.queue.len());
+            let mut tail = st.queue.split_off(split);
+            st.queue.extend(tracks);
+            st.queue.append(&mut tail);
         } else {
             st.queue.extend(tracks);
         }
+        st.queue_revision = st.queue_revision.wrapping_add(1);
         st.order = build_order(st.queue.len(), st.shuffle);
+    }
+
+    /// Keep the current track, upcoming tracks and a short back history.
+    /// An endless station must not grow the in-memory queue without bound.
+    pub fn trim_played_history(&self, max_rows: usize, keep_previous: usize) -> usize {
+        let mut state = self.state.lock();
+        if state.queue.len() <= max_rows { return 0; }
+        let Some(current) = state.current else { return 0 };
+        let Some(position) = state.order.iter().position(|&index| index == current) else { return 0 };
+        let remove: std::collections::HashSet<_> = state.order[..position.saturating_sub(keep_previous)]
+            .iter().copied().collect();
+        if remove.is_empty() { return 0; }
+        let old_len = state.queue.len();
+        let mut remap = vec![None; old_len];
+        let mut kept = Vec::with_capacity(old_len - remove.len());
+        for (index, track) in std::mem::take(&mut state.queue).into_iter().enumerate() {
+            if !remove.contains(&index) {
+                remap[index] = Some(kept.len());
+                kept.push(track);
+            }
+        }
+        state.current = remap[current];
+        state.order = state.order.iter().filter_map(|&index| remap[index]).collect();
+        state.queue = kept;
+        state.queue_revision = state.queue_revision.wrapping_add(1);
+        drop(state);
+        self.save_session();
+        remove.len()
     }
 
     pub fn current_track(&self) -> Option<Track> {
@@ -337,6 +404,38 @@ impl Player {
             RepeatMode::All => RepeatMode::One,
             RepeatMode::One => RepeatMode::Off,
         };
+    }
+
+    /// First press marks A, second marks B, third clears the loop.
+    pub fn cycle_ab_loop(&self) {
+        let mut st = self.state.lock();
+        let Some(track_id) = st.current.and_then(|index| st.queue.get(index)).map(|track| track.id) else {
+            return;
+        };
+        if st.ab_track_id == Some(track_id) && st.ab_end_ms.is_some() {
+            st.ab_track_id = None;
+            st.ab_start_ms = None;
+            st.ab_end_ms = None;
+        } else if st.ab_track_id != Some(track_id) {
+            st.ab_track_id = Some(track_id);
+            st.ab_start_ms = Some(st.position_ms);
+            st.ab_end_ms = None;
+        } else if let Some(start) = st.ab_start_ms {
+            if st.position_ms >= start.saturating_add(500) {
+                st.ab_end_ms = Some(st.position_ms);
+            } else {
+                st.ab_start_ms = Some(st.position_ms);
+            }
+        } else {
+            st.ab_start_ms = Some(st.position_ms);
+        }
+    }
+
+    pub fn clear_ab_loop(&self) {
+        let mut st = self.state.lock();
+        st.ab_track_id = None;
+        st.ab_start_ms = None;
+        st.ab_end_ms = None;
     }
 
     /// Set repeat directly (CLI/MPRIS).
@@ -528,6 +627,7 @@ impl Player {
                     .and_then(|p| st.order.get(p + 1).copied())
                     .map(|n| if n > idx { n - 1 } else { n });
                 st.queue.remove(idx);
+                st.queue_revision = st.queue_revision.wrapping_add(1);
                 let (order, _) = drop_bookkeeping(&st.order, None, idx);
                 st.order = order;
                 st.current = None;
@@ -537,6 +637,7 @@ impl Player {
                 }
             } else {
                 st.queue.remove(idx);
+                st.queue_revision = st.queue_revision.wrapping_add(1);
                 let (order, current) = drop_bookkeeping(&st.order, st.current, idx);
                 st.order = order;
                 st.current = current;
@@ -556,6 +657,35 @@ impl Player {
         }
     }
 
+    /// Move a queue row while retaining the current track and shuffle order.
+    pub fn move_at(&self, from: usize, to: usize) -> bool {
+        let mut state = self.state.lock();
+        if from >= state.queue.len() || to >= state.queue.len() || from == to {
+            return false;
+        }
+        let track = state.queue.remove(from);
+        state.queue.insert(to, track);
+        state.queue_revision = state.queue_revision.wrapping_add(1);
+        let remap = |index: usize| {
+            if index == from {
+                to
+            } else if from < to && index > from && index <= to {
+                index - 1
+            } else if to < from && index >= to && index < from {
+                index + 1
+            } else {
+                index
+            }
+        };
+        state.current = state.current.map(remap);
+        for index in &mut state.order {
+            *index = remap(*index);
+        }
+        drop(state);
+        self.save_session();
+        true
+    }
+
     /// Drop everything except the current track. Returns rows removed.
     pub fn clear_upcoming(&self) -> usize {
         let mut st = self.state.lock();
@@ -565,6 +695,7 @@ impl Player {
         };
         let removed = st.queue.len().saturating_sub(1);
         st.queue = vec![track];
+        st.queue_revision = st.queue_revision.wrapping_add(1);
         st.current = Some(0);
         st.order = vec![0];
         drop(st);
@@ -580,6 +711,7 @@ impl Player {
         {
             let mut state = self.state.lock();
             state.queue.clear();
+            state.queue_revision = state.queue_revision.wrapping_add(1);
             state.order.clear();
             state.current = None;
             state.position_ms = 0;
@@ -598,6 +730,7 @@ impl Player {
     pub fn push_back(&self, track: Track) {
         let mut st = self.state.lock();
         st.queue.push(track);
+        st.queue_revision = st.queue_revision.wrapping_add(1);
         let last = st.queue.len() - 1;
         st.order.push(last);
         drop(st);
@@ -652,6 +785,12 @@ impl Player {
         self.schedule_control_save();
     }
 
+    pub fn set_playback_speed(&self, speed: f32) {
+        let speed = speed.clamp(0.5, 2.0);
+        self.output.set_playback_speed(speed);
+        self.state.lock().playback_speed = speed;
+    }
+
     /// Stereo balance, -1 hard left to 1 hard right. The mini player's second
     /// slider; the app's own interface has no control for it.
     pub fn set_balance(&self, balance: f32) {
@@ -702,7 +841,7 @@ impl Player {
         // Demo mode: instant local synthesis, no network. Only the stretch
         // being played is synthesized (see `demo::pcm_window`), so a long
         // demo track costs a few MB rather than the whole song at f32.
-        if *self.demo.lock() {
+        if *self.demo.lock() && offline_playlist_url(track.id).is_none() {
             std::thread::spawn(move || {
                 let (pcm, rate) = crate::demo::pcm_window(&track, start_ms);
                 if !me.load_is_current(generation) {
@@ -738,11 +877,17 @@ impl Player {
 
     async fn load_track_async(&self, track: Track, start_ms: u64, generation: u64) -> Result<()> {
         let urn = track.urn();
-        let streams: StreamUrls = self
-            .client
-            .get(&format!("/tracks/{}/streams", url_encode(&urn)), &[])
-            .await
-            .context("fetch streams")?;
+        let offline_url = offline_playlist_url(track.id);
+        let streams: Option<StreamUrls> = if offline_url.is_none() {
+            Some(
+                self.client
+                    .get(&format!("/tracks/{}/streams", url_encode(&urn)), &[])
+                    .await
+                    .context("fetch streams")?,
+            )
+        } else {
+            None
+        };
         if !self.load_is_current(generation) {
             return Ok(());
         }
@@ -750,9 +895,12 @@ impl Player {
 
         // The API offers HLS only (MP3 then AAC); `stream_url` is deprecated
         // and preview-only, so a blocked/preview track falls back below.
-        let chosen = streams
-            .best_full_with_bitrate()
-            .map(|(url, kbps)| (url.to_owned(), kbps));
+        let chosen = offline_url.map(|url| (url, 160)).or_else(|| {
+            streams
+                .as_ref()
+                .and_then(StreamUrls::best_full_with_bitrate)
+                .map(|(url, kbps)| (url.to_owned(), kbps))
+        });
 
         {
             let mut slot = self.decoder.lock();
@@ -850,7 +998,10 @@ impl Player {
                 source_rate = rate;
                 channels = chans;
             }
-        } else if let Some(preview) = streams.preview_mp3_128.clone() {
+        } else if let Some(preview) = streams
+            .as_ref()
+            .and_then(|streams| streams.preview_mp3_128.clone())
+        {
             // 30-second preview fallback.
             let bytes = self.hls.segment(&urn, &preview).await?;
             if !self.load_is_current(generation) {
@@ -934,6 +1085,7 @@ impl Player {
     /// Background decode loop: pull packets, append to output, fetch more
     /// segments as needed, advance the queue on track end (gapless).
     pub async fn run(self: Arc<Self>) {
+        let mut last_checkpoint = Instant::now();
         loop {
             if *self.stop.lock() {
                 return;
@@ -1062,6 +1214,12 @@ impl Player {
             // backwards seek too — clamping it monotonic used to pin the bar
             // at the furthest point reached.
             self.publish_position();
+            if last_checkpoint.elapsed() >= Duration::from_secs(15) {
+                last_checkpoint = Instant::now();
+                if self.state.lock().is_playing {
+                    self.save_session();
+                }
+            }
 
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
@@ -1070,8 +1228,25 @@ impl Player {
     fn publish_position(&self) {
         let pos = self.output.position_ms();
         let mut st = self.state.lock();
-        if !st.loading {
+        // A restored queue has no audio loaded yet. Keep its saved position
+        // while paused; the output device still reports zero until Play.
+        if !st.loading && st.is_playing {
             st.position_ms = visible_position_ms(pos, st.duration_ms);
+        }
+        let current_id = st.current.and_then(|index| st.queue.get(index)).map(|track| track.id);
+        if st.ab_track_id != current_id {
+            st.ab_track_id = None;
+            st.ab_start_ms = None;
+            st.ab_end_ms = None;
+        }
+        let restart = if st.is_playing && !st.loading {
+            st.ab_end_ms.filter(|end| pos >= *end).and(st.ab_start_ms)
+        } else {
+            None
+        };
+        drop(st);
+        if let Some(start) = restart {
+            self.seek_ms(start);
         }
     }
 
@@ -1187,6 +1362,7 @@ impl Player {
                 .map(|t| t.effective_duration_ms())
                 .unwrap_or(0);
             st.queue = queue;
+            st.queue_revision = st.queue_revision.wrapping_add(1);
             st.order = (0..st.queue.len()).collect();
             st.current = current;
             st.position_ms = pos.unwrap_or(0);
@@ -1380,6 +1556,85 @@ mod tests {
         player.restore_session(vec![track], Some(0));
 
         assert!(!player.state.lock().is_playing);
+    }
+
+    #[test]
+    fn paused_restored_position_survives_background_polling() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all().build().expect("runtime");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("settings.json");
+        crate::config::update_settings(&path, |settings| settings.last_position_ms = Some(42_000)).unwrap();
+        let player = Player::new(
+            Arc::new(AudioOutput::silent([0.0; 10], 0.8)),
+            Arc::new(crate::api::ApiClient::demo()),
+            Arc::new(AudioCache::disabled()),
+            path,
+            runtime.handle().clone(),
+        );
+        let track: Track = serde_json::from_str(r#"{"id":7,"title":"Restored","duration":120000}"#).unwrap();
+        player.restore_session(vec![track], Some(0));
+        player.publish_position();
+        assert_eq!(player.state.lock().position_ms, 42_000);
+    }
+
+    #[test]
+    fn enqueue_next_preserves_current_track_and_tail_order() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all().build().expect("runtime");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let player = Player::new(
+            Arc::new(AudioOutput::silent([0.0; 10], 0.8)),
+            Arc::new(crate::api::ApiClient::demo()),
+            Arc::new(AudioCache::disabled()),
+            dir.path().join("settings.json"),
+            runtime.handle().clone(),
+        );
+        let track = |id| Track {
+            id, title: format!("Track {id}"),
+            ..serde_json::from_str(r#"{"id":0,"title":"Track"}"#).unwrap()
+        };
+        {
+            let mut state = player.state.lock();
+            state.queue = (1..=4).map(track).collect();
+            state.current = Some(1);
+        }
+
+        player.enqueue(vec![track(5), track(6)], true);
+
+        let state = player.state.lock();
+        assert_eq!(state.current, Some(1));
+        assert_eq!(state.queue.iter().map(|track| track.id).collect::<Vec<_>>(), vec![1, 2, 5, 6, 3, 4]);
+        assert_eq!(state.order, (0..6).collect::<Vec<_>>());
+        assert_eq!(state.queue_revision, 1);
+    }
+
+    #[test]
+    fn trimming_endless_station_keeps_current_and_upcoming_order() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all().build().expect("runtime");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let player = Player::new(
+            Arc::new(AudioOutput::silent([0.0; 10], 0.8)),
+            Arc::new(crate::api::ApiClient::demo()),
+            Arc::new(AudioCache::disabled()),
+            dir.path().join("settings.json"),
+            runtime.handle().clone(),
+        );
+        {
+            let mut state = player.state.lock();
+            state.queue = (0..150).map(|id| Track {
+                id, title: format!("Track {id}"), ..serde_json::from_str(r#"{"id":0,"title":"Track"}"#).unwrap()
+            }).collect();
+            state.order = (0..150).collect();
+            state.current = Some(110);
+        }
+        assert_eq!(player.trim_played_history(120, 15), 95);
+        let state = player.state.lock();
+        assert_eq!(state.queue.len(), 55);
+        assert_eq!(state.queue[state.current.unwrap()].id, 110);
+        assert_eq!(state.order[state.current.unwrap() + 1], 16);
+        assert_eq!(state.queue[16].id, 111);
     }
 
     #[test]

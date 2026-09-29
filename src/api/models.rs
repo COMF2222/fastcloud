@@ -26,6 +26,16 @@ pub struct User {
     pub permalink: Option<String>,
     pub avatar_url: Option<String>,
     #[serde(default)]
+    pub full_name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub city: Option<String>,
+    #[serde(default)]
+    pub country_code: Option<String>,
+    #[serde(default)]
+    pub permalink_url: Option<String>,
+    #[serde(default)]
     pub followers_count: u64,
     #[serde(default)]
     pub followings_count: u64,
@@ -81,6 +91,8 @@ pub struct Track {
     pub preview_end_ms: Option<u64>,
     #[serde(default)]
     pub genre: Option<String>,
+    #[serde(default)]
+    pub tag_list: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
@@ -230,9 +242,15 @@ pub struct Playlist {
     pub user: Option<UserLite>,
     #[serde(default)]
     pub track_count: Option<u64>,
+    #[serde(default)]
+    pub genre: Option<String>,
+    #[serde(default)]
+    pub tag_list: Option<String>,
+    #[serde(default)]
+    pub likes_count: Option<u64>,
     #[serde(default, alias = "duration")]
     pub duration_ms: Option<u64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub is_album: bool,
     /// Newer responses may identify albums by type instead of setting the
     /// legacy boolean. Keep both so the Albums tab follows SoundCloud.
@@ -246,11 +264,30 @@ pub struct Playlist {
     pub permalink_url: Option<String>,
     /// Embedded when `show_tracks=true`; used immediately for cover fallback
     /// while the dedicated playlist-track page is still loading.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "playlist_tracks")]
     pub tracks: Vec<Track>,
     /// UI-only activity metadata attached while flattening `/me/feed`.
     #[serde(default, skip_serializing)]
     pub feed_reposted: bool,
+}
+
+fn null_default<'de, D: serde::Deserializer<'de>, T: Deserialize<'de> + Default>(
+    deserializer: D,
+) -> Result<T, D::Error> {
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+fn playlist_tracks<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<Track>, D::Error> {
+    let rows = Option::<Vec<serde_json::Value>>::deserialize(deserializer)?.unwrap_or_default();
+    // List responses may contain only track IDs or null entries. Their cover
+    // fallback is optional, so one partial embedded track must not hide the
+    // entire playlist collection.
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| serde_json::from_value(row).ok())
+        .collect())
 }
 
 impl Playlist {
@@ -324,6 +361,16 @@ mod track_and_playlist_tests {
             serde_json::from_str(r#"{"id":2,"title":"B","is_album":true}"#).unwrap();
         assert!(current.is_album());
         assert!(legacy.is_album());
+    }
+
+    #[test]
+    fn partial_embedded_tracks_do_not_hide_playlists() {
+        let collection: Collection<Playlist> = serde_json::from_str(
+            r#"{"collection":[{"id":1,"title":"A","tracks":[{"id":5},null],"is_album":null},{"id":2,"title":"B","tracks":null}],"next_href":null}"#,
+        )
+        .unwrap();
+        assert_eq!(collection.collection.len(), 2);
+        assert!(collection.collection.iter().all(|item| item.tracks.is_empty()));
     }
 }
 

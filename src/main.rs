@@ -17,6 +17,7 @@ mod demo;
 mod desktop;
 mod fonts;
 mod images;
+mod import_yandex;
 mod link;
 mod player;
 mod playlists;
@@ -92,7 +93,34 @@ fn main() -> Result<()> {
         .context("start tokio runtime")?;
 
     let mut app = build_app(&args, &rt, ipc_server)?;
-    if let Some(link) = boot_link {
+    if let Some(path) = args.screenshot.clone() {
+        let route = match args.screenshot_page {
+            cli::ScreenshotPage::Home => ui::route::Route::Home,
+            cli::ScreenshotPage::Discover => ui::route::Route::Discover,
+            cli::ScreenshotPage::Feed => ui::route::Route::Feed,
+            cli::ScreenshotPage::FeedScrolled => {
+                app.configure_screenshot_scroll(900.0);
+                ui::route::Route::Feed
+            }
+            cli::ScreenshotPage::Library => ui::route::Route::Library,
+            cli::ScreenshotPage::LibrarySelection => {
+                app.library_tab = ui::views::LibraryTab::Likes;
+                app.selected.extend(
+                    demo::demo_tracks()
+                        .into_iter()
+                        .take(3)
+                        .map(|track| track.id),
+                );
+                ui::route::Route::Library
+            }
+            cli::ScreenshotPage::Search => ui::route::Route::Search("ambient".to_owned()),
+            cli::ScreenshotPage::Settings => ui::route::Route::Settings,
+        };
+        app.configure_screenshot(path, route);
+    }
+    if args.screenshot.is_none()
+        && let Some(link) = boot_link
+    {
         app.pending_link = Some(link);
     }
     // The window comes back the way it was left: the mini player is a mode of
@@ -112,7 +140,12 @@ fn main() -> Result<()> {
         .as_ref()
         .map(|mini| mini.lock().height())
         .unwrap_or(ui::winamp::HEIGHT);
-    let mini_size = egui::vec2(ui::winamp::WIDTH * scale, mini_height * scale);
+    let mini_size = match app.settings.mini_player_style {
+        config::MiniPlayerStyle::Airwave => egui::vec2(360.0, 112.0),
+        config::MiniPlayerStyle::Winamp => {
+            egui::vec2(ui::winamp::WIDTH * scale, mini_height * scale)
+        }
+    };
     // Read the interface face before the window exists: `install` runs inside
     // eframe's creation callback, which cannot fail gracefully.
     let interface_font = app
@@ -148,7 +181,7 @@ fn main() -> Result<()> {
     } else {
         viewport
             .with_inner_size([1180.0, 760.0])
-            .with_min_inner_size([860.0, 560.0])
+            .with_min_inner_size([760.0, 520.0])
     };
     let options = eframe::NativeOptions {
         viewport,
@@ -247,9 +280,10 @@ fn build_app(
 
     let paths = config::app_paths()?;
     let art = images::ArtLoader::new(paths.cover_cache.clone(), rt.handle().clone());
+    art.set_profile(settings.memory_profile);
     let audio_cache = std::sync::Arc::new(audio::cache::AudioCache::new(
         paths.audio_cache.clone(),
-        512 * 1024 * 1024,
+        settings.audio_cache_limit_mb.saturating_mul(1024 * 1024),
     )?);
 
     let output = audio::output::AudioOutput::open(settings.eq_gains_db, settings.volume)
@@ -301,6 +335,7 @@ fn build_app(
         {
             let mut st = player.state.lock();
             st.queue = tracks;
+            st.queue_revision = st.queue_revision.wrapping_add(1);
             st.order = (0..st.queue.len()).collect();
             st.current = Some(start_idx);
             st.duration_ms = st.queue[start_idx].effective_duration_ms();

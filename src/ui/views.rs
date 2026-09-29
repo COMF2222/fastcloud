@@ -1,9 +1,11 @@
 use super::App;
 use super::data;
+use super::design::widgets::{self as airwave, ButtonVariant, Surface, SurfaceTone, ViewState};
 use super::route::Route;
 use super::theme::{Metrics, Type};
 use super::widgets;
 use crate::api::models::Track;
+use crate::config::QuickAccessShortcut;
 use crate::store::{Key, Slot};
 use eframe::egui;
 
@@ -33,48 +35,245 @@ pub enum UserTab {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SearchTab {
+pub enum SearchMode {
     #[default]
-    All,
-    Tracks,
-    People,
-    Albums,
-    Playlists,
+    Text,
+    Vibe,
+    SoundCloud,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchSurface {
+    Wave,
+    Text,
+    Vibe,
+    SoundCloud,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchMove {
+    Previous,
+    Next,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextLane {
+    Lexical(usize),
+    Vibe(usize),
 }
 
 impl LibraryTab {
-    fn label(self) -> &'static str {
+    fn label(self, language: crate::config::Language) -> &'static str {
         match self {
-            Self::Overview => "Overview",
-            Self::Likes => "Likes",
-            Self::Playlists => "Playlists",
-            Self::Albums => "Albums",
-            Self::Uploads => "Tracks",
-            Self::Stations => "Stations",
-            Self::Following => "Following",
-            Self::History => "History",
+            Self::Overview => language.text("Overview", "Обзор"),
+            Self::Likes => language.text("Likes", "Лайки"),
+            Self::Playlists => language.text("Playlists", "Плейлисты"),
+            Self::Albums => language.text("Albums", "Альбомы"),
+            Self::Uploads => language.text("Tracks", "Треки"),
+            Self::Stations => language.text("Stations", "Станции"),
+            Self::Following => language.text("Following", "Подписки"),
+            Self::History => language.text("History", "История"),
         }
     }
 }
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
+    if matches!(app.route, Route::Settings) {
+        // The section rail and heading belong to the settings shell; only
+        // the long list of controls scrolls. Otherwise the rail vanishes and
+        // leaves an empty column halfway down the page.
+        egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric(
+                Metrics::SP_075 as i8,
+                Metrics::SP_15 as i8,
+            ))
+            .show(ui, |ui| settings(app, ui));
+        return;
+    }
+    let selection_tracks = match (&app.route, app.library_tab) {
+        (Route::Likes, _) | (Route::Library, LibraryTab::Likes) => {
+            Some(filtered(app, app.tracks(Key::Likes).rows()))
+        }
+        _ => None,
+    };
+    if let Some(tracks) = selection_tracks {
+        library_selection_bar(app, ui, &tracks);
+    }
+    let page_salt = page_scroll_salt(&app.route);
+    let page_offset = egui::scroll_area::State::load(ui.ctx(), ui.make_persistent_id(page_salt))
+        .map_or(0.0, |state| state.offset.y);
+    if should_show_detail_actions(&app.route, page_offset) {
+        detail_sticky_actions(app, ui);
+    }
     // One outer scroll for the whole page; inner lists expand into it.
-    egui::ScrollArea::vertical()
-        .id_salt("page")
-        .auto_shrink([false, false])
+    let mut scroll = egui::ScrollArea::vertical()
+        .id_salt(page_salt)
+        .wheel_scroll_multiplier(page_wheel_multiplier(&app.route))
+        .auto_shrink([false, false]);
+    if let Some(offset) = app.screenshot_scroll_offset.take() {
+        scroll = scroll.vertical_scroll_offset(offset);
+    }
+    scroll.show(ui, |ui| {
+        egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric(
+                Metrics::SP_075 as i8,
+                Metrics::SP_15 as i8,
+            ))
+            .show(ui, |ui| show_inner(app, ui));
+    });
+}
+
+fn page_wheel_multiplier(route: &Route) -> egui::Vec2 {
+    if matches!(route, Route::Settings) {
+        egui::vec2(1.0, 1.85)
+    } else {
+        egui::Vec2::ONE
+    }
+}
+
+fn page_scroll_salt(route: &Route) -> egui::Id {
+    match route {
+        Route::Home => egui::Id::new(("page", 0_u8)),
+        Route::Discover => egui::Id::new(("page", 1_u8)),
+        Route::Catalog => egui::Id::new(("page", 12_u8)),
+        Route::Feed => egui::Id::new(("page", 2_u8)),
+        Route::Library => egui::Id::new(("page", 3_u8)),
+        Route::Likes => egui::Id::new(("page", 4_u8)),
+        Route::Search(query) => egui::Id::new(("page", 5_u8, query.as_str())),
+        Route::TrackDetail(id) => egui::Id::new(("page", 6_u8, *id)),
+        Route::PlaylistDetail(id) => egui::Id::new(("page", 7_u8, *id)),
+        Route::UserDetail(id) => egui::Id::new(("page", 8_u8, *id)),
+        Route::Recent => egui::Id::new(("page", 9_u8)),
+        Route::Following => egui::Id::new(("page", 10_u8)),
+        Route::Settings => egui::Id::new(("page", 11_u8)),
+    }
+}
+
+fn should_show_detail_actions(route: &Route, page_offset: f32) -> bool {
+    page_offset >= 220.0
+        && matches!(
+            route,
+            Route::TrackDetail(_) | Route::PlaylistDetail(_) | Route::UserDetail(_)
+        )
+}
+
+fn detail_sticky_actions(app: &mut App, ui: &mut egui::Ui) {
+    egui::Panel::top(egui::Id::new("detail-sticky-actions"))
+        .resizable(false)
         .show(ui, |ui| {
             egui::Frame::new()
+                .fill(app.theme.tokens.surface_raised)
+                .stroke(egui::Stroke::new(1.0, app.theme.tokens.border_subtle))
+                .corner_radius(Metrics::RADIUS_INPUT)
                 .inner_margin(egui::Margin::symmetric(
+                    Metrics::SP_1 as i8,
                     Metrics::SP_075 as i8,
-                    Metrics::SP_15 as i8,
                 ))
-                .show(ui, |ui| show_inner(app, ui));
+                .show(ui, |ui| match app.route.clone() {
+                    Route::TrackDetail(id) => {
+                        let Some(track) = app.track(id).ready() else {
+                            return;
+                        };
+                        let related = app.tracks(Key::Related(id));
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::Label::new(Type::H4.rich(&track.title, app.theme.text))
+                                    .truncate(),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    widgets::like_button(app, ui, track.id, &track.title);
+                                    if airwave::action_button(
+                                        ui,
+                                        app.theme,
+                                        ButtonVariant::Primary,
+                                        "Play",
+                                    )
+                                    .clicked()
+                                    {
+                                        app.play_user_queue(
+                                            detail_queue(&track, related.rows()),
+                                            0,
+                                            false,
+                                        );
+                                    }
+                                },
+                            );
+                        });
+                    }
+                    Route::PlaylistDetail(id) => {
+                        let title = playlist_title(app, id);
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::Label::new(Type::H4.rich(&title, app.theme.text)).truncate(),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if airwave::action_button(
+                                        ui,
+                                        app.theme,
+                                        ButtonVariant::Primary,
+                                        "Play",
+                                    )
+                                    .clicked()
+                                    {
+                                        let tracks = playlist_tracks(app, id);
+                                        if !tracks.is_empty() {
+                                            app.play_user_queue(tracks, 0, false);
+                                        }
+                                    }
+                                },
+                            );
+                        });
+                    }
+                    Route::UserDetail(id) => {
+                        let Some(user) = app.user(id).ready() else {
+                            return;
+                        };
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::Label::new(Type::H4.rich(&user.username, app.theme.text))
+                                    .truncate(),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    widgets::follow_button(app, ui, id, &user.username);
+                                    if airwave::action_button(
+                                        ui,
+                                        app.theme,
+                                        ButtonVariant::Secondary,
+                                        "Station",
+                                    )
+                                    .clicked()
+                                    {
+                                        let seed =
+                                            app.tracks(Key::UserTracks(id)).rows().first().cloned();
+                                        if let Some(seed) = seed {
+                                            app.settings.autoplay = true;
+                                            app.player.set_autoplay(true);
+                                            let queue = app.station_queue(&seed);
+                                            app.play_user_queue(queue, 0, false);
+                                        } else {
+                                            app.toast("Nothing to seed a station with yet");
+                                        }
+                                    }
+                                },
+                            );
+                        });
+                    }
+                    _ => {}
+                });
         });
 }
 
 fn show_inner(app: &mut App, ui: &mut egui::Ui) {
     match app.route.clone() {
         Route::Home => home(app, ui),
+        Route::Discover => discover(app, ui),
+        Route::Catalog => catalog(app, ui),
         Route::Feed => feed(app, ui),
         Route::Library => library(app, ui),
         Route::Likes => {
@@ -94,152 +293,441 @@ fn show_inner(app: &mut App, ui: &mut egui::Ui) {
     }
 }
 
-// ===== Home (soundcloud.com style) =====
+// ===== Home =====
 
 fn home(app: &mut App, ui: &mut egui::Ui) {
-    two_columns(app, ui, |app, ui| {
-        ui.add_space(Metrics::SP_HALF);
+    use crate::demo::{HomeShelf, ShelfKind, Source};
+    let language = app.settings.language;
 
-        use crate::demo::{HomeShelf, ShelfKind, Source};
-        let likes = HomeShelf {
-            title: "Your Likes",
-            subtitle: "Saved on your SoundCloud account",
-            salt: "home-likes",
-            kind: ShelfKind::Tracks,
-            source: Source::MyLikes,
-        };
-        shelf_header(app, ui, likes.title, likes.subtitle);
-        home_shelf(app, ui, &likes, Key::Likes);
-
-        let recent = recent_tracks(app, 25);
-        if recent.is_empty() {
-            widgets::section_header(app, ui, "Recently Played");
-            ui.label(Type::BODY.rich("Press play on anything to get started.", app.theme.text_dim));
-        } else {
-            recently_played_panel(app, ui, &recent);
-        }
-
-        let related_seed = recent
+    ui.add_space(Metrics::SP_HALF);
+    let recent = recent_tracks(app, 12);
+    let current = {
+        let state = app.player.state.lock();
+        state
+            .current
+            .and_then(|index| state.queue.get(index).cloned())
+    };
+    let focus = current.or_else(|| {
+        recent
             .first()
-            .map(|track| track.id)
-            .or_else(|| app.tracks(Key::Likes).rows().first().map(|track| track.id));
-        if let Some(seed) = related_seed {
-            use crate::demo::{HomeShelf, ShelfKind, Source};
-            let shelf = HomeShelf {
-                title: "More of what you like",
-                subtitle: "Related to music you've played and liked",
-                salt: "home-related",
-                kind: ShelfKind::Tracks,
-                source: Source::RecentlyPlayed,
-            };
-            shelf_header(app, ui, shelf.title, shelf.subtitle);
-            home_shelf(app, ui, &shelf, Key::Related(seed));
-        }
-
-        // …then every editorial shelf, in the site's order. A shelf with
-        // nothing to seed from is skipped rather than shown empty.
-        let shelves = [
-            (
-                HomeShelf {
-                    title: "From people you follow",
-                    subtitle: "Recent tracks from your SoundCloud subscriptions",
-                    salt: "home-following-tracks",
-                    kind: ShelfKind::Tracks,
-                    source: Source::RecentlyPlayed,
-                },
-                Key::FollowingTracks,
-            ),
-            (
-                HomeShelf {
-                    title: "People you follow",
-                    subtitle: "Your SoundCloud following list",
-                    salt: "home-following",
-                    kind: ShelfKind::Artists,
-                    source: Source::RelatedUsers,
-                },
-                Key::Following,
-            ),
-        ];
-        for (shelf, key) in shelves {
-            shelf_header(app, ui, shelf.title, shelf.subtitle);
-            home_shelf(app, ui, &shelf, key);
-        }
-        shelf_header(
-            app,
-            ui,
-            "Your playlists",
-            "Your own and saved SoundCloud playlists",
-        );
-        home_account_playlists(app, ui, false, "home-playlists");
-        shelf_header(
-            app,
-            ui,
-            "Your albums",
-            "Albums saved on your SoundCloud account",
-        );
-        home_account_playlists(app, ui, true, "home-albums");
-        footer(app, ui);
+            .cloned()
+            .or_else(|| app.tracks(Key::Likes).rows().first().cloned())
     });
+
+    continue_listening_hero(app, ui, focus.as_ref());
+    quick_picks(app, ui);
+
+    app.home_recommendation_seed = home_recommendation_seed(
+        app.home_recommendation_seed,
+        app.tracks(Key::Likes).rows(),
+        &recent,
+    );
+    if let Some(seed) = app.home_recommendation_seed {
+        let made_for_you = HomeShelf {
+            title: language.text("Made for you", "Для тебя"),
+            subtitle: language.text(
+                "A fresh lane shaped by your latest listening",
+                "Подборка по тому, что ты слушал недавно",
+            ),
+            salt: "airwave-made-for-you",
+            kind: ShelfKind::Tracks,
+            source: Source::RelatedToHistory,
+        };
+        shelf_header(app, ui, made_for_you.title, made_for_you.subtitle);
+        home_shelf(app, ui, &made_for_you, Key::Related(seed));
+    }
+
+    let fresh = HomeShelf {
+        title: language.text("Fresh from artists", "Новое от исполнителей"),
+        subtitle: language.text(
+            "Recent tracks from people you follow",
+            "Свежие треки от твоих подписок",
+        ),
+        salt: "airwave-following-fresh",
+        kind: ShelfKind::Tracks,
+        source: Source::RecentlyPlayed,
+    };
+    shelf_header(app, ui, fresh.title, fresh.subtitle);
+    home_shelf(app, ui, &fresh, Key::FollowingTracks);
+
+    if recent.is_empty() {
+        widgets::section_header(app, ui, language.text("Recently played", "Недавно слушали"));
+        ui.label(Type::BODY.rich(
+            language.text(
+                "Press play on anything to get started.",
+                "Включи любой трек, чтобы начать.",
+            ),
+            app.theme.text_dim,
+        ));
+    } else {
+        recently_played_panel(app, ui, &recent);
+    }
+
+    shelf_header(
+        app,
+        ui,
+        language.text("Your playlists", "Твои плейлисты"),
+        language.text(
+            "Pick up a saved collection without leaving Home",
+            "Продолжай слушать прямо с главной",
+        ),
+    );
+    home_account_playlists(app, ui, false, "airwave-home-playlists");
+    footer(app, ui);
+}
+
+fn home_recommendation_seed(
+    existing: Option<u64>,
+    likes: &[Track],
+    recent: &[Track],
+) -> Option<u64> {
+    existing.or_else(|| {
+        likes
+            .first()
+            .or_else(|| recent.first())
+            .map(|track| track.id)
+    })
+}
+
+#[cfg(test)]
+mod home_seed_tests {
+    use super::home_recommendation_seed;
+
+    #[test]
+    fn switching_tracks_does_not_change_an_established_recommendation_seed() {
+        let tracks = crate::demo::demo_tracks();
+        let first = home_recommendation_seed(None, &tracks[..1], &tracks[1..2]);
+        let after_switch = home_recommendation_seed(first, &tracks[2..3], &tracks[3..4]);
+        assert_eq!(after_switch, first);
+    }
 }
 
 fn recently_played_panel(app: &mut App, ui: &mut egui::Ui, tracks: &[Track]) {
-    ui.add_space(Metrics::SP_6);
-    widgets::section_header(app, ui, "Recently Played");
-    let queue = std::sync::Arc::new(tracks.to_vec());
-    egui::Frame::new()
-        .fill(egui::Color32::from_rgb(111, 151, 173))
-        .corner_radius(Metrics::RADIUS)
-        .inner_margin(egui::Margin::same(Metrics::SP_25 as i8))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let first = &queue[0];
-                let art = widgets::artwork_img(
-                    ui,
-                    first.artwork_url(),
-                    first.id,
-                    &first.title,
-                    180.0,
-                    Metrics::RADIUS as f32,
-                );
-                if art.clicked() {
-                    app.play_user_queue((*queue).clone(), 0, false);
-                }
-                ui.vertical(|ui| {
-                    ui.set_min_width(280.0);
-                    egui::ScrollArea::vertical()
-                        .id_salt("home-recent-tracks")
-                        .max_height(180.0)
-                        .show(ui, |ui| {
-                            for (index, track) in queue.iter().enumerate() {
-                                let response = ui
-                                    .add(
-                                        egui::Label::new(Type::H4.rich(
-                                            &format!("{} – {}", track.artist(), track.title),
-                                            egui::Color32::WHITE,
-                                        ))
-                                        .sense(egui::Sense::click())
-                                        .truncate(),
-                                    )
-                                    .on_hover_cursor(egui::CursorIcon::PointingHand);
-                                if response.clicked() {
-                                    app.play_user_queue((*queue).clone(), index, false);
-                                }
-                                if index + 1 < queue.len() {
-                                    ui.separator();
-                                }
-                            }
-                        });
-                });
-            });
+    widgets::section_header(
+        app,
+        ui,
+        app.settings
+            .language
+            .text("Recently played", "Недавно слушали"),
+    );
+    let surface = if app.settings.background_image.is_some() {
+        Surface::clear()
+    } else {
+        Surface::glass()
+    };
+    surface
+        .padding(Metrics::SP_1 as i8)
+        .show(ui, app.theme, |ui| {
+            track_rows(app, ui, tracks);
         });
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        if ui.button("Go to history").clicked() {
+        if ui
+            .button(app.settings.language.text("Go to history", "К истории"))
+            .clicked()
+        {
             app.library_tab = LibraryTab::History;
             app.navigate(Route::Library);
         }
     });
 }
 
+fn continue_listening_hero(app: &mut App, ui: &mut egui::Ui, track: Option<&Track>) {
+    ui.label(
+        Type::H1.rich(
+            app.settings
+                .language
+                .text("Good to see you", "Рады тебя видеть"),
+            app.theme.text,
+        ),
+    );
+    ui.label(Type::BODY.rich(
+        app.settings.language.text(
+            "Continue listening or launch a new wave.",
+            "Продолжай слушать или открой новую волну.",
+        ),
+        app.theme.text_dim,
+    ));
+    ui.add_space(Metrics::SP_2);
+
+    let surface = if app.settings.background_image.is_some() {
+        Surface::clear()
+    } else {
+        Surface::glass()
+    };
+    surface.show(ui, app.theme, |ui| {
+        let Some(track) = track else {
+            ui.set_min_height(132.0);
+            ui.centered_and_justified(|ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(Type::H2.rich("Your next track starts here", app.theme.text));
+                    if airwave::action_button(
+                        ui,
+                        app.theme,
+                        ButtonVariant::Secondary,
+                        "Explore music",
+                    )
+                    .clicked()
+                    {
+                        app.open_search();
+                    }
+                });
+            });
+            return;
+        };
+
+        let state = app.player.state.lock();
+        let is_current = state
+            .current
+            .and_then(|index| state.queue.get(index))
+            .is_some_and(|current| current.id == track.id);
+        let playing = is_current && state.is_playing;
+        let position = if is_current { state.position_ms } else { 0 };
+        drop(state);
+        let duration = track.effective_duration_ms().max(1);
+        let peaks = track
+            .waveform_url
+            .as_deref()
+            .and_then(|url| app.waveforms.get(ui.ctx(), url));
+        let art_size = if ui.available_width() >= 720.0 {
+            176.0
+        } else {
+            132.0
+        };
+
+        ui.horizontal(|ui| {
+            if widgets::artwork_img(
+                ui,
+                track.artwork_url(),
+                track.id,
+                &track.title,
+                art_size,
+                Metrics::RADIUS_LG as f32,
+            )
+            .on_hover_text("Open track")
+            .clicked()
+            {
+                app.navigate(Route::TrackDetail(track.id));
+            }
+            ui.add_space(Metrics::SP_2);
+            ui.vertical(|ui| {
+                ui.set_min_height(art_size);
+                ui.label(Type::MICRO.rich("CONTINUE LISTENING", app.theme.accent));
+                ui.add(egui::Label::new(Type::H1.rich(&track.title, app.theme.text)).truncate());
+                let artist = ui
+                    .add(
+                        egui::Label::new(Type::BODY.rich(track.artist(), app.theme.text_dim))
+                            .sense(egui::Sense::click()),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                if artist.clicked()
+                    && let Some(user) = &track.user
+                {
+                    app.navigate(Route::UserDetail(user.id));
+                }
+                ui.add_space(Metrics::SP_1);
+                ui.horizontal(|ui| {
+                    let play_label = if playing { "Pause" } else { "Play" };
+                    if airwave::action_button(ui, app.theme, ButtonVariant::Primary, play_label)
+                        .clicked()
+                    {
+                        if is_current {
+                            app.player.play_pause();
+                        } else {
+                            app.play_user_queue(vec![track.clone()], 0, false);
+                        }
+                    }
+                    if airwave::action_button(ui, app.theme, ButtonVariant::Secondary, "Next up")
+                        .clicked()
+                    {
+                        app.show_queue = true;
+                    }
+                });
+                ui.add_space(Metrics::SP_HALF);
+                if let Some(frac) = widgets::waveform(
+                    app,
+                    ui,
+                    track.id,
+                    position,
+                    duration,
+                    42.0,
+                    96,
+                    peaks.as_deref(),
+                ) {
+                    if !is_current {
+                        app.play_user_queue(vec![track.clone()], 0, false);
+                    }
+                    app.player.seek_ms((frac as f64 * duration as f64) as u64);
+                }
+            });
+        });
+    });
+}
+
+fn quick_picks(app: &mut App, ui: &mut egui::Ui) {
+    let language = app.settings.language;
+    widgets::section_header(app, ui, language.text("Quick Access", "Быстрый доступ"));
+    let items: Vec<_> = app
+        .settings
+        .quick_access
+        .iter()
+        .filter(|item| item.is_media())
+        .take(8)
+        .cloned()
+        .collect();
+    if items.is_empty() {
+        ui.label(Type::CAPTION.rich(
+            language.text(
+                "Pin a track, playlist or album from its page to find it here.",
+                "Закрепи трек, плейлист или альбом на его странице — он появится здесь.",
+            ),
+            app.theme.text_dim,
+        ));
+        return;
+    }
+    let mut destination = None;
+    ui.horizontal_wrapped(|ui| {
+        for item in &items {
+            let (label, detail, icon, artwork, route) = match item {
+                QuickAccessShortcut::Track {
+                    id,
+                    title,
+                    artist,
+                    artwork_url,
+                } => (
+                    title.as_str(),
+                    artist.as_str(),
+                    super::icons::Icon::Music,
+                    artwork_url.as_deref(),
+                    Route::TrackDetail(*id),
+                ),
+                QuickAccessShortcut::Playlist {
+                    id,
+                    title,
+                    artist,
+                    artwork_url,
+                } => (
+                    title.as_str(),
+                    artist.as_str(),
+                    super::icons::Icon::ListPlus,
+                    artwork_url.as_deref(),
+                    Route::PlaylistDetail(*id),
+                ),
+                QuickAccessShortcut::Album {
+                    id,
+                    title,
+                    artist,
+                    artwork_url,
+                } => (
+                    title.as_str(),
+                    artist.as_str(),
+                    super::icons::Icon::Disc,
+                    artwork_url.as_deref(),
+                    Route::PlaylistDetail(*id),
+                ),
+                _ => continue,
+            };
+            let width = ((ui.available_width() - Metrics::SP_1) / 3.0).max(180.0);
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(width.min(300.0), 66.0), egui::Sense::click());
+            airwave::paint_clear_glass_rect(
+                ui,
+                rect,
+                Metrics::RADIUS_INPUT,
+                app.theme,
+                response.hovered().then_some(app.theme.accent),
+            );
+            let icon_rect = egui::Rect::from_center_size(
+                egui::pos2(rect.left() + 25.0, rect.center().y),
+                egui::Vec2::splat(28.0),
+            );
+            let painted = artwork.is_some_and(|url| {
+                let image = egui::Image::new(url)
+                    .show_loading_spinner(false)
+                    .fit_to_exact_size(icon_rect.size())
+                    .corner_radius(Metrics::RADIUS);
+                if image.load_for_size(ui.ctx(), icon_rect.size()).is_ok() {
+                    image.paint_at(ui, icon_rect);
+                    true
+                } else {
+                    false
+                }
+            });
+            if !painted {
+                super::icons::paint(ui, icon, icon_rect, 18.0, app.theme.accent);
+            }
+            let clip = egui::Rect::from_min_max(
+                egui::pos2(rect.left() + 48.0, rect.top()),
+                egui::pos2(rect.right() - 8.0, rect.bottom()),
+            );
+            let painter = ui.painter().with_clip_rect(clip);
+            painter.text(
+                egui::pos2(clip.left(), rect.center().y - 9.0),
+                egui::Align2::LEFT_CENTER,
+                label,
+                Type::H4.font(),
+                app.theme.text,
+            );
+            painter.text(
+                egui::pos2(clip.left(), rect.center().y + 10.0),
+                egui::Align2::LEFT_CENTER,
+                detail,
+                Type::CAPTION.font(),
+                app.theme.text_dim,
+            );
+            if response.clicked() {
+                destination = Some(route);
+            }
+        }
+    });
+    if let Some(route) = destination {
+        app.navigate(route);
+    }
+}
+
+fn toggle_media_quick_access(app: &mut App, item: QuickAccessShortcut) {
+    let before = app.settings.quick_access.clone();
+    let pinned = app.settings.toggle_quick_access(item);
+    if let Err(error) = app.settings.save() {
+        app.settings.quick_access = before;
+        app.toast(format!("Could not save Quick Access: {error}"));
+    } else {
+        app.toast(app.settings.language.text(
+            if pinned {
+                "Added to Quick Access"
+            } else {
+                "Removed from Quick Access"
+            },
+            if pinned {
+                "Добавлено в быстрый доступ"
+            } else {
+                "Удалено из быстрого доступа"
+            },
+        ));
+    }
+}
+
+fn quick_access_button(app: &mut App, ui: &mut egui::Ui, item: QuickAccessShortcut) {
+    let pinned = app
+        .settings
+        .quick_access
+        .iter()
+        .any(|saved| saved.same_target(&item));
+    let label = app.settings.language.text(
+        if pinned {
+            "Remove from Quick Access"
+        } else {
+            "Add to Quick Access"
+        },
+        if pinned {
+            "Убрать из быстрого доступа"
+        } else {
+            "В быстрый доступ"
+        },
+    );
+    if airwave::action_button(ui, app.theme, ButtonVariant::Secondary, label).clicked() {
+        toggle_media_quick_access(app, item);
+    }
+}
 fn home_account_playlists(app: &mut App, ui: &mut egui::Ui, albums: bool, salt: &str) {
     let owned = app.playlists(Key::MyPlaylists);
     let liked = app.playlists(Key::LikedPlaylists);
@@ -266,10 +754,10 @@ fn home_account_playlists(app: &mut App, ui: &mut egui::Ui, albums: bool, salt: 
         for playlist in &playlists {
             let tracks = playlist_tracks(app, playlist.id);
             let fallback_art = tracks.first().and_then(Track::artwork_url);
-            let click = widgets::card(
+            let click = widgets::media_card(
                 app,
                 ui,
-                widgets::Card::opens(
+                widgets::MediaCard::opens(
                     playlist.id,
                     &playlist.title,
                     playlist
@@ -339,10 +827,10 @@ fn home_shelf(app: &mut App, ui: &mut egui::Ui, shelf: &crate::demo::HomeShelf, 
                     let count = pl.track_count.unwrap_or(0);
                     let art = pl.artwork_url();
                     let kind = if pl.is_album() { "Album" } else { "Playlist" };
-                    let click = widgets::card(
+                    let click = widgets::media_card(
                         app,
                         ui,
-                        widgets::Card::opens(pid, &title, &format!("{kind} · {count} tracks"))
+                        widgets::MediaCard::opens(pid, &title, &format!("{kind} · {count} tracks"))
                             .art(art),
                     );
                     if click.play {
@@ -380,10 +868,10 @@ fn home_shelf(app: &mut App, ui: &mut egui::Ui, shelf: &crate::demo::HomeShelf, 
             app.carousel(ui, salt, |app, ui| {
                 for seed in seeds.iter() {
                     let art = seed.artwork_url();
-                    let click = widgets::card(
+                    let click = widgets::media_card(
                         app,
                         ui,
-                        widgets::Card::plays(
+                        widgets::MediaCard::plays(
                             seed.id,
                             &format!("{} Station", seed.artist()),
                             "Artist station",
@@ -418,12 +906,12 @@ fn home_shelf(app: &mut App, ui: &mut egui::Ui, shelf: &crate::demo::HomeShelf, 
             app.carousel(ui, salt, |app, ui| {
                 for (i, track) in tracks.iter().enumerate() {
                     let tracks = tracks.clone();
-                    let click = widgets::card(
+                    let click = widgets::media_card(
                         app,
                         ui,
-                        widgets::Card {
+                        widgets::MediaCard {
                             subtitle: &format!("{owner}'s pick"),
-                            ..widgets::Card::track(track)
+                            ..widgets::MediaCard::track(track)
                         },
                     );
                     if click.play {
@@ -494,19 +982,7 @@ fn artist_card(app: &mut App, ui: &mut egui::Ui, artist: &crate::api::models::Us
 
 /// A circular cover: the loaded avatar clipped to a disc, or the initial.
 fn round_avatar(ui: &mut egui::Ui, url: &str, name: &str, size: f32) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
-    if ui.is_rect_visible(rect) {
-        let image = egui::Image::new(url)
-            .show_loading_spinner(false)
-            .fit_to_exact_size(egui::vec2(size, size))
-            .corner_radius(size / 2.0);
-        if image.load_for_size(ui.ctx(), rect.size()).is_ok() {
-            image.paint_at(ui, rect);
-        } else {
-            paint_initial(ui, rect, name, size);
-        }
-    }
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+    widgets::artwork_img(ui, Some(url), name_seed(name), name, size, size / 2.0)
 }
 
 /// The first letter on the name's own colour — one placeholder, used by both
@@ -579,7 +1055,7 @@ fn track_cards(app: &mut App, ui: &mut egui::Ui, salt: &str, tracks: &[Track]) {
     app.carousel(ui, salt, |app, ui| {
         for (i, track) in shared.iter().enumerate() {
             let shared = shared.clone();
-            let click = widgets::card(app, ui, widgets::Card::track(track));
+            let click = widgets::media_card(app, ui, widgets::MediaCard::track(track));
             if click.play {
                 app.play_user_queue((*shared).clone(), i, false);
             }
@@ -589,60 +1065,146 @@ fn track_cards(app: &mut App, ui: &mut egui::Ui, salt: &str, tracks: &[Track]) {
 
 // ===== Feed =====
 
+#[derive(Clone, Default)]
+struct FeedHeights {
+    width: f32,
+    scale: f32,
+    rows: std::collections::HashMap<u64, f32>,
+}
+
+impl FeedHeights {
+    fn row_height(&self, id: u64, has_activity: bool) -> f32 {
+        self.rows.get(&id).copied().unwrap_or_else(|| {
+            // Until measured, allow for artwork wrapping below the text column.
+            let body = if self.width < 400.0 { 360.0 } else { 210.0 };
+            body + if has_activity { 42.0 } else { 0.0 }
+        })
+    }
+}
+
+fn feed_row_visible(top: f32, height: f32, viewport: egui::Rect) -> bool {
+    top <= viewport.bottom() + 200.0 && top + height >= viewport.top() - 200.0
+}
+
+fn feed_header_stacks(width: f32) -> bool {
+    width < 560.0
+}
+
+#[cfg(test)]
+mod feed_visibility_tests {
+    use super::*;
+
+    fn viewport() -> egui::Rect {
+        egui::Rect::from_min_max(egui::pos2(0.0, 1000.0), egui::pos2(800.0, 1600.0))
+    }
+
+    #[test]
+    fn keeps_partially_visible_cards() {
+        assert!(feed_row_visible(900.0, 250.0, viewport()));
+    }
+
+    #[test]
+    fn skips_cards_above_overscan() {
+        assert!(!feed_row_visible(0.0, 250.0, viewport()));
+    }
+
+    #[test]
+    fn skips_cards_below_overscan() {
+        assert!(!feed_row_visible(2000.0, 250.0, viewport()));
+    }
+
+    #[test]
+    fn long_feed_only_renders_nearby_measured_cards() {
+        let rendered = (0..10_000)
+            .filter(|index| feed_row_visible(*index as f32 * 250.0, 250.0, viewport()))
+            .count();
+        assert_eq!(rendered, 5);
+    }
+
+    #[test]
+    fn cold_feed_does_not_build_all_cards() {
+        let heights = FeedHeights {
+            width: 600.0,
+            ..Default::default()
+        };
+        let mut top = 0.0;
+        let mut rendered = 0;
+        for id in 0..10_000 {
+            let height = heights.row_height(id, false);
+            rendered += usize::from(feed_row_visible(top, height, viewport()));
+            top += height;
+        }
+        assert_eq!(rendered, 6);
+    }
+
+    #[test]
+    fn measured_height_overrides_estimate() {
+        let mut heights = FeedHeights::default();
+        heights.rows.insert(7, 275.0);
+        assert_eq!(heights.row_height(7, true), 275.0);
+    }
+
+    #[test]
+    fn narrow_feed_reserves_more_space_for_wrapped_artwork() {
+        let narrow = FeedHeights {
+            width: 300.0,
+            ..Default::default()
+        };
+        let wide = FeedHeights {
+            width: 600.0,
+            ..Default::default()
+        };
+        assert!(narrow.row_height(1, false) > wide.row_height(1, false));
+    }
+
+    #[test]
+    fn feed_header_stacks_before_the_reposts_toggle_overlaps_the_title() {
+        assert!(feed_header_stacks(448.0));
+    }
+
+    #[test]
+    fn feed_header_stays_inline_when_the_main_column_is_wide() {
+        assert!(!feed_header_stacks(720.0));
+    }
+}
+
 fn feed(app: &mut App, ui: &mut egui::Ui) {
-    two_columns(app, ui, |app, ui| {
+    let language = app.settings.language;
+    ui.scope(|ui| {
         ui.add_space(4.0);
-        if !app.feed_banner_dismissed {
-            egui::Frame::new()
-                .fill(app.theme.surface)
-                .corner_radius(Metrics::RADIUS_LG)
-                .inner_margin(egui::Margin::symmetric(14, 10))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.label(
-                                egui::RichText::new("This is your feed")
-                                    .font(Type::H4.font())
-                                    .color(app.theme.text),
-                            );
-                            ui.label(
-                                egui::RichText::new(
-                                    "Follow your favorite artists and see every track they post right here.",
-                                )
-                                .font(Type::CAPTION.font())
-                                .color(app.theme.text_dim),
-                            );
-                        });
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::Min),
-                            |ui| {
-                                if super::icons::show(
-                                    ui,
-                                    super::icons::Icon::X,
-                                    15.0,
-                                    app.theme.text_dim,
-                                )
-                                .clicked()
-                                {
-                                    app.feed_banner_dismissed = true;
-                                }
-                            },
-                        );
+        let feed_title = language.text("Hear the latest posts from the people you're following:", "Новые публикации тех, на кого ты подписан:");
+        let stacked = feed_header_stacks(ui.available_width());
+        let header = Surface::glass().show(ui, app.theme, |ui| {
+            if stacked {
+                feed_header_identity(app, ui, feed_title);
+                ui.add_space(Metrics::SP_1);
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut app.show_reposts, language.text("Include reposts", "Показывать репосты"));
+                    feed_header_dismiss(app, ui);
+                });
+            } else {
+                ui.horizontal(|ui| {
+                    feed_header_identity(app, ui, feed_title);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        feed_header_dismiss(app, ui);
+                        ui.checkbox(&mut app.show_reposts, language.text("Include reposts", "Показывать репосты"));
                     });
                 });
-            ui.add_space(8.0);
-        }
-        ui.horizontal(|ui| {
-            ui.heading(
-                egui::RichText::new("Hear the latest posts from the people you're following:")
-                    .font(Type::H3.font())
-                    .color(app.theme.text),
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.checkbox(&mut app.show_reposts, "Reposts");
-            });
+            }
+            if !app.feed_banner_dismissed {
+                ui.add_space(Metrics::SP_1);
+                ui.label(Type::BODY.rich(
+                    language.text("New uploads, reposts and discoveries from the artists you follow — in one continuous stream.", "Новые треки, репосты и находки от твоих подписок — в одной ленте."),
+                    app.theme.text_dim,
+                ));
+            }
         });
-        ui.add_space(Metrics::SP_1);
+        ui.painter().vline(
+            header.response.rect.left() + 1.0,
+            (header.response.rect.top() + 18.0)..=(header.response.rect.bottom() - 18.0),
+            egui::Stroke::new(2.0, app.theme.accent),
+        );
+        ui.add_space(Metrics::SP_2);
         // One `/me/feed` response contains both tracks and playlists. The
         // store keeps both halves so playlist posts are not silently lost.
         let slot = app.tracks(Key::Feed);
@@ -653,7 +1215,7 @@ fn feed(app: &mut App, ui: &mut egui::Ui) {
         }
         if slot.rows().is_empty() && playlist_slot.rows().is_empty() {
             ui.label(Type::BODY.rich(
-                "Nothing yet — follow some artists and their posts land here.",
+                language.text("Nothing yet — follow some artists and their posts land here.", "Пока пусто. Подпишись на исполнителей, и их записи появятся здесь."),
                 app.theme.text_dim,
             ));
             return;
@@ -668,11 +1230,34 @@ fn feed(app: &mut App, ui: &mut egui::Ui) {
         } else {
             std::collections::HashMap::new()
         };
+        let cache_id = ui.id().with("feed-measured-heights");
+        let mut heights = ui
+            .ctx()
+            .data_mut(|data| data.remove_temp::<FeedHeights>(cache_id))
+            .unwrap_or_default();
+        let width = ui.available_width();
+        let scale = ui.ctx().pixels_per_point();
+        if heights.width != width || heights.scale != scale {
+            heights.rows.clear();
+            heights.width = width;
+            heights.scale = scale;
+        }
+        let mut current_heights = std::collections::HashMap::new();
         for track in slot.rows() {
             let item = activity.get(&track.id);
             if (track.feed_reposted || item.is_some_and(|i| i.kind == "reposted"))
                 && !app.show_reposts
             {
+                continue;
+            }
+            let top = ui.cursor().top();
+            let height = heights.row_height(track.id, item.is_some());
+            if !feed_row_visible(top, height, ui.clip_rect()) {
+                ui.add_space(height);
+                // Do not turn an estimate into a measured cache entry.
+                if heights.rows.contains_key(&track.id) {
+                    current_heights.insert(track.id, height);
+                }
                 continue;
             }
             let line = item.map(|i| {
@@ -682,27 +1267,88 @@ fn feed(app: &mut App, ui: &mut egui::Ui) {
                     format!("{} ago", i.when),
                 )
             });
-            feed_card(app, ui, track, line, None);
+            ui.push_id(("feed-track", track.id), |ui| {
+                feed_card(app, ui, track, line, None);
+            });
             ui.add_space(Metrics::SP_175);
+            current_heights.insert(track.id, ui.cursor().top() - top);
         }
+        heights.rows = current_heights;
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(cache_id, heights));
         if !playlist_slot.rows().is_empty() {
             let playlists: Vec<_> = playlist_slot
                 .rows()
                 .iter()
                 .filter(|playlist| app.show_reposts || !playlist.feed_reposted)
-                .cloned()
                 .collect();
             if !playlists.is_empty() {
                 widgets::section_header(app, ui, "Playlist posts");
-                playlist_carousel(app, ui, "feed-playlists", &playlists);
+                playlist_carousel(app, ui, "feed-playlists", playlists);
             }
         }
     });
 }
 
+fn feed_header_identity(app: &App, ui: &mut egui::Ui, feed_title: &str) {
+    ui.horizontal(|ui| {
+        let (icon_rect, _) = ui.allocate_exact_size(egui::Vec2::splat(48.0), egui::Sense::hover());
+        ui.painter()
+            .circle_filled(icon_rect.center(), 24.0, app.theme.tokens.accent_soft);
+        super::icons::paint(
+            ui,
+            super::icons::Icon::AudioLines,
+            icon_rect,
+            21.0,
+            app.theme.accent,
+        );
+        ui.add_space(Metrics::SP_HALF);
+        ui.vertical(|ui| {
+            ui.label(Type::MICRO.rich("LIVE SIGNAL  /  FOLLOWING", app.theme.accent));
+            ui.label(Type::H2.rich("Your feed", app.theme.text));
+            ui.label(Type::CAPTION.rich(feed_title, app.theme.text_dim));
+        });
+    });
+}
+
+fn feed_header_dismiss(app: &mut App, ui: &mut egui::Ui) {
+    if !app.feed_banner_dismissed
+        && super::icons::show(ui, super::icons::Icon::X, 15.0, app.theme.text_dim)
+            .on_hover_text("Hide introduction")
+            .clicked()
+    {
+        app.feed_banner_dismissed = true;
+    }
+}
+
 /// One SoundCloud-style feed card: activity line, artwork + play + waveform,
 /// like/repost/share actions with real counts.
 fn feed_card(
+    app: &mut App,
+    ui: &mut egui::Ui,
+    track: &Track,
+    activity: Option<(String, String, String)>,
+    stamp: Option<String>,
+) {
+    let response = Surface::glass()
+        .padding(Metrics::SP_15 as i8)
+        .show(ui, app.theme, |ui| {
+            feed_card_content(app, ui, track, activity, stamp);
+        });
+    let rect = response.response.rect;
+    ui.painter().line_segment(
+        [
+            egui::pos2(rect.left() + 18.0, rect.top() + 1.0),
+            egui::pos2(
+                (rect.left() + 150.0).min(rect.right() - 18.0),
+                rect.top() + 1.0,
+            ),
+        ],
+        egui::Stroke::new(1.4, app.theme.accent.gamma_multiply(0.72)),
+    );
+}
+
+fn feed_card_content(
     app: &mut App,
     ui: &mut egui::Ui,
     track: &Track,
@@ -963,41 +1609,67 @@ fn round_play_button(app: &App, ui: &mut egui::Ui, size: f32) -> bool {
 
 fn library(app: &mut App, ui: &mut egui::Ui) {
     ui.add_space(Metrics::SP_2);
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = Metrics::SP_4;
-        for tab in [
-            LibraryTab::Overview,
-            LibraryTab::Likes,
-            LibraryTab::Playlists,
-            LibraryTab::Albums,
-            LibraryTab::Stations,
-            LibraryTab::Following,
-            LibraryTab::History,
-        ] {
-            let active = app.library_tab == tab;
-            // Same size in both states, as SoundCloud's own tabs: the ink and
-            // the rule under the active one carry the difference.
-            let text = if active {
-                Type::H2.rich(tab.label(), app.theme.text)
-            } else {
-                Type::H2.rich(tab.label(), app.theme.text_dim)
-            };
-            let resp = ui
-                .add(egui::Label::new(text).sense(egui::Sense::click()))
-                .on_hover_cursor(egui::CursorIcon::PointingHand);
-            if active {
-                let r = resp.rect;
-                ui.painter().hline(
-                    r.x_range(),
-                    r.bottom() + 2.0,
-                    egui::Stroke::new(2.0, app.theme.accent),
+    let language = app.settings.language;
+    let tabs = [
+        (LibraryTab::Overview, LibraryTab::Overview.label(language)),
+        (LibraryTab::Likes, LibraryTab::Likes.label(language)),
+        (LibraryTab::Playlists, LibraryTab::Playlists.label(language)),
+        (LibraryTab::Albums, LibraryTab::Albums.label(language)),
+        (LibraryTab::Stations, LibraryTab::Stations.label(language)),
+        (LibraryTab::Following, LibraryTab::Following.label(language)),
+        (LibraryTab::History, LibraryTab::History.label(language)),
+    ];
+    let header = Surface::glass().show(ui, app.theme, |ui| {
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.label(Type::MICRO.rich(
+                    language.text("YOUR ARCHIVE  /  ALWAYS IN TUNE", "ТВОЯ МУЗЫКА"),
+                    app.theme.accent,
+                ));
+                ui.label(Type::H2.rich(language.text("Library", "Библиотека"), app.theme.text));
+                ui.label(Type::CAPTION.rich(
+                    language.text(
+                        "Everything you saved, followed and played — shaped into your own signal.",
+                        "Все лайки, подписки и прослушивания — твоя музыкальная коллекция.",
+                    ),
+                    app.theme.text_dim,
+                ));
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::Vec2::splat(52.0), egui::Sense::hover());
+                ui.painter().circle_stroke(
+                    rect.center(),
+                    25.0,
+                    egui::Stroke::new(1.0, app.theme.tokens.glass_border),
                 );
-            }
-            if resp.clicked() {
-                app.library_tab = tab;
-            }
+                ui.painter().circle_stroke(
+                    rect.center(),
+                    17.0,
+                    egui::Stroke::new(1.0, app.theme.accent.gamma_multiply(0.65)),
+                );
+                super::icons::paint(ui, super::icons::Icon::Music, rect, 18.0, app.theme.accent);
+            });
+        });
+        ui.add_space(Metrics::SP_15);
+        if let Some(tab) = airwave::segmented_tabs(ui, app.theme, app.library_tab, &tabs) {
+            app.clear_selection();
+            app.library_tab = tab;
         }
     });
+    ui.painter().line_segment(
+        [
+            egui::pos2(
+                header.response.rect.left() + 20.0,
+                header.response.rect.top() + 1.0,
+            ),
+            egui::pos2(
+                (header.response.rect.left() + 210.0).min(header.response.rect.right() - 20.0),
+                header.response.rect.top() + 1.0,
+            ),
+        ],
+        egui::Stroke::new(1.4, app.theme.accent.gamma_multiply(0.72)),
+    );
     ui.add_space(Metrics::SP_3);
     match app.library_tab {
         LibraryTab::Overview => overview(app, ui),
@@ -1009,6 +1681,33 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
         LibraryTab::Following => artists_tab(app, ui),
         LibraryTab::History => history_tab(app, ui),
     }
+}
+
+fn library_tab_intro(
+    app: &App,
+    ui: &mut egui::Ui,
+    icon: super::icons::Icon,
+    title: &str,
+    description: &str,
+) {
+    Surface::glass().show(ui, app.theme, |ui| {
+        ui.horizontal(|ui| {
+            let (icon_rect, _) =
+                ui.allocate_exact_size(egui::Vec2::splat(44.0), egui::Sense::hover());
+            ui.painter().rect_filled(
+                icon_rect,
+                Metrics::RADIUS_INPUT,
+                app.theme.tokens.accent_soft,
+            );
+            super::icons::paint(ui, icon, icon_rect, 20.0, app.theme.accent);
+            ui.add_space(Metrics::SP_HALF);
+            ui.vertical(|ui| {
+                ui.label(Type::H2.rich(title, app.theme.text));
+                ui.label(Type::CAPTION.rich(description, app.theme.text_dim));
+            });
+        });
+    });
+    ui.add_space(Metrics::SP_2);
 }
 
 #[allow(dead_code)]
@@ -1097,8 +1796,18 @@ fn uploads_tab(app: &mut App, ui: &mut egui::Ui) {
 }
 
 fn likes_tab(app: &mut App, ui: &mut egui::Ui) {
+    library_tab_intro(
+        app,
+        ui,
+        super::icons::Icon::Heart,
+        app.settings.language.text("Liked tracks", "Любимые треки"),
+        app.settings.language.text(
+            "Everything you saved, ready to play as one continuous collection.",
+            "Всё сохранённое — одна непрерывная коллекция.",
+        ),
+    );
     ui.horizontal(|ui| {
-        ui.label(Type::H4.rich("Hear the tracks you've liked:", app.theme.text));
+        ui.label(Type::MICRO.rich("YOUR COLLECTION", app.theme.text_dim));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut app.filter)
@@ -1170,7 +1879,11 @@ fn filtered(app: &App, tracks: &[Track]) -> Vec<Track> {
     tracks
         .iter()
         .filter(|t| {
-            t.title.to_lowercase().contains(&needle) || t.artist().to_lowercase().contains(&needle)
+            t.title.to_lowercase().contains(&needle)
+                || t.artist().to_lowercase().contains(&needle)
+                || t.genre
+                    .as_deref()
+                    .is_some_and(|genre| genre.to_lowercase().contains(&needle))
         })
         .cloned()
         .collect()
@@ -1178,24 +1891,58 @@ fn filtered(app: &App, tracks: &[Track]) -> Vec<Track> {
 
 /// Library overview: recently played cards + likes grid, like soundcloud.com.
 fn overview(app: &mut App, ui: &mut egui::Ui) {
-    widgets::section_header(app, ui, "Recently played");
+    let language = app.settings.language;
+    let likes_slot = app.tracks(Key::Likes);
+    soundprint_panel(app, ui, likes_slot.rows());
+
+    widgets::section_header(
+        app,
+        ui,
+        language.text("Fresh from people you follow", "Новое от подписок"),
+    );
+    let fresh = app.tracks(Key::FollowingTracks);
+    if fresh.is_loading() {
+        ui.label(Type::BODY.rich(
+            language.text("Loading fresh releases…", "Загружаем новинки…"),
+            app.theme.text_dim,
+        ));
+    } else if fresh.rows().is_empty() {
+        ui.label(Type::BODY.rich(
+            language.text(
+                "Follow artists on SoundCloud and their newest tracks will appear here.",
+                "Подпишись на исполнителей в SoundCloud — их новые треки появятся здесь.",
+            ),
+            app.theme.text_dim,
+        ));
+    } else {
+        let tracks: Vec<_> = fresh.rows().iter().take(6).cloned().collect();
+        track_cards(app, ui, "overview-following-fresh", &tracks);
+    }
+
+    widgets::section_header(app, ui, language.text("Recently played", "Недавно слушали"));
     let recent = recent_tracks(app, 6);
     if recent.is_empty() {
         ui.label(Type::BODY.rich(
-            "Nothing played yet. Press play on anything.",
+            language.text(
+                "Nothing played yet. Press play on anything.",
+                "Ты пока ничего не слушал. Включи любой трек.",
+            ),
             app.theme.text_dim,
         ));
     } else {
         track_cards(app, ui, "overview-recent", &recent);
     }
 
-    widgets::section_header(app, ui, "Likes");
-    let slot = app.tracks(Key::Likes);
+    widgets::section_header(app, ui, language.text("Likes", "Лайки"));
+    let slot = likes_slot;
     if data::placeholder(
         app,
         ui,
         &slot,
-        "Tap the heart on any track to save it here.",
+        language.text(
+            "Tap the heart on any track to save it here.",
+            "Нажми сердечко на любом треке, чтобы сохранить его здесь.",
+        ),
     ) {
         return;
     }
@@ -1270,6 +2017,134 @@ fn overview(app: &mut App, ui: &mut egui::Ui) {
     footer(app, ui);
 }
 
+fn soundprint_panel(app: &mut App, ui: &mut egui::Ui, tracks: &[Track]) {
+    let shares = super::soundprint::summarize(tracks, 7);
+    Surface::glass().show(ui, app.theme, |ui| {
+        ui.horizontal(|ui| {
+            let (icon_rect, _) =
+                ui.allocate_exact_size(egui::Vec2::splat(48.0), egui::Sense::hover());
+            ui.painter().rect_filled(
+                icon_rect,
+                Metrics::RADIUS_INPUT,
+                app.theme.tokens.accent_soft,
+            );
+            super::icons::paint(
+                ui,
+                super::icons::Icon::AudioLines,
+                icon_rect,
+                21.0,
+                app.theme.accent,
+            );
+            ui.add_space(Metrics::SP_HALF);
+            ui.vertical(|ui| {
+                ui.label(Type::MICRO.rich("LISTENING DNA", app.theme.accent));
+                ui.label(Type::H2.rich("Your soundprint", app.theme.text));
+                ui.label(Type::CAPTION.rich(
+                    "The genres shaping your collection. Select a frequency to open its tracks.",
+                    app.theme.text_dim,
+                ));
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.vertical(|ui| {
+                    ui.label(Type::H3.rich(&tracks.len().to_string(), app.theme.text));
+                    ui.label(Type::MICRO.rich("LIKED TRACKS", app.theme.text_dim));
+                });
+            });
+        });
+        ui.add_space(Metrics::SP_2);
+        if shares.is_empty() {
+            ui.label(Type::BODY.rich(
+                "Like a few tracks with genre tags and your soundprint will appear here.",
+                app.theme.text_dim,
+            ));
+            return;
+        }
+
+        let lane_width = ui.available_width();
+        let lane_height = 54.0;
+        let (lane, _) =
+            ui.allocate_exact_size(egui::vec2(lane_width, lane_height), egui::Sense::hover());
+        let colors = [
+            app.theme.accent,
+            egui::Color32::from_rgb(108, 126, 255),
+            egui::Color32::from_rgb(68, 201, 173),
+            egui::Color32::from_rgb(227, 91, 129),
+            egui::Color32::from_rgb(244, 184, 72),
+            egui::Color32::from_rgb(149, 98, 232),
+            egui::Color32::from_rgb(85, 169, 235),
+        ];
+        let widths = super::soundprint::lane_widths(&shares, lane_width);
+        let mut x = lane.left();
+        for (index, (share, width)) in shares.iter().zip(widths).enumerate() {
+            let width = width.min(lane.right() - x);
+            if width <= 0.0 {
+                break;
+            }
+            let segment = egui::Rect::from_min_size(
+                egui::pos2(x, lane.top()),
+                egui::vec2(width, lane_height),
+            );
+            let color = colors[index % colors.len()];
+            ui.painter().rect_filled(
+                segment.shrink2(egui::vec2(2.0, 0.0)),
+                Metrics::RADIUS_INPUT,
+                color.gamma_multiply(if app.theme.dark { 0.72 } else { 0.55 }),
+            );
+            let response = ui
+                .interact(
+                    segment,
+                    ui.id().with(("soundprint", index)),
+                    egui::Sense::click(),
+                )
+                .on_hover_text(format!("Open {} likes", share.genre))
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            if response.hovered() {
+                ui.painter().rect_stroke(
+                    segment.shrink(1.5),
+                    Metrics::RADIUS_INPUT,
+                    egui::Stroke::new(1.5, color),
+                    egui::StrokeKind::Inside,
+                );
+            }
+            if response.clicked() {
+                app.filter = share.genre.clone();
+                app.library_tab = LibraryTab::Likes;
+            }
+            if width >= 132.0 {
+                ui.painter().text(
+                    segment.center(),
+                    egui::Align2::CENTER_CENTER,
+                    format!("{}  {}%", share.genre, (share.ratio * 100.0).round() as u32),
+                    Type::CAPTION.font(),
+                    egui::Color32::WHITE,
+                );
+            }
+            x += width;
+        }
+        ui.add_space(Metrics::SP_1);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(Metrics::SP_1, Metrics::SP_HALF);
+            for (index, share) in shares.iter().enumerate() {
+                let color = colors[index % colors.len()];
+                let response = ui.add(
+                    egui::Button::new(Type::CAPTION.rich(
+                        &format!("{}  {} tracks", share.genre, share.tracks),
+                        app.theme.text,
+                    ))
+                    .fill(color.gamma_multiply(if app.theme.dark { 0.18 } else { 0.10 }))
+                    .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.55)))
+                    .corner_radius(Metrics::RADIUS_PILL),
+                );
+                if response.clicked() {
+                    app.filter = share.genre.clone();
+                    app.library_tab = LibraryTab::Likes;
+                }
+            }
+        });
+    });
+    ui.add_space(Metrics::SP_2);
+}
+
 fn merged_library_playlists(app: &App) -> Vec<crate::api::models::Playlist> {
     let mut playlists = app.playlists(Key::MyPlaylists).rows().to_vec();
     for playlist in app.playlists(Key::LikedPlaylists).rows() {
@@ -1282,19 +2157,21 @@ fn merged_library_playlists(app: &App) -> Vec<crate::api::models::Playlist> {
 
 /// Card grid with ♥-prefixed titles, like the Library likes section.
 fn likes_grid(app: &mut App, ui: &mut egui::Ui, tracks: &[Track]) {
-    let shared = std::sync::Arc::new(tracks.to_vec());
     let columns = library_columns(ui.available_width());
-    for (row_index, row) in shared.chunks(columns).enumerate() {
+    for (row_index, row) in tracks.chunks(columns).enumerate() {
         ui.push_id(("likes-row", row_index), |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(Metrics::SP_3, Metrics::SP_6);
                 for (column, track) in row.iter().enumerate() {
                     let i = row_index * columns + column;
-                    let queue = shared.clone();
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 2.0;
                         ui.set_min_width(LIBRARY_CARD);
                         ui.set_max_width(LIBRARY_CARD);
+                        let mut selected = app.selected.contains(&track.id);
+                        if ui.checkbox(&mut selected, "Select track").changed() {
+                            app.toggle_select(track.id);
+                        }
                         let art = track.artwork_url();
                         if widgets::artwork_img(
                             ui,
@@ -1306,7 +2183,7 @@ fn likes_grid(app: &mut App, ui: &mut egui::Ui, tracks: &[Track]) {
                         )
                         .clicked()
                         {
-                            app.play_user_queue((*queue).clone(), i, false);
+                            app.play_user_queue(tracks.to_vec(), i, false);
                         }
                         let title =
                             egui::RichText::new(format!("♥ {}", crate::bidi::owned(&track.title)))
@@ -1321,7 +2198,7 @@ fn likes_grid(app: &mut App, ui: &mut egui::Ui, tracks: &[Track]) {
                             .on_hover_cursor(egui::CursorIcon::PointingHand)
                             .clicked()
                         {
-                            app.play_user_queue((*queue).clone(), i, false);
+                            app.play_user_queue(tracks.to_vec(), i, false);
                         }
                         let artist = ui.add(
                             egui::Label::new(
@@ -1347,30 +2224,48 @@ fn likes_grid(app: &mut App, ui: &mut egui::Ui, tracks: &[Track]) {
 }
 
 fn playlists_tab(app: &mut App, ui: &mut egui::Ui) {
-    // New playlist composer.
-    ui.horizontal(|ui| {
-        ui.add(
-            egui::TextEdit::singleline(&mut app.new_playlist_name)
-                .hint_text("New playlist name…")
-                .desired_width(240.0),
-        );
-        if ui.button("+ Create").clicked() {
-            let name = app.new_playlist_name.trim().to_owned();
-            if name.is_empty() {
-                app.toast("Give the playlist a name first");
-            } else {
-                app.create_playlist(name.clone());
-                app.new_playlist_name.clear();
-                app.toast(format!("Creating playlist {name}…"));
-            }
-        }
+    library_tab_intro(
+        app,
+        ui,
+        super::icons::Icon::Queue,
+        app.settings.language.text("Playlists", "Плейлисты"),
+        app.settings.language.text(
+            "Shape a listening path from your own mixes and saved collections.",
+            "Собери свой маршрут из собственных миксов и сохранённых подборок.",
+        ),
+    );
+    Surface::new(SurfaceTone::Default).show(ui, app.theme, |ui| {
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.label(Type::H4.rich("Create a playlist", app.theme.text));
+                ui.label(Type::CAPTION.rich(
+                    "Give it a name now; add tracks from any track menu.",
+                    app.theme.text_dim,
+                ));
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if airwave::action_button(ui, app.theme, ButtonVariant::Primary, "Create").clicked()
+                {
+                    let name = app.new_playlist_name.trim().to_owned();
+                    if name.is_empty() {
+                        app.toast("Give the playlist a name first");
+                    } else {
+                        app.create_playlist(name.clone());
+                        app.new_playlist_name.clear();
+                        app.toast(format!("Creating playlist {name}…"));
+                    }
+                }
+                ui.add(
+                    egui::TextEdit::singleline(&mut app.new_playlist_name)
+                        .hint_text("New playlist name…")
+                        .desired_width(260.0),
+                );
+            });
+        });
     });
-    ui.add_space(Metrics::SP_1);
+    ui.add_space(Metrics::SP_2);
     ui.horizontal(|ui| {
-        ui.label(Type::H4.rich(
-            "Hear your own playlists and the playlists you've liked:",
-            app.theme.text,
-        ));
+        ui.label(Type::MICRO.rich("YOUR COLLECTION", app.theme.text_dim));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             egui::ComboBox::from_id_salt("playlist-scope")
                 .selected_text(if app.playlists_mine_only {
@@ -1506,11 +2401,18 @@ fn heart(painter: &egui::Painter, center: egui::Pos2, radius: f32, color: egui::
 }
 
 fn albums_tab(app: &mut App, ui: &mut egui::Ui) {
+    library_tab_intro(
+        app,
+        ui,
+        super::icons::Icon::Disc,
+        app.settings.language.text("Albums", "Альбомы"),
+        app.settings.language.text(
+            "Long-form releases from your own catalogue and the records you saved.",
+            "Альбомы из твоей коллекции и сохранённые релизы.",
+        ),
+    );
     ui.horizontal(|ui| {
-        ui.label(Type::H4.rich(
-            "Hear your own albums and the albums you've liked:",
-            app.theme.text,
-        ));
+        ui.label(Type::MICRO.rich("YOUR COLLECTION", app.theme.text_dim));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut app.filter)
@@ -1568,7 +2470,14 @@ fn albums_tab(app: &mut App, ui: &mut egui::Ui) {
         ));
     }
     if items.is_empty() {
-        ui.label(Type::BODY.rich("No albums yet.", app.theme.text_dim));
+        airwave::state_panel(
+            ui,
+            app.theme,
+            ViewState::Empty {
+                title: "No albums saved yet",
+                detail: "Save an album on SoundCloud and it will appear here as a full release, not a loose playlist.",
+            },
+        );
         footer(app, ui);
         return;
     }
@@ -1576,11 +2485,18 @@ fn albums_tab(app: &mut App, ui: &mut egui::Ui) {
 }
 
 fn artists_tab(app: &mut App, ui: &mut egui::Ui) {
+    library_tab_intro(
+        app,
+        ui,
+        super::icons::Icon::Users,
+        app.settings.language.text("Following", "Подписки"),
+        app.settings.language.text(
+            "Artists you chose to keep close, with their newest sounds one click away.",
+            "Исполнители, на которых ты подписан, и их новые треки.",
+        ),
+    );
     ui.horizontal(|ui| {
-        ui.label(Type::H4.rich(
-            "Hear what the people you follow have posted:",
-            app.theme.text,
-        ));
+        ui.label(Type::MICRO.rich("ARTISTS", app.theme.text_dim));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut app.filter)
@@ -1618,13 +2534,16 @@ fn artists_tab(app: &mut App, ui: &mut egui::Ui) {
     // SoundCloud's library uses fixed rows of six followed artists. Keeping
     // the row boundary explicit also prevents a seventh narrow card from
     // appearing on unusually wide windows.
-    let columns = library_columns(ui.available_width());
+    const ARTIST_CARD: f32 = 148.0;
+    let columns = ((ui.available_width() + Metrics::SP_3) / (ARTIST_CARD + Metrics::SP_3))
+        .floor()
+        .max(1.0) as usize;
     for (row_index, row) in artists.chunks(columns).enumerate() {
         ui.push_id(("following-row", row_index), |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(Metrics::SP_3, Metrics::SP_6);
                 for artist in row {
-                    artist_card(app, ui, artist, LIBRARY_CARD);
+                    artist_card(app, ui, artist, ARTIST_CARD);
                 }
             });
         });
@@ -1639,6 +2558,16 @@ fn artists_tab(app: &mut App, ui: &mut egui::Ui) {
 /// `/tracks/{urn}/related` with autoplay on, which is what
 /// [`App::station_queue`] assembles.
 fn stations_tab(app: &mut App, ui: &mut egui::Ui) {
+    library_tab_intro(
+        app,
+        ui,
+        super::icons::Icon::AudioLines,
+        app.settings.language.text("Stations", "Станции"),
+        app.settings.language.text(
+            "Start with one track and let related sounds carry the session forward.",
+            "Начни с одного трека и слушай похожие дальше.",
+        ),
+    );
     if !app.demo {
         ui.add_space(Metrics::SP_5);
         ui.vertical_centered(|ui| {
@@ -1651,12 +2580,6 @@ fn stations_tab(app: &mut App, ui: &mut egui::Ui) {
         footer(app, ui);
         return;
     }
-    ui.label(Type::BODY.rich(
-        "Stations play on from a track, like a radio.",
-        app.theme.text_dim,
-    ));
-    ui.add_space(Metrics::SP_1);
-
     // Seeds: recently played first, then likes.
     let mut seeds = recent_tracks(app, 6);
     if seeds.is_empty() {
@@ -1682,12 +2605,16 @@ fn stations_tab(app: &mut App, ui: &mut egui::Ui) {
     app.carousel(ui, "stations", |app, ui| {
         for seed in shared.iter() {
             let art = seed.artwork_url();
-            let click = widgets::card(
+            let click = widgets::media_card(
                 app,
                 ui,
-                widgets::Card::plays(seed.id, &format!("{} Station", seed.title), seed.artist())
-                    .art(art)
-                    .artist(seed.user.as_ref().map(|user| user.id)),
+                widgets::MediaCard::plays(
+                    seed.id,
+                    &format!("{} Station", seed.title),
+                    seed.artist(),
+                )
+                .art(art)
+                .artist(seed.user.as_ref().map(|user| user.id)),
             );
             if click.play {
                 // A station starts here and keeps going: autoplay on.
@@ -1811,6 +2738,32 @@ fn playlist_card_grid(app: &mut App, ui: &mut egui::Ui, items: &[PlaylistCardIte
     }
 }
 
+fn detail_queue(track: &Track, related: &[Track]) -> Vec<Track> {
+    let mut queue = Vec::with_capacity(related.len() + 1);
+    queue.push(track.clone());
+    queue.extend(related.iter().filter(|item| item.id != track.id).cloned());
+    queue
+}
+
+fn playlist_title(app: &App, id: u64) -> String {
+    if app.demo && id == 0 {
+        return "Liked Songs".to_owned();
+    }
+    if app.demo
+        && let Some(playlist) = app
+            .settings
+            .custom_playlists
+            .iter()
+            .find(|playlist| playlist.id == id)
+    {
+        return playlist.title.clone();
+    }
+    app.playlist(id)
+        .ready()
+        .map(|playlist| playlist.title)
+        .unwrap_or_else(|| format!("Playlist {id}"))
+}
+
 fn track_detail(app: &mut App, ui: &mut egui::Ui, id: u64) {
     let slot = app.track(id);
     if data::placeholder_one(app, ui, &slot) {
@@ -1838,11 +2791,6 @@ fn track_detail(app: &mut App, ui: &mut egui::Ui, id: u64) {
         .filter(|t| t.id != id)
         .cloned()
         .collect();
-    let queue = {
-        let mut queue = vec![track.clone()];
-        queue.extend(related.iter().cloned());
-        queue
-    };
     let is_own_track = app.account().is_some_and(|account| {
         track
             .user
@@ -1851,18 +2799,20 @@ fn track_detail(app: &mut App, ui: &mut egui::Ui, id: u64) {
     });
 
     ui.add_space(Metrics::SP_1);
-    ui.horizontal(|ui| {
-        let art = track.artwork_url();
-        widgets::artwork_img(
-            ui,
-            art,
-            track.id,
-            &track.title,
-            Metrics::artwork(170.0),
-            Metrics::RADIUS_LG as f32,
-        );
-        ui.vertical(|ui| {
+    let art = track.artwork_url();
+    widgets::media_hero(
+        app,
+        ui,
+        widgets::MediaHero {
+            artwork: art,
+            seed: track.id,
+            title: &track.title,
+            round_artwork: false,
+        },
+        |app, ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
+            ui.label(Type::MICRO.rich("NOW ON AIR  /  TRACK", app.theme.accent));
+            ui.add_space(Metrics::SP_HALF);
             ui.label(Type::H1.rich(&crate::bidi::owned(&track.title), app.theme.text));
             if ui
                 .add(
@@ -1887,23 +2837,39 @@ fn track_detail(app: &mut App, ui: &mut egui::Ui, id: u64) {
                 stat(app, ui, super::icons::Icon::Heart, track.likes_count);
             });
             ui.add_space(Metrics::SP_1);
-            ui.horizontal(|ui| {
-                if ui.button("Play").clicked() {
-                    app.play_user_queue(queue.clone(), 0, false);
+            ui.horizontal_wrapped(|ui| {
+                if airwave::action_button(ui, app.theme, ButtonVariant::Primary, "Play").clicked() {
+                    app.play_user_queue(detail_queue(&track, &related), 0, false);
                 }
                 widgets::like_button(app, ui, track.id, &track.title);
+                quick_access_button(
+                    app,
+                    ui,
+                    QuickAccessShortcut::Track {
+                        id: track.id,
+                        title: track.title.clone(),
+                        artist: track.artist().to_owned(),
+                        artwork_url: track.artwork_url().map(str::to_owned),
+                    },
+                );
                 let reposted = app
                     .tracks(Key::MyRepostedTracks)
                     .rows()
                     .iter()
                     .any(|item| item.id == track.id);
-                if ui
-                    .button(if reposted { "Unrepost" } else { "Repost" })
-                    .clicked()
+                if airwave::action_button(
+                    ui,
+                    app.theme,
+                    ButtonVariant::Secondary,
+                    if reposted { "Unrepost" } else { "Repost" },
+                )
+                .clicked()
                 {
                     app.set_track_reposted(track.id, !reposted);
                 }
-                if ui.button("Station").clicked() {
+                if airwave::action_button(ui, app.theme, ButtonVariant::Secondary, "Station")
+                    .clicked()
+                {
                     app.settings.autoplay = true;
                     app.player.set_autoplay(true);
                     let station = app.station_queue(&track);
@@ -1911,16 +2877,20 @@ fn track_detail(app: &mut App, ui: &mut egui::Ui, id: u64) {
                     app.toast(format!("Station: {}", track.title));
                 }
                 if let Some(url) = track.permalink_url.clone() {
-                    if ui.button("Share").clicked() {
+                    if airwave::action_button(ui, app.theme, ButtonVariant::Secondary, "Share")
+                        .clicked()
+                    {
                         ui.ctx().copy_text(url);
                         app.toast("Link copied");
                     }
-                } else if ui.button("Share").clicked() {
+                } else if airwave::action_button(ui, app.theme, ButtonVariant::Secondary, "Share")
+                    .clicked()
+                {
                     app.toast("This track has no public link");
                 }
             });
-        });
-    });
+        },
+    );
 
     if is_own_track {
         creator_track_tools(app, ui, &track);
@@ -1944,31 +2914,43 @@ fn track_detail(app: &mut App, ui: &mut egui::Ui, id: u64) {
 
     // Real SoundCloud waveform. Comment avatars are intentionally omitted:
     // they obscured the waveform and comments are not part of this client UI.
-    ui.add_space(Metrics::SP_1);
-    let peaks = track
-        .waveform_url
-        .as_deref()
-        .and_then(|url| app.waveforms.get(ui.ctx(), url));
-    if let Some(frac) = widgets::waveform(app, ui, id, pos, dur, 110.0, 140, peaks.as_deref()) {
-        if is_current {
-            app.player.seek_ms((frac as f64 * dur as f64) as u64);
-        } else {
-            app.play_user_queue(queue.clone(), 0, false);
+    ui.add_space(Metrics::SP_2);
+    Surface::glass().show(ui, app.theme, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(Type::MICRO.rich("WAVEFORM  /  LISTEN & SEEK", app.theme.accent));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(Type::CAPTION.rich(
+                    track.genre.as_deref().unwrap_or("SoundCloud track"),
+                    app.theme.text_dim,
+                ));
+            });
+        });
+        ui.add_space(Metrics::SP_1);
+        let peaks = track
+            .waveform_url
+            .as_deref()
+            .and_then(|url| app.waveforms.get(ui.ctx(), url));
+        if let Some(frac) = widgets::waveform(app, ui, id, pos, dur, 110.0, 140, peaks.as_deref()) {
+            if is_current {
+                app.player.seek_ms((frac as f64 * dur as f64) as u64);
+            } else {
+                app.play_user_queue(detail_queue(&track, &related), 0, false);
+            }
         }
-    }
-    ui.horizontal(|ui| {
-        let elapsed = if is_current { pos } else { 0 };
-        ui.label(
-            egui::RichText::new(crate::util::fmt_duration_ms(elapsed))
-                .font(egui::FontId::monospace(Type::CAPTION.size))
-                .color(app.theme.text_dim),
-        );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.horizontal(|ui| {
+            let elapsed = if is_current { pos } else { 0 };
             ui.label(
-                egui::RichText::new(crate::util::fmt_duration_ms(dur))
+                egui::RichText::new(crate::util::fmt_duration_ms(elapsed))
                     .font(egui::FontId::monospace(Type::CAPTION.size))
                     .color(app.theme.text_dim),
             );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new(crate::util::fmt_duration_ms(dur))
+                        .font(egui::FontId::monospace(Type::CAPTION.size))
+                        .color(app.theme.text_dim),
+                );
+            });
         });
     });
 
@@ -1995,27 +2977,33 @@ fn track_detail(app: &mut App, ui: &mut egui::Ui, id: u64) {
 
 fn creator_track_tools(app: &mut App, ui: &mut egui::Ui, track: &Track) {
     ui.add_space(Metrics::SP_1);
-    ui.horizontal(|ui| {
-        if ui.button("Edit track").clicked() {
-            app.begin_track_edit(track);
-        }
-        if ui.button("Storefront").clicked() {
-            app.creator.storefront_track_id = Some(track.id);
-            app.creator.storefront_title = format!("Get {}", track.title);
-            app.creator.storefront_kind = "digital".to_owned();
-            app.creator.storefront_link = track.permalink_url.clone().unwrap_or_default();
-        }
-        if app.creator.confirm_delete_track == Some(track.id) {
-            if ui.button("Confirm permanent deletion").clicked() {
-                app.delete_track(track.id);
-            }
-            if ui.button("Cancel").clicked() {
-                app.creator.confirm_delete_track = None;
-            }
-        } else if ui.button("Delete track").clicked() {
-            app.creator.confirm_delete_track = Some(track.id);
-        }
-    });
+    Surface::glass()
+        .padding(Metrics::SP_1 as i8)
+        .show(ui, app.theme, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.label(Type::MICRO.rich("CREATOR TOOLS", app.theme.accent));
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Edit track").clicked() {
+                    app.begin_track_edit(track);
+                }
+                if ui.button("Storefront").clicked() {
+                    app.creator.storefront_track_id = Some(track.id);
+                    app.creator.storefront_title = format!("Get {}", track.title);
+                    app.creator.storefront_kind = "digital".to_owned();
+                    app.creator.storefront_link = track.permalink_url.clone().unwrap_or_default();
+                }
+                if app.creator.confirm_delete_track == Some(track.id) {
+                    if ui.button("Confirm permanent deletion").clicked() {
+                        app.delete_track(track.id);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        app.creator.confirm_delete_track = None;
+                    }
+                } else if ui.button("Delete track").clicked() {
+                    app.creator.confirm_delete_track = Some(track.id);
+                }
+            });
+        });
 
     if app.creator.edit_track_id == Some(track.id) {
         egui::Frame::new()
@@ -2128,6 +3116,35 @@ fn creator_track_tools(app: &mut App, ui: &mut egui::Ui, track: &Track) {
     }
 }
 
+#[cfg(test)]
+mod detail_queue_tests {
+    use super::*;
+
+    #[test]
+    fn detail_queue_starts_with_the_track_and_omits_its_related_duplicate() {
+        let track: Track = serde_json::from_str(r#"{"id":7,"title":"Focus"}"#).unwrap();
+        let related: Vec<Track> = serde_json::from_str(
+            r#"[{"id":8,"title":"Next"},{"id":7,"title":"Focus again"},{"id":9,"title":"Later"}]"#,
+        )
+        .unwrap();
+
+        let ids: Vec<_> = detail_queue(&track, &related)
+            .into_iter()
+            .map(|item| item.id)
+            .collect();
+
+        assert_eq!(ids, [7, 8, 9]);
+    }
+
+    #[test]
+    fn sticky_actions_only_appear_after_a_detail_hero_scrolls_away() {
+        assert!(!should_show_detail_actions(&Route::TrackDetail(7), 219.0));
+        assert!(should_show_detail_actions(&Route::PlaylistDetail(7), 220.0));
+        assert!(should_show_detail_actions(&Route::UserDetail(7), 480.0));
+        assert!(!should_show_detail_actions(&Route::Home, 480.0));
+    }
+}
+
 /// An icon plus a count, or nothing when the API did not say.
 fn stat(app: &App, ui: &mut egui::Ui, icon: super::icons::Icon, count: Option<u64>) {
     let Some(count) = count.filter(|n| *n > 0) else {
@@ -2178,9 +3195,17 @@ fn playlist_detail(app: &mut App, ui: &mut egui::Ui, id: u64) {
             .unwrap_or_else(|| format!("Playlist {id}"))
     };
     let owner = remote_playlist
-        .clone()
-        .and_then(|p| p.user)
-        .map(|u| u.username);
+        .as_ref()
+        .and_then(|playlist| playlist.user.as_ref())
+        .map(|user| user.username.clone());
+    let media_kind = if remote_playlist
+        .as_ref()
+        .is_some_and(|playlist| playlist.is_album())
+    {
+        "Album"
+    } else {
+        "Playlist"
+    };
     let art = remote_playlist
         .as_ref()
         .and_then(|playlist| playlist.artwork_url().map(str::to_owned));
@@ -2196,129 +3221,141 @@ fn playlist_detail(app: &mut App, ui: &mut egui::Ui, id: u64) {
     let total_likes: u64 = tracks.iter().filter_map(|t| t.likes_count).sum();
     let total_plays: u64 = tracks.iter().filter_map(|t| t.playback_count).sum();
 
-    // Tinted banner like soundcloud.com's playlist headers: the artwork's
-    // hue darkened towards `--background-dark-color`, with light ink on it
-    // whichever theme is running.
-    let base = widgets::art_color(id + 7);
-    let banner = egui::Color32::from_rgb(base.r() / 3 + 12, base.g() / 3 + 12, base.b() / 3 + 12);
-    let paper = super::theme::Palette::DARK.primary;
-    let paper_dim = super::theme::Palette::DARK.secondary;
-    egui::Frame::new()
-        .fill(banner)
-        .inner_margin(egui::Margin::symmetric(
-            Metrics::SP_2 as i8,
-            Metrics::SP_175 as i8,
-        ))
-        .corner_radius(Metrics::RADIUS_LG)
-        .show(ui, |ui| {
+    widgets::media_hero(
+        app,
+        ui,
+        widgets::MediaHero {
+            artwork: art.as_deref(),
+            seed: id + 7,
+            title: &title,
+            round_artwork: false,
+        },
+        |app, ui| {
+            let kind = match owner.as_deref() {
+                Some(who) => format!("{media_kind} · {who}"),
+                None => media_kind.to_owned(),
+            };
+            ui.label(Type::MICRO.rich("YOUR COLLECTION  /  ON AIR", app.theme.accent));
+            ui.label(Type::CAPTION.rich(&kind, app.theme.text_dim));
+            ui.label(Type::H1.rich(&title, app.theme.text));
+            ui.label(Type::CAPTION.rich(
+                &format!(
+                    "{} tracks · {}",
+                    tracks.len(),
+                    crate::util::fmt_duration_ms(total_ms)
+                ),
+                app.theme.text_dim,
+            ));
+            ui.add_space(Metrics::SP_1);
+            if round_play_button(app, ui, 48.0) && !tracks.is_empty() {
+                app.play_user_queue(tracks.clone(), 0, false);
+            }
+        },
+    );
+
+    let pinned_collection = if media_kind == "Album" {
+        QuickAccessShortcut::Album {
+            id,
+            title: title.clone(),
+            artist: owner.clone().unwrap_or_else(|| media_kind.to_owned()),
+            artwork_url: art.clone(),
+        }
+    } else {
+        QuickAccessShortcut::Playlist {
+            id,
+            title: title.clone(),
+            artist: owner.clone().unwrap_or_else(|| media_kind.to_owned()),
+            artwork_url: art.clone(),
+        }
+    };
+    ui.add_space(Metrics::SP_1);
+    Surface::glass()
+        .padding(Metrics::SP_15 as i8)
+        .show(ui, app.theme, |ui| {
+            ui.set_min_width(ui.available_width());
             ui.horizontal(|ui| {
-                // Big round play button.
-                if round_play_button(app, ui, 56.0) && !tracks.is_empty() {
-                    app.play_user_queue(tracks.clone(), 0, false);
-                }
-                ui.vertical(|ui| {
-                    let kind = match owner.as_deref() {
-                        Some(who) => format!("Playlist · {who}"),
-                        None => "Playlist".to_owned(),
-                    };
-                    ui.label(Type::CAPTION.rich(&kind, paper_dim));
-                    ui.label(Type::H1.rich(&title, paper));
-                    ui.label(Type::CAPTION.rich(
-                        &format!(
-                            "{} tracks • {}",
-                            tracks.len(),
-                            crate::util::fmt_duration_ms(total_ms)
-                        ),
-                        paper_dim,
-                    ));
-                });
+                ui.label(Type::MICRO.rich("COLLECTION CONTROLS", app.theme.accent));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    widgets::artwork_img(
-                        ui,
-                        art.as_deref(),
-                        id + 7,
-                        &title,
-                        Metrics::artwork(140.0),
-                        Metrics::RADIUS_LG as f32,
-                    );
+                    stat(app, ui, super::icons::Icon::Heart, Some(total_likes));
+                    stat(app, ui, super::icons::Icon::Music, Some(total_plays));
                 });
             });
+            ui.add_space(Metrics::SP_HALF);
+            ui.horizontal_wrapped(|ui| {
+                let mut deleted = false;
+                if airwave::action_button(ui, app.theme, ButtonVariant::Primary, "Play all")
+                    .clicked()
+                    && !tracks.is_empty()
+                {
+                    app.play_user_queue(tracks.clone(), 0, false);
+                }
+                if airwave::action_button(ui, app.theme, ButtonVariant::Secondary, "Queue all")
+                    .clicked()
+                    && !tracks.is_empty()
+                {
+                    app.player.enqueue(tracks.clone(), false);
+                    app.toast(format!("Queued {} tracks", tracks.len()));
+                }
+                quick_access_button(app, ui, pinned_collection.clone());
+                let liked = app
+                    .playlists(Key::LikedPlaylists)
+                    .rows()
+                    .iter()
+                    .any(|playlist| playlist.id == id);
+                if id != 0 && ui.button(if liked { "Unlike" } else { "Like" }).clicked() {
+                    app.set_playlist_liked(id, !liked);
+                }
+                let reposted = app
+                    .playlists(Key::MyRepostedPlaylists)
+                    .rows()
+                    .iter()
+                    .any(|playlist| playlist.id == id);
+                if id != 0
+                    && ui
+                        .button(if reposted { "Unrepost" } else { "Repost" })
+                        .clicked()
+                {
+                    app.set_playlist_reposted(id, !reposted);
+                }
+                if ui.button("Share").clicked() {
+                    match remote_playlist
+                        .as_ref()
+                        .and_then(|playlist| playlist.permalink_url.clone())
+                    {
+                        Some(url) => {
+                            ui.ctx().copy_text(url);
+                            app.toast("Link copied");
+                        }
+                        None => app.toast("This playlist has no public link"),
+                    }
+                }
+                if is_custom && ui.button("Delete").clicked() {
+                    app.settings.custom_playlists.retain(|p| p.id != id);
+                    let _ = app.settings.save();
+                    app.toast(format!("Deleted {title}"));
+                    deleted = true;
+                } else if owned_by_me {
+                    if app.creator.confirm_delete_playlist == Some(id) {
+                        if ui.button("Confirm permanent deletion").clicked() {
+                            app.delete_playlist(id);
+                            app.toast("Deleting playlist…");
+                        }
+                        if ui.button("Cancel").clicked() {
+                            app.creator.confirm_delete_playlist = None;
+                        }
+                    } else if ui
+                        .button("Delete from SoundCloud")
+                        .on_hover_text("Permanently deletes this playlist from your account")
+                        .clicked()
+                    {
+                        app.creator.confirm_delete_playlist = Some(id);
+                    }
+                }
+                if deleted {
+                    app.navigate(Route::Library);
+                }
+            });
         });
-
-    ui.add_space(Metrics::SP_1);
-    // Action row + stats.
-    ui.horizontal(|ui| {
-        let mut deleted = false;
-        if ui.button("Play all").clicked() && !tracks.is_empty() {
-            app.play_user_queue(tracks.clone(), 0, false);
-        }
-        if ui.button("Queue all").clicked() && !tracks.is_empty() {
-            app.player.enqueue(tracks.clone(), false);
-            app.toast(format!("Queued {} tracks", tracks.len()));
-        }
-        let liked = app
-            .playlists(Key::LikedPlaylists)
-            .rows()
-            .iter()
-            .any(|playlist| playlist.id == id);
-        if id != 0 && ui.button(if liked { "Unlike" } else { "Like" }).clicked() {
-            app.set_playlist_liked(id, !liked);
-        }
-        let reposted = app
-            .playlists(Key::MyRepostedPlaylists)
-            .rows()
-            .iter()
-            .any(|playlist| playlist.id == id);
-        if id != 0
-            && ui
-                .button(if reposted { "Unrepost" } else { "Repost" })
-                .clicked()
-        {
-            app.set_playlist_reposted(id, !reposted);
-        }
-        if ui.button("Share").clicked() {
-            match remote
-                .as_ref()
-                .and_then(|s| s.clone().ready())
-                .and_then(|p| p.permalink_url)
-            {
-                Some(url) => {
-                    ui.ctx().copy_text(url);
-                    app.toast("Link copied");
-                }
-                None => app.toast("This playlist has no public link"),
-            }
-        }
-        if is_custom && ui.button("Delete").clicked() {
-            app.settings.custom_playlists.retain(|p| p.id != id);
-            let _ = app.settings.save();
-            app.toast(format!("Deleted {title}"));
-            deleted = true;
-        } else if owned_by_me {
-            if app.creator.confirm_delete_playlist == Some(id) {
-                if ui.button("Confirm permanent deletion").clicked() {
-                    app.delete_playlist(id);
-                    app.toast("Deleting playlist…");
-                }
-                if ui.button("Cancel").clicked() {
-                    app.creator.confirm_delete_playlist = None;
-                }
-            } else if ui
-                .button("Delete from SoundCloud")
-                .on_hover_text("Permanently deletes this playlist from your account")
-                .clicked()
-            {
-                app.creator.confirm_delete_playlist = Some(id);
-            }
-        }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            stat(app, ui, super::icons::Icon::Music, Some(total_plays));
-            stat(app, ui, super::icons::Icon::Heart, Some(total_likes));
-        });
-        if deleted {
-            app.navigate(Route::Library);
-        }
-    });
     if app.route == Route::Library {
         return;
     }
@@ -2379,38 +3416,49 @@ fn user_detail(app: &mut App, ui: &mut egui::Ui, id: u64) {
             }
         });
     }
-    ui.add_space(Metrics::SP_15);
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = Metrics::SP_2;
-        for (label, tab) in [
-            ("All", UserTab::All),
-            ("Popular tracks", UserTab::PopularTracks),
-            ("Tracks", UserTab::Tracks),
-            ("Albums", UserTab::Albums),
-            ("Playlists", UserTab::Playlists),
-            ("Reposts", UserTab::Reposts),
-        ] {
-            if profile_tab(app, ui, label, app.user_tab == tab) {
-                app.user_tab = tab;
-            }
-        }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button("Station").clicked() {
-                match app.tracks(Key::UserTracks(id)).rows().first().cloned() {
-                    Some(seed) => {
-                        app.settings.autoplay = true;
-                        app.player.set_autoplay(true);
-                        let queue = app.station_queue(&seed);
-                        app.play_user_queue(queue, 0, false);
-                        app.toast(format!("Station: {name}"));
+    ui.add_space(Metrics::SP_2);
+    Surface::glass()
+        .padding(Metrics::SP_15 as i8)
+        .show(ui, app.theme, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(Type::MICRO.rich("ARTIST CHANNELS", app.theme.accent));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    widgets::follow_button(app, ui, id, &name);
+                    if airwave::action_button(ui, app.theme, ButtonVariant::Secondary, "Station")
+                        .clicked()
+                    {
+                        match app.tracks(Key::UserTracks(id)).rows().first().cloned() {
+                            Some(seed) => {
+                                app.settings.autoplay = true;
+                                app.player.set_autoplay(true);
+                                let queue = app.station_queue(&seed);
+                                app.play_user_queue(queue, 0, false);
+                                app.toast(format!("Station: {name}"));
+                            }
+                            None => app.toast("Nothing to seed a station with yet"),
+                        }
                     }
-                    None => app.toast("Nothing to seed a station with yet"),
+                });
+            });
+            ui.add_space(Metrics::SP_HALF);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = Metrics::SP_2;
+                for (label, tab) in [
+                    ("All", UserTab::All),
+                    ("Popular tracks", UserTab::PopularTracks),
+                    ("Tracks", UserTab::Tracks),
+                    ("Albums", UserTab::Albums),
+                    ("Playlists", UserTab::Playlists),
+                    ("Reposts", UserTab::Reposts),
+                ] {
+                    if profile_tab(app, ui, label, app.user_tab == tab) {
+                        app.user_tab = tab;
+                    }
                 }
-            }
-            widgets::follow_button(app, ui, id, &name);
+            });
         });
-    });
-    ui.separator();
+    ui.add_space(Metrics::SP_1);
 
     if matches!(
         app.user_tab,
@@ -2511,15 +3559,20 @@ fn user_detail(app: &mut App, ui: &mut egui::Ui, id: u64) {
     footer(app, ui);
 }
 
-fn playlist_carousel(
+fn playlist_carousel<'a>(
     app: &mut App,
     ui: &mut egui::Ui,
     salt: &str,
-    playlists: &[crate::api::models::Playlist],
+    playlists: impl IntoIterator<Item = &'a crate::api::models::Playlist>,
 ) {
-    let playlists = playlists.to_vec();
+    let playlists: Vec<_> = playlists.into_iter().collect();
     app.carousel(ui, salt, |app, ui| {
-        for playlist in &playlists {
+        let text_height = ui.fonts_mut(|fonts| {
+            fonts.row_height(&Type::H4.font()) + fonts.row_height(&Type::BODY.font())
+        });
+        let size = egui::vec2(widgets::CARD_ART, widgets::CARD_ART + text_height + 4.0);
+        widgets::virtual_card_strip(ui, playlists.len(), size, |ui, index| {
+            let playlist = &playlists[index];
             let subtitle = format!(
                 "{} • {} tracks",
                 playlist
@@ -2529,10 +3582,10 @@ fn playlist_carousel(
                     .unwrap_or("Unknown creator"),
                 playlist.track_count.unwrap_or(0)
             );
-            let click = widgets::card(
+            let click = widgets::media_card(
                 app,
                 ui,
-                widgets::Card::opens(playlist.id, &playlist.title, &subtitle)
+                widgets::MediaCard::opens(playlist.id, &playlist.title, &subtitle)
                     .art(playlist.artwork_url()),
             );
             if click.play {
@@ -2547,84 +3600,34 @@ fn playlist_carousel(
             } else if click.open {
                 app.navigate(Route::PlaylistDetail(playlist.id));
             }
-        }
+        });
     });
 }
 
 /// SoundCloud profile masthead: a tall colour field, large circular avatar,
 /// and the account name on a dark label over it.
-fn profile_hero(app: &App, ui: &mut egui::Ui, user: &crate::api::models::User) {
-    let size = egui::vec2(ui.available_width(), 240.0);
-    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-    let base = widgets::art_color(name_seed(&user.username));
-    let dark = base.gamma_multiply(0.45);
-    let steps = 32;
-    for step in 0..steps {
-        let t = step as f32 / (steps - 1) as f32;
-        let colour = egui::Color32::from_rgb(
-            (base.r() as f32 * (1.0 - t) + dark.r() as f32 * t) as u8,
-            (base.g() as f32 * (1.0 - t) + dark.g() as f32 * t) as u8,
-            (base.b() as f32 * (1.0 - t) + dark.b() as f32 * t) as u8,
-        );
-        let x0 = rect.left() + rect.width() * step as f32 / steps as f32;
-        let x1 = rect.left() + rect.width() * (step + 1) as f32 / steps as f32 + 1.0;
-        ui.painter().rect_filled(
-            egui::Rect::from_min_max(egui::pos2(x0, rect.top()), egui::pos2(x1, rect.bottom())),
-            0.0,
-            colour,
-        );
-    }
-
-    let avatar = egui::Rect::from_min_size(
-        rect.left_top() + egui::vec2(Metrics::SP_3, 32.0),
-        egui::vec2(176.0, 176.0),
-    );
-    let mut painted = false;
-    if let Some(url) = user.avatar_url.as_deref().filter(|url| !url.is_empty()) {
-        let image = egui::Image::new(url)
-            .show_loading_spinner(false)
-            .fit_to_exact_size(avatar.size())
-            .corner_radius(avatar.width() / 2.0);
-        if image.load_for_size(ui.ctx(), avatar.size()).is_ok() {
-            image.paint_at(ui, avatar);
-            painted = true;
-        }
-    }
-    if !painted {
-        paint_initial(ui, avatar, &user.username, avatar.width());
-    }
-    ui.painter().circle_stroke(
-        avatar.center(),
-        avatar.width() / 2.0,
-        egui::Stroke::new(3.0, app.theme.bg),
-    );
-
-    let name_pos = egui::pos2(avatar.right() + Metrics::SP_3, rect.top() + 64.0);
-    let galley = ui.painter().layout_no_wrap(
-        user.username.clone(),
-        Type::DISPLAY3.font(),
-        egui::Color32::WHITE,
-    );
-    let name_bg = egui::Rect::from_min_size(
-        name_pos - egui::vec2(10.0, 7.0),
-        galley.size() + egui::vec2(20.0, 14.0),
-    );
-    ui.painter()
-        .rect_filled(name_bg, 0.0, egui::Color32::from_black_alpha(210));
-    ui.painter().galley(name_pos, galley, egui::Color32::WHITE);
-
+fn profile_hero(app: &mut App, ui: &mut egui::Ui, user: &crate::api::models::User) {
     let stats = format!(
         "{} followers  ·  {} following  ·  {} tracks",
         fmt_count(user.followers_count),
         fmt_count(user.followings_count),
         fmt_count(user.track_count),
     );
-    ui.painter().text(
-        egui::pos2(name_bg.left(), name_bg.bottom() + Metrics::SP_15),
-        egui::Align2::LEFT_TOP,
-        stats,
-        Type::BODY.font(),
-        egui::Color32::WHITE,
+    widgets::media_hero(
+        app,
+        ui,
+        widgets::MediaHero {
+            artwork: user.avatar_url.as_deref(),
+            seed: name_seed(&user.username),
+            title: &user.username,
+            round_artwork: true,
+        },
+        |app, ui| {
+            ui.label(Type::CAPTION.rich("Artist", app.theme.text_dim));
+            ui.label(Type::DISPLAY3.rich(&user.username, app.theme.text));
+            ui.add_space(Metrics::SP_1);
+            ui.label(Type::BODY.rich(&stats, app.theme.text_dim));
+        },
     );
 }
 
@@ -2649,462 +3652,1313 @@ fn profile_tab(app: &App, ui: &mut egui::Ui, label: &str, active: bool) -> bool 
 
 // ===== Search / recent / settings =====
 
-/// SoundCloud-style search: a persistent filter rail and one roomy result
-/// column. The API still has three separate routes, so albums are split from
-/// the playlist response by `Playlist::is_album` after it arrives.
-fn search(app: &mut App, ui: &mut egui::Ui) {
-    let q = app.search_query.trim().to_owned();
-    let title = if q.is_empty() {
-        "Search results".to_owned()
+fn catalog(app: &mut App, ui: &mut egui::Ui) {
+    let language = app.settings.language;
+    let surface = if app.settings.background_image.is_some() {
+        Surface::clear()
     } else {
-        format!("Search results for “{q}”")
+        Surface::glass()
     };
-    page_title(app, ui, &title, None);
-    if q.is_empty() {
+    surface.show(ui, app.theme, |ui| {
+        ui.set_min_width(ui.available_width());
+        ui.label(Type::MICRO.rich(
+            language.text("EXPLORE THE CATALOG", "ИССЛЕДУЙ КАТАЛОГ"),
+            app.theme.accent,
+        ));
+        ui.label(Type::H1.rich(language.text("Catalog", "Каталог"), app.theme.text));
         ui.label(Type::BODY.rich(
-            "Type in the search bar above to find music.",
+            language.text(
+                "Find albums and artists across SoundCloud.",
+                "Находи альбомы и исполнителей в SoundCloud.",
+            ),
             app.theme.text_dim,
         ));
-        return;
-    }
-
-    let playlists = app.playlists(Key::SearchPlaylists(q.clone()));
-    let users = app.users(Key::SearchUsers(q.clone()));
-    let tracks = app.tracks(Key::SearchTracks(q.clone()));
-
-    let rows = tracks.rows().to_vec();
-    let mut people = users.rows().to_vec();
-    let sets = playlists.rows().to_vec();
-    people.sort_by(|left, right| {
-        let left_exact = left.username.eq_ignore_ascii_case(q.trim());
-        let right_exact = right.username.eq_ignore_ascii_case(q.trim());
-        right_exact
-            .cmp(&left_exact)
-            .then_with(|| right.followers_count.cmp(&left.followers_count))
-            .then_with(|| {
-                left.username
-                    .to_lowercase()
-                    .cmp(&right.username.to_lowercase())
-            })
+        ui.add_space(Metrics::SP_2);
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .selectable_label(!app.catalog_artists, language.text("Albums", "Альбомы"))
+                .clicked()
+            {
+                app.catalog_artists = false;
+            }
+            if ui
+                .selectable_label(app.catalog_artists, language.text("Artists", "Исполнители"))
+                .clicked()
+            {
+                app.catalog_artists = true;
+            }
+            ui.add_space(Metrics::SP_1);
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut app.catalog_query)
+                    .hint_text(
+                        language.text("Search albums or artists", "Поиск альбома или исполнителя"),
+                    )
+                    .desired_width(280.0),
+            );
+            if response.changed() {
+                app.catalog_query_edited_at = Some(std::time::Instant::now());
+            }
+            let enter =
+                response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+            if enter || ui.button(language.text("Search", "Найти")).clicked() {
+                app.catalog_committed_query = app.catalog_query.trim().to_owned();
+                app.catalog_query_edited_at = None;
+            }
+            if !app.catalog_query.is_empty() && ui.button("×").clicked() {
+                app.catalog_query.clear();
+                app.catalog_committed_query.clear();
+                app.catalog_query_edited_at = None;
+            }
+        });
     });
-    let albums: Vec<_> = sets.iter().filter(|set| set.is_album()).cloned().collect();
-    let plain_playlists: Vec<_> = sets.iter().filter(|set| !set.is_album()).cloned().collect();
-
-    ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
-        ui.vertical(|ui| {
-            ui.set_width(224.0_f32.min(ui.available_width()));
-            search_filter_rail(app, ui, &rows, &sets);
-        });
-        ui.add_space(Metrics::SP_3);
-        ui.vertical(|ui| {
-            ui.set_min_width(360.0);
-            match app.search_tab {
-                SearchTab::All => {
-                    let mut kinds = Vec::new();
-                    if !plain_playlists.is_empty() {
-                        kinds.push(found_count(plain_playlists.len(), "playlist", "playlists"));
-                    }
-                    if !rows.is_empty() {
-                        kinds.push(found_count(rows.len(), "track", "tracks"));
-                    }
-                    if !people.is_empty() {
-                        kinds.push(found_count(people.len(), "person", "people"));
-                    }
-                    if !albums.is_empty() {
-                        kinds.push(found_count(albums.len(), "album", "albums"));
-                    }
-                    search_found(app, ui, &kinds.join(", "));
-                    if let Some(user) = people.first() {
-                        search_person(app, ui, user, 144.0);
-                        ui.add_space(Metrics::SP_4);
-                    }
-                    if let Some(album) = albums.first() {
-                        search_set(app, ui, album);
-                        ui.add_space(Metrics::SP_5);
-                    }
-                    for track in rows.iter().take(3) {
-                        feed_card(
-                            app,
-                            ui,
-                            track,
-                            None,
-                            search_stamp(track.created_at.as_deref()),
-                        );
-                        ui.add_space(Metrics::SP_5);
-                    }
-                    if albums.is_empty()
-                        && let Some(playlist) = plain_playlists.first()
-                    {
-                        search_set(app, ui, playlist);
-                    }
-                }
-                SearchTab::Tracks => {
-                    search_found(app, ui, &found_count(rows.len(), "track", "tracks"));
-                    for track in &rows {
-                        feed_card(
-                            app,
-                            ui,
-                            track,
-                            None,
-                            search_stamp(track.created_at.as_deref()),
-                        );
-                        ui.add_space(Metrics::SP_5);
-                    }
-                }
-                SearchTab::People => {
-                    search_found(app, ui, &found_count(people.len(), "person", "people"));
-                    for user in &people {
-                        search_person(app, ui, user, 144.0);
-                        ui.add_space(Metrics::SP_5);
-                    }
-                }
-                SearchTab::Albums => {
-                    search_found(app, ui, &found_count(albums.len(), "album", "albums"));
-                    for album in &albums {
-                        search_set(app, ui, album);
-                        ui.add_space(Metrics::SP_5);
-                    }
-                }
-                SearchTab::Playlists => {
-                    search_found(
-                        app,
-                        ui,
-                        &found_count(plain_playlists.len(), "playlist", "playlists"),
-                    );
-                    for playlist in &plain_playlists {
-                        search_set(app, ui, playlist);
-                        ui.add_space(Metrics::SP_5);
-                    }
-                }
+    if let Some(edited_at) = app.catalog_query_edited_at {
+        let wait = std::time::Duration::from_millis(220);
+        if edited_at.elapsed() >= wait {
+            app.catalog_committed_query = app.catalog_query.trim().to_owned();
+            app.catalog_query_edited_at = None;
+        } else {
+            ui.ctx().request_repaint_after(wait - edited_at.elapsed());
+        }
+    }
+    ui.add_space(Metrics::SP_3);
+    if app.catalog_artists {
+        let query = if app.catalog_committed_query.is_empty() {
+            if app.demo {
+                String::new()
+            } else {
+                "artist".to_owned()
             }
-
-            let selected_has_rows = match app.search_tab {
-                SearchTab::All => !rows.is_empty() || !sets.is_empty() || !people.is_empty(),
-                SearchTab::Tracks => !rows.is_empty(),
-                SearchTab::People => !people.is_empty(),
-                SearchTab::Albums => !albums.is_empty(),
-                SearchTab::Playlists => !plain_playlists.is_empty(),
-            };
-            if !selected_has_rows {
-                if tracks.is_loading() || playlists.is_loading() || users.is_loading() {
-                    data::placeholder(app, ui, &tracks, "");
-                } else if let Some(why) = tracks
-                    .error()
-                    .or_else(|| playlists.error())
-                    .or_else(|| users.error())
-                {
-                    ui.label(Type::BODY.rich("Search failed.", app.theme.text));
-                    ui.label(Type::CAPTION.rich(why, app.theme.text_dim));
-                } else {
-                    ui.label(Type::BODY.rich("No results.", app.theme.text_dim));
+        } else {
+            app.catalog_committed_query.clone()
+        };
+        let artists = app.users(Key::SearchUsers(query));
+        if artists.is_loading() && artists.rows().is_empty() {
+            ui.label(Type::BODY.rich(
+                language.text("Loading artists…", "Загружаем исполнителей…"),
+                app.theme.text_dim,
+            ));
+        } else if let Some(error) = artists.error() {
+            ui.label(Type::BODY.rich(
+                language.text(
+                    "Could not load artists.",
+                    "Не удалось загрузить исполнителей.",
+                ),
+                app.theme.text,
+            ));
+            ui.label(Type::CAPTION.rich(error, app.theme.text_dim));
+        } else if artists.rows().is_empty() {
+            ui.label(Type::BODY.rich(
+                language.text(
+                    "No artists found. Try another name.",
+                    "Исполнители не найдены. Попробуй другое имя.",
+                ),
+                app.theme.text_dim,
+            ));
+        } else {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(Metrics::SP_3, Metrics::SP_4);
+                for artist in artists.rows() {
+                    artist_card(app, ui, artist, LIBRARY_CARD);
                 }
+            });
+        }
+    } else {
+        let query = if app.catalog_committed_query.is_empty() {
+            if app.demo {
+                String::new()
+            } else {
+                "album".to_owned()
+            }
+        } else {
+            app.catalog_committed_query.clone()
+        };
+        let playlists = app.playlists(Key::SearchPlaylists(query));
+        let albums: Vec<_> = playlists
+            .rows()
+            .iter()
+            .filter(|playlist| playlist.is_album())
+            .collect();
+        if playlists.is_loading() && albums.is_empty() {
+            ui.label(Type::BODY.rich(
+                language.text("Loading albums…", "Загружаем альбомы…"),
+                app.theme.text_dim,
+            ));
+        } else if let Some(error) = playlists.error() {
+            ui.label(Type::BODY.rich(
+                language.text("Could not load albums.", "Не удалось загрузить альбомы."),
+                app.theme.text,
+            ));
+            ui.label(Type::CAPTION.rich(error, app.theme.text_dim));
+        } else if albums.is_empty() {
+            ui.label(Type::BODY.rich(
+                language.text(
+                    "No albums found. Try another title.",
+                    "Альбомы не найдены. Попробуй другое название.",
+                ),
+                app.theme.text_dim,
+            ));
+        } else {
+            catalog_album_grid(app, ui, &albums);
+        }
+    }
+    ui.add_space(Metrics::SP_3);
+    if ui
+        .button(language.text("Explore your personal wave →", "Открыть личную волну →"))
+        .clicked()
+    {
+        app.navigate(Route::Discover);
+    }
+}
+
+fn catalog_album_grid(app: &mut App, ui: &mut egui::Ui, albums: &[&crate::api::models::Playlist]) {
+    let columns = library_columns(ui.available_width());
+    for (row_index, row) in albums.chunks(columns).enumerate() {
+        ui.push_id(("catalog-album-row", row_index), |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(Metrics::SP_3, Metrics::SP_4);
+                for album in row {
+                    let mut open = false;
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        ui.set_width(LIBRARY_CARD);
+                        open |= widgets::artwork_img(
+                            ui,
+                            album.artwork_url(),
+                            album.id + 7,
+                            &album.title,
+                            LIBRARY_CARD,
+                            Metrics::RADIUS as f32,
+                        )
+                        .clicked();
+                        open |= ui
+                            .add(
+                                egui::Label::new(Type::H4.rich(&album.title, app.theme.text))
+                                    .sense(egui::Sense::click())
+                                    .truncate(),
+                            )
+                            .clicked();
+                        if let Some(owner) = &album.user {
+                            ui.add(
+                                egui::Label::new(
+                                    Type::CAPTION.rich(&owner.username, app.theme.text_dim),
+                                )
+                                .truncate(),
+                            );
+                        }
+                    });
+                    if open {
+                        app.navigate(Route::PlaylistDetail(album.id));
+                    }
+                }
+            });
+        });
+    }
+}
+
+fn discover(app: &mut App, ui: &mut egui::Ui) {
+    let wide = ui.available_width() >= 760.0;
+    let surface = if app.settings.background_image.is_some() {
+        Surface::clear()
+    } else {
+        Surface::glass()
+    };
+    let hero = surface
+        .padding(Metrics::SP_3 as i8)
+        .show(ui, app.theme, |ui| {
+            if wide {
+                ui.horizontal(|ui| {
+                    let copy_width = (ui.available_width() - 286.0).max(320.0);
+                    ui.vertical(|ui| {
+                        ui.set_width(copy_width);
+                        discover_copy_and_controls(app, ui);
+                    });
+                    ui.add_space(Metrics::SP_2);
+                    discover_signal_preview(app, ui, egui::vec2(254.0, 176.0));
+                });
+            } else {
+                discover_copy_and_controls(app, ui);
+                ui.add_space(Metrics::SP_2);
+                discover_signal_preview(app, ui, egui::vec2(ui.available_width(), 116.0));
             }
         });
+    ui.painter().line_segment(
+        [
+            egui::pos2(
+                hero.response.rect.left() + 24.0,
+                hero.response.rect.top() + 1.0,
+            ),
+            egui::pos2(
+                (hero.response.rect.left() + 260.0).min(hero.response.rect.right() - 24.0),
+                hero.response.rect.top() + 1.0,
+            ),
+        ],
+        egui::Stroke::new(1.5, app.theme.accent.gamma_multiply(0.8)),
+    );
+    ui.add_space(Metrics::SP_3);
+    let surface = if app.settings.background_image.is_some() {
+        Surface::clear()
+    } else {
+        Surface::glass()
+    };
+    surface
+        .padding(Metrics::SP_15 as i8)
+        .show(ui, app.theme, |ui| search_genre_ticker(app, ui));
+    ui.add_space(Metrics::SP_3);
+    ui.horizontal(|ui| {
+        ui.label(
+            Type::MICRO.rich(
+                app.settings
+                    .language
+                    .text("PERSONAL FREQUENCY", "ЛИЧНАЯ ВОЛНА"),
+                app.theme.accent,
+            ),
+        );
+        ui.separator();
+        ui.label(Type::H4.rich(
+            app.settings.language.text("Your wave", "Твоя волна"),
+            app.theme.text,
+        ));
+    });
+    ui.label(Type::CAPTION.rich(
+        app.settings.language.text(
+            "A living mix tuned by your recent plays, likes and repeat listens.",
+            "Живой микс из недавних прослушиваний, лайков и любимых треков.",
+        ),
+        app.theme.text_dim,
+    ));
+    ui.add_space(Metrics::SP_1);
+    search_wave(app, ui);
+}
+
+fn discover_copy_and_controls(app: &mut App, ui: &mut egui::Ui) {
+    let language = app.settings.language;
+    ui.label(Type::MICRO.rich(
+        language.text("AIRWAVE DISCOVERY  /  LIVE", "AIRWAVE / ПОИСК НОВОГО"),
+        app.theme.accent,
+    ));
+    ui.add_space(Metrics::SP_HALF);
+    ui.label(Type::DISPLAY3.rich(
+        language.text("Find your next frequency", "Найди новую волну"),
+        app.theme.text,
+    ));
+    ui.label(Type::BODY.rich(
+        language.text(
+            "Describe a mood, a place or a moment. Airwave turns it into a path through sound.",
+            "Опиши настроение, место или момент — Airwave подберёт музыку.",
+        ),
+        app.theme.text_dim,
+    ));
+    ui.add_space(Metrics::SP_2);
+    let input = egui::Frame::new()
+        .fill(if app.settings.background_image.is_some() {
+            app.theme.tokens.glass_clear
+        } else {
+            app.theme.tokens.glass
+        })
+        .stroke(egui::Stroke::new(1.0, app.theme.tokens.glass_border))
+        .corner_radius(Metrics::RADIUS_INPUT)
+        .inner_margin(egui::Margin::symmetric(12, 10))
+        .show(ui, |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut app.discover_query)
+                    .id_salt("discover-vibe-query")
+                    .hint_text(language.text(
+                        "Late night ambient, energetic house…",
+                        "Ночной эмбиент, энергичный хаус…",
+                    ))
+                    .font(Type::BODY.font())
+                    .frame(egui::Frame::NONE)
+                    .desired_width(ui.available_width()),
+            )
+        })
+        .inner;
+    let enter = input.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+    ui.add_space(Metrics::SP_1);
+    ui.horizontal(|ui| {
+        let ready = search_query_is_ready(&app.discover_query);
+        let submit = ui
+            .add_enabled_ui(ready, |ui| {
+                airwave::action_button(
+                    ui,
+                    app.theme,
+                    ButtonVariant::Primary,
+                    language.text("Explore Vibe", "Искать по настроению"),
+                )
+                .clicked()
+            })
+            .inner;
+        ui.label(Type::CAPTION.rich(
+            language.text(
+                "Mood + genre ranking · results come from SoundCloud",
+                "По настроению и жанру · результаты из SoundCloud",
+            ),
+            app.theme.text_dim,
+        ));
+        if ready && (submit || enter) {
+            app.search_mode = SearchMode::Vibe;
+            app.search_query = app.discover_query.trim().to_owned();
+            app.commit_search_now();
+            app.navigate(Route::Search(app.search_query.clone()));
+        }
     });
 }
 
-fn search_filter_rail(
-    app: &mut App,
-    ui: &mut egui::Ui,
-    tracks: &[Track],
-    playlists: &[crate::api::models::Playlist],
-) {
-    for (label, tab) in [
-        ("Everything", SearchTab::All),
-        ("Tracks", SearchTab::Tracks),
-        ("People", SearchTab::People),
-        ("Albums", SearchTab::Albums),
-        ("Playlists", SearchTab::Playlists),
-    ] {
-        let active = app.search_tab == tab;
-        let text = if active { app.theme.bg } else { app.theme.text };
-        let fill = if active {
-            app.theme.text
-        } else {
-            egui::Color32::TRANSPARENT
-        };
-        let response = ui.add_sized(
-            [ui.available_width(), 28.0],
-            egui::Button::new(Type::H4.rich(label, text))
-                .fill(fill)
-                .stroke(egui::Stroke::NONE)
-                .corner_radius(Metrics::RADIUS),
+fn discover_signal_preview(app: &App, ui: &mut egui::Ui, size: egui::Vec2) {
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    if app.settings.background_image.is_some() {
+        airwave::paint_clear_glass_rect(
+            ui,
+            rect,
+            Metrics::RADIUS_LG,
+            app.theme,
+            Some(app.theme.accent),
         );
-        if response.clicked() {
-            app.search_tab = tab;
-        }
+    } else {
+        airwave::paint_glass_rect(
+            ui,
+            rect,
+            Metrics::RADIUS_LG,
+            app.theme,
+            false,
+            Some(app.theme.accent),
+        );
     }
+    let center = rect.center();
+    for (index, radius) in [30.0_f32, 52.0, 76.0].into_iter().enumerate() {
+        ui.painter().circle_stroke(
+            center,
+            radius.min(rect.height() * 0.42),
+            egui::Stroke::new(
+                if index == 0 { 1.5 } else { 1.0 },
+                app.theme.accent.gamma_multiply(0.48 - index as f32 * 0.12),
+            ),
+        );
+    }
+    let bars = [0.20_f32, 0.42, 0.68, 0.92, 0.58, 0.34, 0.72, 0.48, 0.26];
+    let gap = 5.0;
+    let bar_width = ((rect.width() * 0.58) - gap * (bars.len() - 1) as f32) / bars.len() as f32;
+    let left = center.x - rect.width() * 0.29;
+    for (index, amplitude) in bars.into_iter().enumerate() {
+        let height = 54.0 * amplitude;
+        let bar = egui::Rect::from_center_size(
+            egui::pos2(left + index as f32 * (bar_width + gap), center.y),
+            egui::vec2(bar_width.max(2.0), height),
+        );
+        ui.painter()
+            .rect_filled(bar, bar_width * 0.5, app.theme.accent);
+    }
+    ui.painter().text(
+        egui::pos2(center.x, rect.bottom() - 18.0),
+        egui::Align2::CENTER_CENTER,
+        "SIGNAL READY",
+        Type::MICRO.font(),
+        app.theme.text_dim,
+    );
+}
 
+/// Search follows the donor app's state machine: the global field owns the
+/// query, short input stays on a personalized wave, and controls only appear
+/// once a debounced query is ready.
+fn search(app: &mut App, ui: &mut egui::Ui) {
+    let language = app.settings.language;
+    let query = committed_search_query(app, ui.ctx());
+    ui.add_space(Metrics::SP_1);
+    let header = Surface::glass().show(ui, app.theme, |ui| {
+        ui.horizontal(|ui| {
+            let (icon_rect, _) =
+                ui.allocate_exact_size(egui::Vec2::splat(48.0), egui::Sense::hover());
+            ui.painter().rect_filled(
+                icon_rect,
+                Metrics::RADIUS_INPUT,
+                app.theme.tokens.accent_soft,
+            );
+            super::icons::paint(
+                ui,
+                super::icons::Icon::Search,
+                icon_rect,
+                22.0,
+                app.theme.accent,
+            );
+            ui.add_space(Metrics::SP_HALF);
+            ui.vertical(|ui| {
+                ui.label(Type::MICRO.rich(
+                    language.text("EXPLORE  /  THE WHOLE FREQUENCY", "ПОИСК / ВСЯ МУЗЫКА"),
+                    app.theme.accent,
+                ));
+                if search_query_is_ready(&query) {
+                    ui.add(
+                        egui::Label::new(Type::H2.rich(
+                            &match language {
+                                crate::config::Language::English => {
+                                    format!("Search results for “{query}”")
+                                }
+                                crate::config::Language::Russian => {
+                                    format!("Результаты поиска: «{query}»")
+                                }
+                            },
+                            app.theme.text,
+                        ))
+                        .truncate(),
+                    );
+                    ui.label(Type::CAPTION.rich(
+                        language.text(
+                            "Tracks, people and moods connected to your search.",
+                            "Треки, исполнители и настроения по твоему запросу.",
+                        ),
+                        app.theme.text_dim,
+                    ));
+                } else {
+                    ui.label(Type::H2.rich(language.text("Search", "Поиск"), app.theme.text));
+                    ui.label(Type::CAPTION.rich(
+                        language.text(
+                            "A fresh wave based on what you listen to.",
+                            "Новая волна на основе твоей музыки.",
+                        ),
+                        app.theme.text_dim,
+                    ));
+                }
+            });
+        });
+        if search_query_is_ready(&query) {
+            ui.add_space(Metrics::SP_15);
+            search_mode_switcher(app, ui);
+        }
+        ui.add_space(Metrics::SP_15);
+        ui.separator();
+        ui.add_space(Metrics::SP_HALF);
+        search_genre_ticker(app, ui);
+    });
+    ui.painter().line_segment(
+        [
+            egui::pos2(
+                header.response.rect.left() + 18.0,
+                header.response.rect.top() + 1.0,
+            ),
+            egui::pos2(
+                (header.response.rect.left() + 210.0).min(header.response.rect.right() - 18.0),
+                header.response.rect.top() + 1.0,
+            ),
+        ],
+        egui::Stroke::new(1.4, app.theme.accent.gamma_multiply(0.75)),
+    );
     ui.add_space(Metrics::SP_3);
-    if app.search_tab == SearchTab::Tracks {
-        ui.label(Type::H3.rich("Filter results", app.theme.text));
-        ui.add_space(Metrics::SP_1);
-        for label in ["Added any time", "Any length", "To listen to"] {
-            ui.label(Type::H4.rich(label, app.theme.text));
-            ui.add_space(Metrics::SP_1);
-        }
-        ui.add_space(Metrics::SP_2);
+
+    match search_surface(&query, app.search_mode) {
+        SearchSurface::Wave => search_wave(app, ui),
+        SearchSurface::Text => text_search(app, ui, &query),
+        SearchSurface::Vibe => vibe_search(app, ui, &query),
+        SearchSurface::SoundCloud => soundcloud_search(app, ui, &query),
+    }
+}
+
+pub(super) fn search_query_is_ready(query: &str) -> bool {
+    query.trim().chars().count() >= 2
+}
+
+fn search_surface(query: &str, mode: SearchMode) -> SearchSurface {
+    if !search_query_is_ready(query) {
+        return SearchSurface::Wave;
+    }
+    match mode {
+        SearchMode::Text => SearchSurface::Text,
+        SearchMode::Vibe => SearchSurface::Vibe,
+        SearchMode::SoundCloud => SearchSurface::SoundCloud,
+    }
+}
+
+fn next_search_selection(current: usize, result_count: usize, direction: SearchMove) -> usize {
+    if result_count == 0 {
+        return 0;
+    }
+    let current = current.min(result_count - 1);
+    match direction {
+        SearchMove::Previous => current.checked_sub(1).unwrap_or(result_count - 1),
+        SearchMove::Next => (current + 1) % result_count,
+    }
+}
+
+fn committed_search_query(app: &mut App, ctx: &egui::Context) -> String {
+    const DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(350);
+    let typed = app.search_query.trim().to_owned();
+    if typed == app.search_committed_query {
+        app.search_query_edited_at = None;
+        return typed;
     }
 
-    let mut tags: Vec<String> = tracks
+    let edited_at = app
+        .search_query_edited_at
+        .get_or_insert_with(std::time::Instant::now);
+    let elapsed = edited_at.elapsed();
+    if elapsed >= DEBOUNCE {
+        app.search_committed_query = typed.clone();
+        app.search_query_edited_at = None;
+        app.remember_search();
+        typed
+    } else {
+        ctx.request_repaint_after(DEBOUNCE - elapsed);
+        app.search_committed_query.clone()
+    }
+}
+
+fn search_mode_switcher(app: &mut App, ui: &mut egui::Ui) {
+    ui.horizontal(|ui| {
+        ui.label(Type::CAPTION.rich(
+            app.settings.language.text("Search with", "Режим поиска"),
+            app.theme.text_dim,
+        ));
+        if let Some(mode) =
+            search_mode_picker(ui, &app.theme, app.search_mode, app.settings.language).inner
+        {
+            app.search_mode = mode;
+            app.search_selection = 0;
+        }
+    });
+}
+
+fn search_mode_picker(
+    ui: &mut egui::Ui,
+    theme: &super::theme::Theme,
+    current: SearchMode,
+    language: crate::config::Language,
+) -> egui::InnerResponse<Option<SearchMode>> {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = Metrics::SP_075;
+        let mut chosen = None;
+        for (label, mode) in [
+            (language.text("Text", "Текст"), SearchMode::Text),
+            (language.text("✦ Vibe", "✦ Настроение"), SearchMode::Vibe),
+            ("SoundCloud", SearchMode::SoundCloud),
+        ] {
+            let active = current == mode;
+            let response = ui.add(
+                egui::Button::new(
+                    Type::CAPTION.rich(label, if active { theme.accent } else { theme.text_dim }),
+                )
+                .fill(if active {
+                    theme.tokens.accent_soft
+                } else {
+                    theme.tokens.glass
+                })
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    if active {
+                        theme.accent.gamma_multiply(0.65)
+                    } else {
+                        theme.tokens.glass_border
+                    },
+                ))
+                .corner_radius(Metrics::RADIUS_PILL)
+                .min_size(egui::vec2(92.0, 30.0)),
+            );
+            if response.clicked() {
+                chosen = Some(mode);
+            }
+        }
+        chosen
+    })
+}
+
+fn search_genre_ticker(app: &mut App, ui: &mut egui::Ui) {
+    ui.label(
+        Type::CAPTION.rich(
+            app.settings
+                .language
+                .text("Jump into a vibe", "Выбери настроение"),
+            app.theme.text_dim,
+        ),
+    );
+    egui::ScrollArea::horizontal()
+        .id_salt("search-genre-ticker")
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = Metrics::SP_075;
+                for genre in crate::demo::demo_genres().into_iter().skip(1) {
+                    if ui
+                        .add(
+                            egui::Button::new(Type::CAPTION.rich(genre, app.theme.text))
+                                .fill(app.theme.surface_hover)
+                                .stroke(egui::Stroke::new(1.0, app.theme.separator))
+                                .corner_radius(Metrics::RADIUS_PILL),
+                        )
+                        .clicked()
+                    {
+                        app.search_mode = SearchMode::Vibe;
+                        app.search_selection = 0;
+                        app.search_query = genre.to_owned();
+                        app.commit_search_now();
+                        app.navigate(Route::Search(app.search_query.clone()));
+                    }
+                }
+            });
+        });
+}
+
+fn search_wave(app: &mut App, ui: &mut egui::Ui) {
+    let seeds = recent_tracks(app, 8);
+    let mut lanes = Vec::new();
+    let mut loading = false;
+    let mut first_error = None;
+
+    for seed in seeds.iter().take(4) {
+        let slot = app.tracks(Key::Related(seed.id));
+        loading |= slot.is_loading();
+        if first_error.is_none() {
+            first_error = slot.error().map(str::to_owned);
+        }
+        if !slot.rows().is_empty() {
+            lanes.push(slot.rows().to_vec());
+        }
+    }
+
+    let mut genres: Vec<String> = seeds
         .iter()
         .filter_map(|track| track.genre.as_deref())
         .map(str::trim)
         .filter(|genre| !genre.is_empty())
         .map(str::to_owned)
         .collect();
-    for playlist in playlists {
-        for track in playlist.tracks.iter().take(3) {
-            if let Some(genre) = track.genre.as_deref().map(str::trim)
-                && !genre.is_empty()
+    genres.sort_by_key(|genre| genre.to_lowercase());
+    genres.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+    for fallback in ["Alternative Rock", "Electronic", "Hip-hop & Rap", "Ambient"] {
+        if genres.len() >= 4 {
+            break;
+        }
+        if !genres
+            .iter()
+            .any(|genre| genre.eq_ignore_ascii_case(fallback))
+        {
+            genres.push(fallback.to_owned());
+        }
+    }
+    for genre in genres.into_iter().take(4) {
+        let slot = app.tracks(Key::Genre(genre));
+        loading |= slot.is_loading();
+        if first_error.is_none() {
+            first_error = slot.error().map(str::to_owned);
+        }
+        if !slot.rows().is_empty() {
+            lanes.push(slot.rows().to_vec());
+        }
+    }
+
+    if lanes.is_empty() && seeds.is_empty() {
+        let likes = app.tracks(Key::Likes);
+        loading |= likes.is_loading();
+        if !likes.rows().is_empty() {
+            lanes.push(likes.rows().to_vec());
+        }
+    }
+    let rows = interleave_discovery_lanes(lanes);
+
+    if rows.is_empty() {
+        if loading {
+            search_status(app, ui, "Building your wave…", None);
+        } else if let Some(error) = first_error.as_deref() {
+            search_status(app, ui, "Your wave could not load.", Some(error));
+        } else {
+            search_status(app, ui, "Play or like something to shape your wave.", None);
+        }
+        return;
+    }
+
+    discover_results(app, ui, &rows, loading);
+}
+
+fn interleave_discovery_lanes(lanes: Vec<Vec<Track>>) -> Vec<Track> {
+    let mut rows = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let longest = lanes.iter().map(Vec::len).max().unwrap_or_default();
+    for index in 0..longest {
+        for lane in &lanes {
+            if let Some(track) = lane.get(index)
+                && seen.insert(track.id)
             {
-                tags.push(genre.to_owned());
+                rows.push(track.clone());
             }
         }
     }
-    tags.sort_by_key(|tag| tag.to_lowercase());
-    tags.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
-    tags.truncate(9);
-    if tags.is_empty() {
-        tags.extend(
-            [
-                "Pop",
-                "Alternative",
-                "Hip hop",
-                "Trap",
-                "Electronic",
-                "Ambient",
-            ]
-            .into_iter()
-            .map(str::to_owned),
+    rows
+}
+
+fn discover_results(app: &mut App, ui: &mut egui::Ui, rows: &[Track], loading: bool) {
+    const BATCH: usize = 24;
+    let id = ui.id().with(("discover-visible", app.search_wave_seed));
+    let visible = ui
+        .ctx()
+        .data(|data| data.get_temp::<usize>(id))
+        .unwrap_or(BATCH)
+        .clamp(1, rows.len());
+    let shown = &rows[..visible];
+
+    app.search_selection = app.search_selection.min(shown.len() - 1);
+    let keyboard = search_keyboard_action(app, ui, shown.len());
+    if keyboard.activate {
+        app.play_user_queue(rows.to_vec(), app.search_selection, false);
+    }
+    ui.label(Type::H3.rich("Top result", app.theme.text));
+    ui.add_space(Metrics::SP_1);
+    search_top_result(
+        app,
+        ui,
+        &shown[0],
+        rows,
+        app.search_selection == 0,
+        keyboard.moved,
+    );
+    if shown.len() > 1 {
+        ui.add_space(Metrics::SP_3);
+        ui.label(Type::H3.rich("Keep exploring", app.theme.text));
+        ui.add_space(Metrics::SP_1);
+        vibe_wall(app, ui, shown, 1, keyboard.moved);
+    }
+
+    let (sentinel, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 42.0), egui::Sense::hover());
+    if visible < rows.len() {
+        ui.painter().text(
+            sentinel.center(),
+            egui::Align2::CENTER_CENTER,
+            "Loading more frequencies…",
+            Type::CAPTION.font(),
+            app.theme.text_dim,
+        );
+        if ui.is_rect_visible(sentinel) {
+            ui.ctx().data_mut(|data| {
+                data.insert_temp(id, (visible + BATCH).min(rows.len()));
+            });
+            ui.ctx().request_repaint();
+        }
+    } else if loading {
+        ui.painter().text(
+            sentinel.center(),
+            egui::Align2::CENTER_CENTER,
+            "Tuning more sources…",
+            Type::CAPTION.font(),
+            app.theme.text_dim,
         );
     }
-    ui.label(Type::H3.rich("Filter by tag", app.theme.text));
-    ui.add_space(Metrics::SP_1);
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(Metrics::SP_075, Metrics::SP_1);
-        for tag in tags {
-            let clicked = egui::Frame::new()
-                .fill(app.theme.surface_hover)
-                .corner_radius(Metrics::RADIUS_PILL)
-                .inner_margin(egui::Margin::symmetric(9, 4))
-                .show(ui, |ui| {
-                    ui.label(Type::CAPTION.rich(&format!("# {tag}"), app.theme.text))
-                })
-                .response
-                .interact(egui::Sense::click())
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .clicked();
-            if clicked {
-                app.search_query = tag.clone();
-                app.navigate(Route::Search(tag));
-            }
-        }
-    });
 }
 
-fn search_found(app: &App, ui: &mut egui::Ui, text: &str) {
-    if !text.is_empty() {
-        ui.label(Type::H4.rich(&format!("Found {text}"), app.theme.text_dim));
+fn text_mix_plan(lexical: usize, vibe: usize) -> Vec<TextLane> {
+    let mut plan = Vec::with_capacity(lexical + vibe);
+    let (mut lexical_index, mut vibe_index) = (0, 0);
+    while lexical_index < lexical || vibe_index < vibe {
+        let vibe_slot = plan.len() % 7 == 5;
+        if vibe_index < vibe && (vibe_slot || lexical_index >= lexical) {
+            plan.push(TextLane::Vibe(vibe_index));
+            vibe_index += 1;
+        } else if lexical_index < lexical {
+            plan.push(TextLane::Lexical(lexical_index));
+            lexical_index += 1;
+        }
+    }
+    plan
+}
+
+fn text_search(app: &mut App, ui: &mut egui::Ui, query: &str) {
+    let lexical = app.tracks(Key::SearchTracks(query.to_owned()));
+    let playlists = app.playlists(Key::SearchPlaylists(query.to_owned()));
+    let users = app.users(Key::SearchUsers(query.to_owned()));
+
+    let profile = super::vibe::profile(query);
+    let mut vibe_candidates = Vec::new();
+    let mut vibe_loading = false;
+    for genre in profile.genres.iter().take(2) {
+        let slot = app.tracks(Key::Genre(genre.clone()));
+        vibe_loading |= slot.is_loading();
+        vibe_candidates.extend(slot.rows().iter().cloned());
+    }
+    let vibe_rows = super::vibe::rank(&profile, vibe_candidates);
+    let lexical_rows = lexical.rows();
+    let mut seen = std::collections::HashSet::new();
+    let mut rows = Vec::new();
+    for lane in text_mix_plan(lexical_rows.len(), vibe_rows.len().min(8)) {
+        let track = match lane {
+            TextLane::Lexical(index) => lexical_rows.get(index),
+            TextLane::Vibe(index) => vibe_rows.get(index),
+        };
+        if let Some(track) = track
+            && seen.insert(track.id)
+        {
+            rows.push(track.clone());
+        }
+    }
+
+    search_entity_strip(app, ui, playlists.rows(), users.rows());
+    if !playlists.rows().is_empty() || !users.rows().is_empty() {
         ui.add_space(Metrics::SP_3);
     }
-}
-
-fn found_count(count: usize, one: &str, many: &str) -> String {
-    let noun = if count == 1 { one } else { many };
-    let plus = if count >= 20 { "+" } else { "" };
-    format!("{count}{plus} {noun}")
-}
-
-fn search_person(app: &mut App, ui: &mut egui::Ui, user: &crate::api::models::User, size: f32) {
-    ui.horizontal(|ui| {
-        let avatar = user.avatar_url.as_deref().filter(|url| !url.is_empty());
-        let clicked = match avatar {
-            Some(url) => round_avatar(ui, url, &user.username, size).clicked(),
-            None => avatar_circle(ui, &user.username, size).clicked(),
-        };
-        if clicked {
-            app.navigate(Route::UserDetail(user.id));
+    if rows.is_empty() {
+        if lexical.is_loading() || vibe_loading {
+            search_status(app, ui, "Searching tracks…", None);
+        } else if let Some(error) = lexical.error() {
+            search_status(app, ui, "Text search failed.", Some(error));
+        } else {
+            search_status(app, ui, "No results.", None);
         }
-        ui.add_space(Metrics::SP_2);
-        ui.vertical(|ui| {
-            ui.add_space(size * 0.36);
-            if ui
-                .add(
-                    egui::Label::new(Type::H4.rich(&user.username, app.theme.text))
-                        .sense(egui::Sense::click()),
-                )
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .clicked()
-            {
-                app.navigate(Route::UserDetail(user.id));
-            }
-            stat(
-                app,
-                ui,
-                super::icons::Icon::Users,
-                Some(user.followers_count),
-            );
-        });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            widgets::follow_button(app, ui, user.id, &user.username);
-        });
-    });
-}
-
-fn search_set(app: &mut App, ui: &mut egui::Ui, set: &crate::api::models::Playlist) {
-    let queue = if set.tracks.is_empty() {
-        playlist_tracks(app, set.id)
-    } else {
-        set.tracks.clone()
-    };
-    let liked = app
-        .playlists(Key::LikedPlaylists)
-        .rows()
-        .iter()
-        .any(|playlist| playlist.id == set.id);
-    let reposted = app
-        .playlists(Key::MyRepostedPlaylists)
-        .rows()
-        .iter()
-        .any(|playlist| playlist.id == set.id);
-    ui.horizontal(|ui| {
-        if widgets::artwork_img(ui, set.artwork_url(), set.id, &set.title, 160.0, 4.0).clicked() {
-            app.navigate(Route::PlaylistDetail(set.id));
-        }
-        ui.add_space(Metrics::SP_2);
-        ui.vertical(|ui| {
-            ui.set_min_width(280.0);
-            ui.horizontal(|ui| {
-                if round_play_button(app, ui, 44.0) && !queue.is_empty() {
-                    app.play_user_queue(queue.clone(), 0, false);
-                }
-                ui.vertical(|ui| {
-                    let artist = set
-                        .user
-                        .as_ref()
-                        .map(|user| user.username.as_str())
-                        .unwrap_or("Unknown creator");
-                    ui.label(Type::CAPTION.rich(artist, app.theme.text_dim));
-                    let kind = if set.is_album() { "Album" } else { "Playlist" };
-                    if ui
-                        .add(
-                            egui::Label::new(
-                                Type::H4.rich(&format!("{}  {kind}", set.title), app.theme.text),
-                            )
-                            .sense(egui::Sense::click())
-                            .truncate(),
-                        )
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .clicked()
-                    {
-                        app.navigate(Route::PlaylistDetail(set.id));
-                    }
-                });
-                if let Some(stamp) = search_stamp(set.created_at.as_deref()) {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                        ui.label(Type::CAPTION.rich(&stamp, app.theme.text_dim));
-                    });
-                }
-            });
-
-            let first = queue.first();
-            let duration = first
-                .map(Track::effective_duration_ms)
-                .filter(|duration| *duration > 0)
-                .or(set.duration_ms)
-                .unwrap_or(0);
-            let peaks = first
-                .and_then(|track| track.waveform_url.as_deref())
-                .and_then(|url| app.waveforms.get(ui.ctx(), url));
-            if widgets::waveform(
-                app,
-                ui,
-                set.id ^ 0x51_45_54,
-                0,
-                duration,
-                72.0,
-                110,
-                peaks.as_deref(),
-            )
-            .is_some()
-                && !queue.is_empty()
-            {
-                app.play_user_queue(queue.clone(), 0, false);
-            }
-
-            for (index, track) in queue.iter().take(5).enumerate() {
-                let row = ui.horizontal(|ui| {
-                    widgets::artwork_img(
-                        ui,
-                        track.artwork_url(),
-                        track.id,
-                        &track.title,
-                        32.0,
-                        0.0,
-                    );
-                    ui.label(Type::H4.rich(&format!("{}  ·", index + 1), app.theme.text_dim));
-                    ui.add(
-                        egui::Label::new(Type::H4.rich(&track.title, app.theme.text)).truncate(),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(Type::CAPTION.rich(
-                            &crate::util::play_count(track.playback_count.unwrap_or(0)),
-                            app.theme.text_dim,
-                        ));
-                        super::icons::show_static(
-                            ui,
-                            super::icons::Icon::Play,
-                            10.0,
-                            app.theme.text_dim,
-                        );
-                    });
-                });
-                if row.response.interact(egui::Sense::click()).clicked() {
-                    app.play_user_queue(queue.clone(), index, false);
-                }
-            }
-            let count = set.track_count.unwrap_or(queue.len() as u64);
-            ui.label(Type::H4.rich(&format!("View {count} tracks"), app.theme.text));
-            ui.horizontal(|ui| {
-                if action_button(
-                    app,
-                    ui,
-                    super::icons::Icon::Heart,
-                    "",
-                    liked,
-                    if liked { "Unlike" } else { "Like" },
-                ) {
-                    app.set_playlist_liked(set.id, !liked);
-                }
-                if action_button(
-                    app,
-                    ui,
-                    super::icons::Icon::Repeat,
-                    "",
-                    reposted,
-                    if reposted { "Unrepost" } else { "Repost" },
-                ) {
-                    app.set_playlist_reposted(set.id, !reposted);
-                }
-                if action_button(app, ui, super::icons::Icon::External, "", false, "Share") {
-                    app.toast("Link copied");
-                }
-                if action_button(app, ui, super::icons::Icon::Copy, "", false, "Copy link") {
-                    app.toast("Link copied");
-                }
-            });
-        });
-    });
-}
-
-fn search_stamp(created_at: Option<&str>) -> Option<String> {
-    let value = created_at?.trim();
-    if let Ok(at) = chrono::DateTime::parse_from_rfc3339(value) {
-        let now = chrono::Utc::now().timestamp().max(0) as u64;
-        return Some(super::fmt_relative(now, at.timestamp().max(0) as u64));
+        return;
     }
-    value.get(0..4).map(|year| year.to_owned())
+    search_results(app, ui, &rows);
+}
+
+fn vibe_search(app: &mut App, ui: &mut egui::Ui, query: &str) {
+    let profile = super::vibe::profile(query);
+    let mut candidates = Vec::new();
+    let mut loading = false;
+    let mut first_error = None;
+    for genre in &profile.genres {
+        let slot = app.tracks(Key::Genre(genre.clone()));
+        loading |= slot.is_loading();
+        if first_error.is_none() {
+            first_error = slot.error().map(str::to_owned);
+        }
+        candidates.extend(slot.rows().iter().cloned());
+    }
+    let mut rows = super::vibe::rank(&profile, candidates);
+
+    // Fastcloud has no Qdrant endpoint. Keep the donor's Vibe-only surface,
+    // but use lexical SoundCloud results as a graceful fallback for unknown
+    // descriptions rather than showing a dead page.
+    if rows.is_empty() && !loading {
+        let fallback = app.tracks(Key::SearchTracks(query.to_owned()));
+        loading |= fallback.is_loading();
+        if first_error.is_none() {
+            first_error = fallback.error().map(str::to_owned);
+        }
+        rows.extend(fallback.rows().iter().cloned());
+    }
+
+    if rows.is_empty() {
+        search_status(
+            app,
+            ui,
+            if loading {
+                "Finding that vibe…"
+            } else {
+                "No tracks matched this vibe."
+            },
+            first_error.as_deref(),
+        );
+        return;
+    }
+    search_results(app, ui, &rows);
+}
+
+fn soundcloud_search(app: &mut App, ui: &mut egui::Ui, query: &str) {
+    let tracks = app.tracks(Key::SearchTracks(query.to_owned()));
+    let playlists = app.playlists(Key::SearchPlaylists(query.to_owned()));
+    let users = app.users(Key::SearchUsers(query.to_owned()));
+
+    search_entity_strip(app, ui, playlists.rows(), users.rows());
+    if !playlists.rows().is_empty() || !users.rows().is_empty() {
+        ui.add_space(Metrics::SP_3);
+    }
+    if tracks.rows().is_empty() {
+        if tracks.is_loading() || playlists.is_loading() || users.is_loading() {
+            search_status(app, ui, "Searching SoundCloud…", None);
+        } else if let Some(error) = tracks
+            .error()
+            .or_else(|| playlists.error())
+            .or_else(|| users.error())
+        {
+            search_status(app, ui, "SoundCloud search failed.", Some(error));
+        } else {
+            search_status(app, ui, "No results.", None);
+        }
+        return;
+    }
+    search_results(app, ui, tracks.rows());
+}
+
+fn search_entity_strip(
+    app: &mut App,
+    ui: &mut egui::Ui,
+    playlists: &[crate::api::models::Playlist],
+    users: &[crate::api::models::User],
+) {
+    if playlists.is_empty() && users.is_empty() {
+        return;
+    }
+    egui::ScrollArea::horizontal()
+        .id_salt("search-entities")
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = Metrics::SP_1;
+                for user in users.iter().take(6) {
+                    let response = search_entity_card(
+                        app,
+                        ui,
+                        user.avatar_url.as_deref(),
+                        user.id,
+                        &user.username,
+                        "Artist",
+                        true,
+                    );
+                    if response.clicked() {
+                        app.navigate(Route::UserDetail(user.id));
+                    }
+                }
+                for playlist in playlists.iter().take(6) {
+                    let kind = if playlist.is_album() {
+                        "Album"
+                    } else {
+                        "Playlist"
+                    };
+                    let response = search_entity_card(
+                        app,
+                        ui,
+                        playlist.artwork_url(),
+                        playlist.id,
+                        &playlist.title,
+                        kind,
+                        false,
+                    );
+                    if response.clicked() {
+                        app.navigate(Route::PlaylistDetail(playlist.id));
+                    }
+                }
+            });
+        });
+}
+
+fn search_entity_card(
+    app: &mut App,
+    ui: &mut egui::Ui,
+    image: Option<&str>,
+    id: u64,
+    title: &str,
+    kind: &str,
+    round: bool,
+) -> egui::Response {
+    egui::Frame::new()
+        .fill(app.theme.surface.gamma_multiply(0.9))
+        .stroke(egui::Stroke::new(1.0, app.theme.separator))
+        .corner_radius(Metrics::RADIUS_LG)
+        .inner_margin(egui::Margin::same(Metrics::SP_1 as i8))
+        .show(ui, |ui| {
+            ui.set_width(176.0);
+            ui.horizontal(|ui| {
+                let art = widgets::artwork_img(
+                    ui,
+                    image,
+                    id,
+                    title,
+                    46.0,
+                    if round { 23.0 } else { Metrics::RADIUS as f32 },
+                );
+                ui.vertical(|ui| {
+                    ui.add(egui::Label::new(Type::H5.rich(title, app.theme.text)).truncate());
+                    ui.label(Type::CAPTION.rich(kind, app.theme.text_dim));
+                });
+                art
+            })
+            .response
+        })
+        .response
+        .interact(egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+fn search_status(app: &App, ui: &mut egui::Ui, message: &str, detail: Option<&str>) {
+    egui::Frame::new()
+        .fill(app.theme.surface.gamma_multiply(0.82))
+        .stroke(egui::Stroke::new(1.0, app.theme.separator))
+        .corner_radius(Metrics::RADIUS_LG)
+        .inner_margin(egui::Margin::same(Metrics::SP_3 as i8))
+        .show(ui, |ui| {
+            ui.label(Type::BODY.rich(message, app.theme.text));
+            if let Some(detail) = detail {
+                ui.label(Type::CAPTION.rich(detail, app.theme.text_dim));
+            }
+        });
+}
+#[derive(Default)]
+struct SearchKeyboardAction {
+    moved: bool,
+    activate: bool,
+}
+
+fn search_keyboard_action(
+    app: &mut App,
+    ui: &mut egui::Ui,
+    result_count: usize,
+) -> SearchKeyboardAction {
+    if result_count == 0 || ui.ctx().egui_wants_keyboard_input() {
+        return SearchKeyboardAction::default();
+    }
+
+    let (direction, activate) = ui.input_mut(|input| {
+        let direction = if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
+            || input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight)
+        {
+            Some(SearchMove::Next)
+        } else if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
+            || input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft)
+        {
+            Some(SearchMove::Previous)
+        } else {
+            None
+        };
+        let activate =
+            direction.is_none() && input.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+        (direction, activate)
+    });
+
+    if let Some(direction) = direction {
+        app.search_selection = next_search_selection(app.search_selection, result_count, direction);
+    }
+    SearchKeyboardAction {
+        moved: direction.is_some(),
+        activate,
+    }
+}
+
+fn search_results(app: &mut App, ui: &mut egui::Ui, rows: &[Track]) {
+    let rows = &rows[..rows.len().min(48)];
+    let Some(top) = rows.first() else {
+        return;
+    };
+
+    app.search_selection = app.search_selection.min(rows.len() - 1);
+    let keyboard = search_keyboard_action(app, ui, rows.len());
+    if keyboard.activate {
+        app.play_user_queue(rows.to_vec(), app.search_selection, false);
+    }
+
+    ui.label(Type::H3.rich("Top result", app.theme.text));
+    ui.add_space(Metrics::SP_1);
+    search_top_result(
+        app,
+        ui,
+        top,
+        rows,
+        app.search_selection == 0,
+        keyboard.moved,
+    );
+
+    if rows.len() > 1 {
+        ui.add_space(Metrics::SP_3);
+        ui.label(Type::H3.rich("More results", app.theme.text));
+        ui.add_space(Metrics::SP_1);
+        vibe_wall(app, ui, rows, 1, keyboard.moved);
+    }
+}
+
+fn search_top_result(
+    app: &mut App,
+    ui: &mut egui::Ui,
+    track: &Track,
+    queue: &[Track],
+    selected: bool,
+    reveal_selection: bool,
+) {
+    let mut play = false;
+    let mut open = false;
+    let response = Surface::glass()
+        .show(ui, app.theme, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let show_signal = ui.available_width() >= 800.0;
+                let art_size = if ui.available_width() >= 620.0 {
+                    116.0
+                } else {
+                    88.0
+                };
+                if widgets::artwork_img(
+                    ui,
+                    track.artwork_url(),
+                    track.id,
+                    &track.title,
+                    art_size,
+                    Metrics::RADIUS_LG as f32,
+                )
+                .clicked()
+                {
+                    open = true;
+                }
+                ui.add_space(Metrics::SP_2);
+                ui.vertical(|ui| {
+                    if show_signal {
+                        ui.set_width(ui.available_width().min(480.0));
+                    }
+                    ui.label(Type::MICRO.rich("TOP RESULT", app.theme.accent));
+                    ui.add(
+                        egui::Label::new(Type::H2.rich(&track.title, app.theme.text)).truncate(),
+                    );
+                    ui.label(Type::BODY.rich(track.artist(), app.theme.text_dim));
+                    if let Some(genre) = track.genre.as_deref() {
+                        let genre = format!("# {genre}");
+                        ui.label(Type::CAPTION.rich(&genre, app.theme.text_dim));
+                    }
+                    ui.add_space(Metrics::SP_1);
+                    ui.horizontal(|ui| {
+                        play =
+                            airwave::action_button(ui, app.theme, ButtonVariant::Primary, "Play")
+                                .clicked();
+                        open =
+                            airwave::action_button(ui, app.theme, ButtonVariant::Secondary, "Open")
+                                .clicked()
+                                || open;
+                    });
+                });
+                if show_signal {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        paint_search_signal_preview(app, ui, track);
+                    });
+                }
+            });
+        })
+        .response;
+
+    if selected && reveal_selection {
+        paint_search_selection(ui, response.rect, app.theme);
+        response.scroll_to_me(Some(egui::Align::Center));
+    }
+    if play {
+        app.search_selection = 0;
+        app.play_user_queue(queue.to_vec(), 0, false);
+    }
+    if open {
+        app.search_selection = 0;
+        app.navigate(Route::TrackDetail(track.id));
+    }
+}
+
+fn paint_search_signal_preview(app: &App, ui: &mut egui::Ui, track: &Track) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(176.0, 108.0), egui::Sense::hover());
+    airwave::paint_glass_rect(
+        ui,
+        rect,
+        Metrics::RADIUS_INPUT,
+        app.theme,
+        false,
+        Some(app.theme.accent),
+    );
+    ui.painter().text(
+        egui::pos2(rect.left() + 12.0, rect.top() + 12.0),
+        egui::Align2::LEFT_TOP,
+        "PREVIEW SIGNAL",
+        Type::MICRO.font(),
+        app.theme.text_dim,
+    );
+    let bars = widgets::wave_bars(track.id, 30);
+    let baseline = rect.center().y + 5.0;
+    let bar_width = 3.0;
+    let gap = 2.0;
+    for (index, amplitude) in bars.into_iter().enumerate() {
+        let height = 31.0 * amplitude.max(0.14);
+        let bar = egui::Rect::from_min_size(
+            egui::pos2(
+                rect.left() + 12.0 + index as f32 * (bar_width + gap),
+                baseline - height,
+            ),
+            egui::vec2(bar_width, height * 1.35),
+        );
+        ui.painter()
+            .rect_filled(bar, bar_width * 0.5, app.theme.accent.gamma_multiply(0.85));
+    }
+    ui.painter().text(
+        egui::pos2(rect.right() - 12.0, rect.bottom() - 12.0),
+        egui::Align2::RIGHT_BOTTOM,
+        crate::util::fmt_duration_ms(track.effective_duration_ms()),
+        Type::CAPTION.font(),
+        app.theme.text_dim,
+    );
+}
+
+fn paint_search_selection(ui: &egui::Ui, rect: egui::Rect, theme: super::theme::Theme) {
+    ui.painter().rect_stroke(
+        rect.shrink(1.0),
+        Metrics::RADIUS_LG,
+        egui::Stroke::new(1.5, theme.tokens.accent.gamma_multiply(0.72)),
+        egui::StrokeKind::Inside,
+    );
+}
+
+/// Cover-first result wall with stable cells and metadata painted on the art.
+fn vibe_wall(
+    app: &mut App,
+    ui: &mut egui::Ui,
+    rows: &[Track],
+    start_index: usize,
+    reveal_selection: bool,
+) {
+    const GAP: f32 = 12.0;
+    let available = ui.available_width().max(1.0);
+    let target = if available >= 1_050.0 { 198.0 } else { 172.0 };
+    let columns = (((available + GAP) / (target + GAP)).floor() as usize).clamp(2, 6);
+    let edge =
+        ((available - GAP * columns.saturating_sub(1) as f32) / columns as f32).clamp(112.0, 224.0);
+    let queue = rows;
+    let wall = &queue[start_index.min(queue.len())..];
+    let mut play_index = None;
+
+    for (row_index, chunk) in wall.chunks(columns).enumerate() {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = GAP;
+            for (column, track) in chunk.iter().enumerate() {
+                let index = start_index + row_index * columns + column;
+                let response = widgets::artwork_img(
+                    ui,
+                    track.artwork_url(),
+                    track.id,
+                    &track.title,
+                    edge,
+                    Metrics::RADIUS_LG as f32,
+                );
+                let overlay = egui::Rect::from_min_max(
+                    egui::pos2(response.rect.left(), response.rect.bottom() - edge * 0.32),
+                    response.rect.max,
+                );
+                ui.painter().rect_filled(
+                    overlay,
+                    egui::CornerRadius {
+                        nw: 0,
+                        ne: 0,
+                        sw: Metrics::RADIUS_LG,
+                        se: Metrics::RADIUS_LG,
+                    },
+                    egui::Color32::from_black_alpha(184),
+                );
+                let text_left = overlay.left() + Metrics::SP_1;
+                ui.painter().text(
+                    egui::pos2(text_left, overlay.top() + Metrics::SP_075),
+                    egui::Align2::LEFT_TOP,
+                    truncate(&track.title, (edge / 8.0).max(12.0) as usize),
+                    Type::H5.font(),
+                    egui::Color32::WHITE,
+                );
+                ui.painter().text(
+                    egui::pos2(text_left, overlay.bottom() - Metrics::SP_075),
+                    egui::Align2::LEFT_BOTTOM,
+                    truncate(track.artist(), (edge / 9.0).max(10.0) as usize),
+                    Type::CAPTION.font(),
+                    egui::Color32::from_white_alpha(190),
+                );
+                let selected = index == app.search_selection;
+                if response.hovered() || selected {
+                    paint_search_selection(ui, response.rect, app.theme);
+                }
+                if selected && reveal_selection {
+                    response.scroll_to_me(Some(egui::Align::Center));
+                }
+                if response.clicked() {
+                    app.search_selection = index;
+                    play_index = Some(index);
+                }
+                if response.double_clicked() {
+                    app.navigate(Route::TrackDetail(track.id));
+                }
+            }
+        });
+        ui.add_space(GAP);
+    }
+
+    if let Some(index) = play_index {
+        app.play_user_queue(queue.to_vec(), index, false);
+    }
 }
 
 fn recent(app: &mut App, ui: &mut egui::Ui) {
@@ -3112,8 +4966,20 @@ fn recent(app: &mut App, ui: &mut egui::Ui) {
 }
 
 fn history_tab(app: &mut App, ui: &mut egui::Ui) {
+    library_tab_intro(
+        app,
+        ui,
+        super::icons::Icon::Clock,
+        app.settings
+            .language
+            .text("Listening history", "История прослушивания"),
+        app.settings.language.text(
+            "Return to recent discoveries without rebuilding the queue from memory.",
+            "Возвращайся к недавним находкам без поиска по памяти.",
+        ),
+    );
     ui.horizontal(|ui| {
-        ui.label(Type::H4.rich("Recently played:", app.theme.text));
+        ui.label(Type::MICRO.rich("RECENTLY PLAYED", app.theme.text_dim));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut app.filter)
@@ -3163,18 +5029,277 @@ fn history_tab(app: &mut App, ui: &mut egui::Ui) {
     }
 }
 
-fn settings(app: &mut App, ui: &mut egui::Ui) {
-    page_title(app, ui, "Settings", None);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum SettingsSection {
+    Appearance,
+    Playback,
+    Audio,
+    Cache,
+    Integrations,
+    Shortcuts,
+    Account,
+    About,
+}
 
-    account_section(app, ui);
+impl SettingsSection {
+    const ALL: [Self; 8] = [
+        Self::Account,
+        Self::Appearance,
+        Self::Playback,
+        Self::Audio,
+        Self::Cache,
+        Self::Integrations,
+        Self::Shortcuts,
+        Self::About,
+    ];
+
+    fn label(self, language: crate::config::Language) -> &'static str {
+        match self {
+            Self::Account => language.text("Account", "Аккаунт"),
+            Self::Appearance => language.text("Appearance", "Оформление"),
+            Self::Playback => language.text("Playback", "Воспроизведение"),
+            Self::Audio => language.text("Audio & Equalizer", "Звук и эквалайзер"),
+            Self::Cache => language.text("Cache & Memory", "Кэш и память"),
+            Self::Integrations => language.text("Integrations", "Интеграции"),
+            Self::Shortcuts => language.text("Shortcuts", "Горячие клавиши"),
+            Self::About => language.text("About", "О приложении"),
+        }
+    }
+
+    fn icon(self) -> super::icons::Icon {
+        match self {
+            Self::Appearance => super::icons::Icon::Sparkles,
+            Self::Playback => super::icons::Icon::CirclePlay,
+            Self::Audio => super::icons::Icon::AudioLines,
+            Self::Cache => super::icons::Icon::Disc,
+            Self::Integrations => super::icons::Icon::External,
+            Self::Shortcuts => super::icons::Icon::List,
+            Self::Account => super::icons::Icon::User,
+            Self::About => super::icons::Icon::Info,
+        }
+    }
+}
+
+fn settings_navigation(app: &App, ui: &mut egui::Ui) -> SettingsSection {
+    let active_id = egui::Id::new("settings-active-section");
+    let active = ui
+        .data_mut(|data| data.get_temp::<SettingsSection>(active_id))
+        .unwrap_or(SettingsSection::Account);
+    ui.set_width(232.0);
+    let rail_height = ui.available_height();
+    if app.settings.background_image.is_some() {
+        Surface::clear()
+    } else {
+        Surface::glass()
+    }
+    .padding(Metrics::SP_15 as i8)
+    .show(ui, app.theme, |ui| {
+        ui.set_min_height((rail_height - Metrics::SP_15 * 2.0).max(0.0));
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(34.0), egui::Sense::hover());
+            ui.painter()
+                .rect_filled(rect, Metrics::RADIUS_INPUT, app.theme.tokens.accent_soft);
+            super::icons::paint(
+                ui,
+                super::icons::Icon::Settings,
+                rect,
+                17.0,
+                app.theme.accent,
+            );
+            ui.vertical(|ui| {
+                ui.label(Type::MICRO.rich(
+                    app.settings.language.text("SETTINGS", "НАСТРОЙКИ"),
+                    app.theme.accent,
+                ));
+                ui.label(Type::CAPTION.rich("Fastcloud", app.theme.text_dim));
+            });
+        });
+        ui.add_space(Metrics::SP_1);
+        for section in SettingsSection::ALL {
+            let label = section.label(app.settings.language);
+            let selected = section == active;
+            let (rect, response) = ui
+                .allocate_exact_size(egui::vec2(ui.available_width(), 46.0), egui::Sense::click());
+            if ui.is_rect_visible(rect) {
+                if selected || response.hovered() {
+                    airwave::paint_glass_rect(
+                        ui,
+                        rect,
+                        Metrics::RADIUS_INPUT,
+                        app.theme,
+                        selected,
+                        selected.then_some(app.theme.accent),
+                    );
+                }
+                if selected {
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_size(
+                            rect.left_center() - egui::vec2(0.0, 10.0),
+                            egui::vec2(3.0, 20.0),
+                        ),
+                        Metrics::RADIUS_PILL,
+                        app.theme.accent,
+                    );
+                }
+                let icon_rect = egui::Rect::from_center_size(
+                    egui::pos2(rect.left() + 24.0, rect.center().y),
+                    egui::Vec2::splat(18.0),
+                );
+                super::icons::paint(
+                    ui,
+                    section.icon(),
+                    icon_rect,
+                    17.0,
+                    if selected {
+                        app.theme.accent
+                    } else {
+                        app.theme.text_dim
+                    },
+                );
+                ui.painter().text(
+                    egui::pos2(rect.left() + 43.0, rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    label,
+                    Type::CAPTION.font(),
+                    if selected {
+                        app.theme.text
+                    } else {
+                        app.theme.text_dim
+                    },
+                );
+            }
+            if response
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
+                ui.data_mut(|data| data.insert_temp(active_id, section));
+            }
+            ui.add_space(2.0);
+        }
+    });
+    ui.data(|data| data.get_temp::<SettingsSection>(active_id))
+        .unwrap_or(SettingsSection::Account)
+}
+
+fn settings_content_frame<R>(
+    app: &mut App,
+    ui: &mut egui::Ui,
+    section: SettingsSection,
+    content: impl FnOnce(&mut App, &mut egui::Ui) -> R,
+) -> R {
+    let mut scroll = egui::ScrollArea::vertical()
+        .id_salt(("settings-content", section))
+        .wheel_scroll_multiplier(egui::vec2(1.0, 1.85))
+        .auto_shrink([false, false])
+        .max_height(ui.available_height());
+    if let Some(offset) = app.screenshot_scroll_offset.take() {
+        scroll = scroll.vertical_scroll_offset(offset);
+    }
+    scroll
+        .show(ui, |ui| ui.vertical(|ui| content(app, ui)).inner)
+        .inner
+}
+
+fn settings_section_rule(app: &App, ui: &mut egui::Ui, label: &str) {
+    ui.horizontal(|ui| {
+        ui.label(Type::MICRO.rich(label, app.theme.accent));
+        let rect = ui.available_rect_before_wrap();
+        ui.painter().hline(
+            rect.x_range(),
+            rect.center().y,
+            egui::Stroke::new(1.0, app.theme.separator),
+        );
+        ui.allocate_space(egui::vec2(rect.width(), 1.0));
+    });
+    ui.add_space(Metrics::SP_HALF);
+}
+
+fn settings_section_card<R>(
+    app: &mut App,
+    ui: &mut egui::Ui,
+    label: &str,
+    content: impl FnOnce(&mut App, &mut egui::Ui) -> R,
+) -> R {
+    let surface = if app.settings.background_image.is_some() {
+        Surface::clear()
+    } else {
+        Surface::glass()
+    };
+    surface
+        .padding(Metrics::SP_3 as i8)
+        .show(ui, app.theme, |ui| {
+            settings_section_rule(app, ui, label);
+            content(app, ui)
+        })
+        .inner
+}
+
+fn settings(app: &mut App, ui: &mut egui::Ui) {
+    ui.horizontal_top(|ui| {
+        let active = ui.vertical(|ui| settings_navigation(app, ui)).inner;
+        ui.add_space(Metrics::SP_2);
+        let section_label = active.label(app.settings.language);
+        let language = app.settings.language;
+        settings_content_frame(app, ui, active, |app, ui| {
+            ui.set_min_width((ui.available_width() - Metrics::SP_1).max(360.0));
+
+    if active == SettingsSection::Account {
+    settings_section_card(app, ui, section_label, |app, ui| {
+        account_section(app, ui);
+    });
+    }
+
+    if active == SettingsSection::Appearance {
+    settings_section_card(app, ui, section_label, |app, ui| {
+    let language = app.settings.language;
+    ui.label(Type::H4.rich(language.text("Startup", "Запуск"), app.theme.text));
+    ui.label(Type::CAPTION.rich(
+        language.text("Choose the page Fastcloud opens after launch.", "Выберите страницу, которая откроется при запуске Fastcloud."),
+        app.theme.text_dim,
+    ));
+    let previous_startup = app.settings.startup_page;
+    egui::ComboBox::from_id_salt("startup-page")
+        .selected_text(match app.settings.startup_page {
+            crate::config::StartupPage::Home => language.text("Home", "Главная"),
+            crate::config::StartupPage::Search => language.text("Search", "Поиск"),
+            crate::config::StartupPage::Library => language.text("Library", "Библиотека"),
+            crate::config::StartupPage::Settings => language.text("Settings", "Настройки"),
+        })
+        .show_ui(ui, |ui| {
+            ui.selectable_value(
+                &mut app.settings.startup_page,
+                crate::config::StartupPage::Home,
+                language.text("Home", "Главная"),
+            );
+            ui.selectable_value(
+                &mut app.settings.startup_page,
+                crate::config::StartupPage::Search,
+                language.text("Search", "Поиск"),
+            );
+            ui.selectable_value(
+                &mut app.settings.startup_page,
+                crate::config::StartupPage::Library,
+                language.text("Library", "Библиотека"),
+            );
+            ui.selectable_value(
+                &mut app.settings.startup_page,
+                crate::config::StartupPage::Settings,
+                language.text("Settings", "Настройки"),
+            );
+        });
+    if app.settings.startup_page != previous_startup
+        && let Err(error) = app.settings.save()
+    {
+        app.toast(format!("Failed to save: {error}"));
+    }
 
     ui.add_space(Metrics::SP_2);
-    ui.label(Type::H4.rich("Theme", app.theme.text));
+    ui.label(Type::H4.rich(language.text("Theme", "Тема"), app.theme.text));
     ui.horizontal(|ui| {
         let modes = [
-            ("Dark", crate::config::ThemeMode::Dark),
-            ("Light", crate::config::ThemeMode::Light),
-            ("System", crate::config::ThemeMode::System),
+            (language.text("Dark", "Тёмная"), crate::config::ThemeMode::Dark),
+            (language.text("Light", "Светлая"), crate::config::ThemeMode::Light),
+            (language.text("System", "Системная"), crate::config::ThemeMode::System),
         ];
         for (name, mode) in modes {
             if ui.selectable_label(app.theme_mode == mode, name).clicked() {
@@ -3189,20 +5314,170 @@ fn settings(app: &mut App, ui: &mut egui::Ui) {
     });
 
     ui.add_space(Metrics::SP_2);
-    ui.label(Type::H4.rich("Appearance", app.theme.text));
+    ui.label(Type::H4.rich(language.text("Appearance", "Оформление"), app.theme.text));
+    ui.horizontal(|ui| {
+        ui.label(Type::CAPTION.rich(language.text("Accent", "Акцент"), app.theme.text_dim));
+        let mut rgb = app.settings.accent_rgb;
+        if ui.color_edit_button_srgb(&mut rgb).changed() {
+            app.settings.accent_rgb = rgb;
+            app.accent = egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+            app.theme =
+                crate::ui::theme::Theme::from_mode_ctx(app.theme_mode, app.accent, ui.ctx());
+            if let Err(error) = app.settings.save() {
+                app.toast(format!("Failed to save: {error}"));
+            }
+        }
+        if ui.button(language.text("Reset accent", "Сбросить цвет")).clicked() {
+            app.settings.accent_rgb = [0xFF, 0x55, 0x00];
+            app.accent = crate::ui::theme::ORANGE;
+            app.theme =
+                crate::ui::theme::Theme::from_mode_ctx(app.theme_mode, app.accent, ui.ctx());
+            if let Err(error) = app.settings.save() {
+                app.toast(format!("Failed to save: {error}"));
+            }
+        }
+    });
+    ui.add_space(Metrics::SP_075);
+    ui.label(Type::CAPTION.rich(language.text("Background image", "Фоновое изображение"), app.theme.text_dim));
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::TextEdit::singleline(&mut app.background_draft)
+                .hint_text("https://example.com/wallpaper.jpg")
+                .desired_width(430.0),
+        );
+        if ui.button(language.text("Apply URL", "Применить URL")).clicked() {
+            let candidate = app.background_draft.trim().to_owned();
+            let valid = url::Url::parse(&candidate)
+                .is_ok_and(|url| matches!(url.scheme(), "http" | "https" | "file"));
+            if candidate.is_empty() {
+                app.settings.background_image = None;
+            } else if valid {
+                app.settings.background_image = Some(candidate.clone());
+            } else {
+                app.toast("Use an http:// or https:// image URL");
+            }
+            if (candidate.is_empty() || valid)
+                && let Err(error) = app.settings.save()
+            {
+                app.toast(format!("Failed to save: {error}"));
+            }
+        }
+        if ui.button(language.text("Choose file…", "Выбрать файл…")).clicked()
+            && let Some(path) = rfd::FileDialog::new()
+                .set_title("Choose a Fastcloud background")
+                .add_filter("Image", &["png", "jpg", "jpeg", "webp"])
+                .pick_file()
+        {
+            match url::Url::from_file_path(path) {
+                Ok(uri) => {
+                    app.background_draft = uri.to_string();
+                    app.settings.background_image = Some(app.background_draft.clone());
+                    if let Err(error) = app.settings.save() {
+                        app.toast(format!("Failed to save: {error}"));
+                    }
+                }
+                Err(()) => app.toast("That image path cannot be opened"),
+            }
+        }
+        if app.settings.background_image.is_some() && ui.button(language.text("Clear", "Удалить")).clicked() {
+            app.settings.background_image = None;
+            app.background_draft.clear();
+            if let Err(error) = app.settings.save() {
+                app.toast(format!("Failed to save: {error}"));
+            }
+        }
+    });
+    if app.settings.background_image.is_some() {
+        ui.horizontal(|ui| {
+            ui.label(Type::CAPTION.rich(language.text("Edge darkening", "Затемнение краёв"), app.theme.text_dim));
+            let opacity = ui.add(
+                egui::Slider::new(&mut app.settings.background_opacity, 0.0..=0.7).show_value(true),
+            );
+            ui.label(Type::CAPTION.rich(language.text("Background darkening", "Затемнение фона"), app.theme.text_dim));
+            let dim = ui.add(
+                egui::Slider::new(&mut app.settings.background_dim, 0.0..=0.85).show_value(true),
+            );
+            ui.label(Type::CAPTION.rich(language.text("Blur", "Размытие"), app.theme.text_dim));
+            let blur = ui.add(
+                egui::Slider::new(&mut app.settings.background_blur, 0..=40)
+                    .suffix(" px")
+                    .show_value(true),
+            );
+            if (opacity.drag_stopped() || dim.drag_stopped() || blur.drag_stopped())
+                && let Err(error) = app.settings.save()
+            {
+                app.toast(format!("Failed to save: {error}"));
+            }
+        });
+    }
     if ui
-        .checkbox(&mut app.settings.compact_rows, "Compact track rows")
-        .on_hover_text("One line per track, no artwork")
+        .checkbox(&mut app.settings.compact_rows, language.text("Compact track rows", "Компактные строки треков"))
+        .on_hover_text(language.text("One line per track, no artwork", "Одна строка на трек, без обложек"))
         .changed()
         && let Err(e) = app.settings.save()
     {
         app.toast(format!("Failed to save: {e}"));
     }
+    if ui
+        .checkbox(&mut app.settings.reduced_motion, language.text("Reduce motion", "Меньше анимации"))
+        .on_hover_text(language.text("Stops optional continuous animation and lowers idle repaint activity", "Отключает необязательную анимацию и снижает нагрузку в простое"))
+        .changed()
+        && let Err(error) = app.settings.save()
+    {
+        app.toast(format!("Failed to save: {error}"));
+    }
     interface_font_row(app, ui);
+    });
+    }
 
-    ui.add_space(Metrics::SP_2);
-    ui.label(Type::H4.rich("Equalizer (10-band)", app.theme.text));
-    ui.checkbox(&mut app.settings.eq_enabled, "Enable EQ");
+    if active == SettingsSection::Cache {
+    settings_section_card(app, ui, section_label, |app, ui| {
+    ui.label(Type::H4.rich(language.text("Performance profile", "Профиль производительности"), app.theme.text));
+    ui.label(Type::CAPTION.rich(
+        language.text("Controls decoded artwork memory and the cover resolution requested from SoundCloud.", "Определяет расход памяти на обложки и качество загружаемых изображений."),
+        app.theme.text_dim,
+    ));
+    let previous_profile = app.settings.memory_profile;
+    ui.horizontal(|ui| {
+        for (label, profile, hint) in [
+            (
+                language.text("Eco", "Экономный"),
+                crate::config::MemoryProfile::Eco,
+                "24 MiB decoded, up to 32 covers; best for low-memory systems",
+            ),
+            (
+                language.text("Balanced", "Сбалансированный"),
+                crate::config::MemoryProfile::Balanced,
+                "32 MiB decoded, up to 48 covers",
+            ),
+            (
+                language.text("Quality", "Качество"),
+                crate::config::MemoryProfile::Quality,
+                "48 MiB decoded, up to 64 covers; sharper high-DPI cards",
+            ),
+        ] {
+            ui.selectable_value(&mut app.settings.memory_profile, profile, label)
+                .on_hover_text(hint);
+        }
+    });
+    if app.settings.memory_profile != previous_profile {
+        app.art.set_profile(app.settings.memory_profile);
+        app.art.install_context_budget(ui.ctx());
+        app.art.evict(ui.ctx());
+        if let Err(error) = app.settings.save() {
+            app.toast(format!("Failed to save: {error}"));
+        }
+    }
+    });
+    }
+
+    if active == SettingsSection::Audio {
+    settings_section_card(app, ui, section_label, |app, ui| {
+    ui.label(Type::H4.rich(language.text("Equalizer (10-band)", "Эквалайзер (10 полос)"), app.theme.text));
+    let mut eq_changed = ui
+        .checkbox(&mut app.settings.eq_enabled, language.text("Enable EQ", "Включить эквалайзер"))
+        .changed();
+    let mut eq_drag_stopped = false;
     let freqs = crate::audio::dsp::EQ_BAND_FREQS;
     ui.horizontal(|ui| {
         for (i, gain) in app.settings.eq_gains_db.iter_mut().enumerate() {
@@ -3210,51 +5485,86 @@ fn settings(app: &mut App, ui: &mut egui::Ui) {
                 ui.label(
                     egui::RichText::new(format!("{:.0}", freqs[i])).font(Type::CAPTION.font()),
                 );
-                ui.add(
+                let response = ui.add(
                     egui::Slider::new(gain, -12.0..=12.0)
                         .vertical()
                         .show_value(false),
                 );
+                eq_changed |= response.changed();
+                eq_drag_stopped |= response.drag_stopped();
                 ui.label(egui::RichText::new(format!("{gain:+.0}")).font(Type::CAPTION.font()));
             });
         }
     });
-    app.player
-        .set_eq(app.settings.eq_enabled, app.settings.eq_gains_db);
+    if eq_changed {
+        app.player
+            .set_eq(app.settings.eq_enabled, app.settings.eq_gains_db);
+    }
+    if (eq_drag_stopped || eq_changed && !ui.input(|input| input.pointer.primary_down()))
+        && let Err(error) = app.settings.save()
+    {
+        app.toast(format!("Failed to save: {error}"));
+    }
+    });
+    }
 
-    ui.add_space(Metrics::SP_2);
-    ui.label(Type::H4.rich("Winamp mini player", app.theme.text));
+    if active == SettingsSection::Playback {
+    settings_section_card(app, ui, section_label, |app, ui| {
+    ui.label(Type::H4.rich(language.text("Mini player", "Мини-плеер"), app.theme.text));
     ui.label(Type::CAPTION.rich(
-        "Ctrl+M opens a small player in a classic Winamp skin. \
-         Drop a .wsz file on either window to wear it. Its title bar rolls the \
-         window up to a single strip, sends it to the taskbar, or brings this \
-         interface back.",
+        language.text("Ctrl+M switches this window to a compact player. Airwave is the modern low-motion view; classic Winamp skins remain available.", "Ctrl+M переключает окно в компактный режим. Airwave — современный мини-плеер; классические скины Winamp тоже доступны."),
         app.theme.text_dim,
     ));
+    let previous_style = app.settings.mini_player_style;
+    ui.horizontal(|ui| {
+        ui.selectable_value(
+            &mut app.settings.mini_player_style,
+            crate::config::MiniPlayerStyle::Airwave,
+            "Airwave",
+        );
+        ui.selectable_value(
+            &mut app.settings.mini_player_style,
+            crate::config::MiniPlayerStyle::Winamp,
+            language.text("Winamp classic", "Классический Winamp"),
+        );
+    });
+    if app.settings.mini_player_style != previous_style {
+        if let Err(error) = app.settings.save() {
+            app.toast(format!("Failed to save: {error}"));
+        }
+        if app.mini_open() {
+            app.close_mini();
+            app.toggle_mini();
+        }
+    }
     ui.horizontal(|ui| {
         let open = app.mini_open();
         if ui
             .button(if open {
-                "Close mini player"
+                language.text("Close mini player", "Закрыть мини-плеер")
             } else {
-                "Open mini player"
+                language.text("Open mini player", "Открыть мини-плеер")
             })
             .clicked()
         {
             app.toggle_mini();
         }
-        ui.label(Type::CAPTION.rich("Scale", app.theme.text_dim));
+        if app.settings.mini_player_style == crate::config::MiniPlayerStyle::Winamp {
+            ui.label(Type::CAPTION.rich(language.text("Scale", "Масштаб"), app.theme.text_dim));
+        }
         // Whole pixels only: the classic look does not survive interpolation.
-        for scale in 1..=4u32 {
-            let current = app.settings.winamp_scale == scale;
-            if ui.selectable_label(current, format!("{scale}x")).clicked() && !current {
-                app.set_mini_scale(scale);
+        if app.settings.mini_player_style == crate::config::MiniPlayerStyle::Winamp {
+            for scale in 1..=4u32 {
+                let current = app.settings.winamp_scale == scale;
+                if ui.selectable_label(current, format!("{scale}x")).clicked() && !current {
+                    app.set_mini_scale(scale);
+                }
             }
         }
     });
     ui.horizontal(|ui| {
         if ui
-            .checkbox(&mut app.settings.winamp_on_top, "Always on top")
+            .checkbox(&mut app.settings.winamp_on_top, language.text("Always on top", "Поверх остальных окон"))
             .on_hover_text("Keep the mini player above other windows (the O lamp)")
             .changed()
         {
@@ -3265,99 +5575,242 @@ fn settings(app: &mut App, ui: &mut egui::Ui) {
                 app.toast(format!("Failed to save: {e}"));
             }
         }
-        let rolled = app.settings.winamp_shade;
-        if ui
-            .checkbox(&mut app.settings.winamp_shade, "Rolled up")
-            .on_hover_text("Windowshade: the title bar only, still playing")
-            .changed()
-        {
-            // Put it back and go through the one path that owns this, so the
-            // open window and the setting cannot disagree.
-            app.settings.winamp_shade = rolled;
-            app.toggle_shade(crate::ui::winamp::Window::Main);
-        }
-    });
-    ui.horizontal(|ui| {
-        // Winamp's other two windows, which dock under the main one.
-        for (window, label, hint) in [
-            (
-                crate::ui::winamp::Window::Equalizer,
-                "Equalizer",
-                "Ten bands, a preamp and the curve, in the skin",
-            ),
-            (
-                crate::ui::winamp::Window::Playlist,
-                "Playlist",
-                "The queue as Winamp's track list",
-            ),
-        ] {
-            let mut open = match window {
-                crate::ui::winamp::Window::Equalizer => app.settings.winamp_eq_window,
-                _ => app.settings.winamp_pl_window,
-            };
-            if ui.checkbox(&mut open, label).on_hover_text(hint).changed() {
-                app.toggle_skin_window_setting(window);
+        if app.settings.mini_player_style == crate::config::MiniPlayerStyle::Winamp {
+            let rolled = app.settings.winamp_shade;
+            if ui
+                .checkbox(&mut app.settings.winamp_shade, language.text("Rolled up", "Свернуть до заголовка"))
+                .on_hover_text("Windowshade: the title bar only, still playing")
+                .changed()
+            {
+                app.settings.winamp_shade = rolled;
+                app.toggle_shade(crate::ui::winamp::Window::Main);
             }
         }
     });
-    ui.horizontal(|ui| {
-        let name = app
-            .settings
-            .winamp_skin
-            .as_ref()
-            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-            .unwrap_or_else(|| {
-                // The window knows its own skin's name once it is open.
-                app.mini
-                    .as_ref()
-                    .map(|m| m.lock().skin_name().to_owned())
-                    .unwrap_or_else(|| "Fastcloud (built in)".to_owned())
-            });
-        ui.label(Type::CAPTION.rich(&format!("Skin: {name}"), app.theme.text_dim));
-        if app.settings.winamp_skin.is_some() && ui.button("Use built-in").clicked() {
-            app.use_stock_skin();
-        }
-        if ui
-            .button("Install skin…")
-            .on_hover_text("Choose a classic Winamp .wsz or .zip skin")
-            .clicked()
-            && let Some(path) = rfd::FileDialog::new()
-                .set_title("Install a mini-player skin")
-                .add_filter("Classic Winamp skin", &["wsz", "zip"])
-                .pick_file()
-        {
-            app.apply_skin_file(path);
-        }
-        if ui
-            .button("Browse skins online")
-            .on_hover_text("Winamp Skin Museum")
-            .clicked()
-        {
-            let _ = webbrowser::open("https://skins.webamp.org");
-        }
+    if app.settings.mini_player_style == crate::config::MiniPlayerStyle::Winamp {
+        ui.horizontal(|ui| {
+            // Winamp's other two windows, which dock under the main one.
+            for (window, label, hint) in [
+                (
+                    crate::ui::winamp::Window::Equalizer,
+                    language.text("Equalizer", "Эквалайзер"),
+                    "Ten bands, a preamp and the curve, in the skin",
+                ),
+                (
+                    crate::ui::winamp::Window::Playlist,
+                    language.text("Playlist", "Плейлист"),
+                    "The queue as Winamp's track list",
+                ),
+            ] {
+                let mut open = match window {
+                    crate::ui::winamp::Window::Equalizer => app.settings.winamp_eq_window,
+                    _ => app.settings.winamp_pl_window,
+                };
+                if ui.checkbox(&mut open, label).on_hover_text(hint).changed() {
+                    app.toggle_skin_window_setting(window);
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            let name = app
+                .settings
+                .winamp_skin
+                .as_ref()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .unwrap_or_else(|| {
+                    // The window knows its own skin's name once it is open.
+                    app.mini
+                        .as_ref()
+                        .map(|m| m.lock().skin_name().to_owned())
+                        .unwrap_or_else(|| "Fastcloud (built in)".to_owned())
+                });
+            ui.label(Type::CAPTION.rich(&format!("{}: {name}", language.text("Skin", "Скин")), app.theme.text_dim));
+            if app.settings.winamp_skin.is_some() && ui.button(language.text("Use built-in", "Встроенный скин")).clicked() {
+                app.use_stock_skin();
+            }
+            if ui
+                .button(language.text("Install skin…", "Установить скин…"))
+                .on_hover_text("Choose a classic Winamp .wsz or .zip skin")
+                .clicked()
+                && let Some(path) = rfd::FileDialog::new()
+                    .set_title("Install a mini-player skin")
+                    .add_filter("Classic Winamp skin", &["wsz", "zip"])
+                    .pick_file()
+            {
+                app.apply_skin_file(path);
+            }
+            if ui
+                .button(language.text("Browse skins online", "Найти скины в сети"))
+                .on_hover_text("Winamp Skin Museum")
+                .clicked()
+            {
+                let _ = webbrowser::open("https://skins.webamp.org");
+            }
+        });
+        ui.label(Type::CAPTION.rich(
+            language.text("Download a classic Winamp 2 skin (.wsz or .zip), then click Install skin…. You can also drag the file anywhere onto Fastcloud. The installed copy is kept by the app and restored on the next launch.", "Скачайте скин Winamp 2 (.wsz или .zip) и нажмите «Установить скин». Также файл можно перетащить в окно Fastcloud. Скин сохранится и загрузится при следующем запуске."),
+            app.theme.text_dim,
+        ));
+    }
+
     });
+    }
+
+    if active == SettingsSection::Integrations {
+    settings_section_card(app, ui, section_label, |app, ui| {
+    ui.label(Type::H4.rich(language.text("Integrations", "Интеграции"), app.theme.text));
     ui.label(Type::CAPTION.rich(
-        "Download a classic Winamp 2 skin (.wsz or .zip), then click Install skin…. You can also drag the file anywhere onto Fastcloud. The installed copy is kept by the app and restored on the next launch.",
+        language.text("Show the current track in your Discord profile. Create a Discord application and paste its application id below.", "Показывайте текущий трек в профиле Discord. Создайте приложение Discord и вставьте его ID ниже."),
         app.theme.text_dim,
     ));
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::TextEdit::singleline(&mut app.settings.discord_client_id)
+                .hint_text(language.text("Discord application id", "ID приложения Discord"))
+                .desired_width(260.0),
+        );
+        if ui.button(language.text("Save Discord id", "Сохранить ID Discord")).clicked() {
+            if let Err(error) = app.settings.save() {
+                app.toast(format!("Failed to save: {error}"));
+            } else if app.settings.discord_presence {
+                app.reload_discord_presence();
+                app.toast("Discord Rich Presence reconnected");
+            }
+        }
+        let mut enabled = app.settings.discord_presence;
+        if ui.checkbox(&mut enabled, "Rich Presence").changed() {
+            if enabled && app.settings.discord_client_id.trim().is_empty() {
+                app.toast("Paste a Discord application id first");
+            } else {
+                app.settings.discord_presence = enabled;
+                app.reload_discord_presence();
+                if let Err(error) = app.settings.save() {
+                    app.toast(format!("Failed to save: {error}"));
+                }
+            }
+        }
+    });
+    ui.collapsing(language.text("How to get the Discord application id", "Как получить ID приложения Discord"), |ui| {
+        ui.label(Type::CAPTION.rich(
+            "1. Open the Discord Developer Portal and choose New Application.\n2. Open General Information.\n3. Copy Application ID (not the bot token) and paste it above.\n4. Keep the Discord desktop app running.",
+            app.theme.text_dim,
+        ));
+        ui.hyperlink_to(
+            "Open Discord Developer Portal",
+            "https://discord.com/developers/applications",
+        );
+    });
+
+    ui.add_space(Metrics::SP_1);
+    ui.label(Type::BODY.rich(language.text("Import from Yandex Music", "Импорт из Яндекс Музыки"), app.theme.text));
+    ui.label(Type::CAPTION.rich(
+        language.text("Copies your liked tracks into a new SoundCloud playlist. Matching uses artist, title, and duration; the token is used once and is not saved.", "Копирует любимые треки в новый плейлист SoundCloud. Поиск совпадений идёт по исполнителю, названию и длительности; токен не сохраняется."),
+        app.theme.text_dim,
+    ));
+    ui.horizontal(|ui| {
+        ui.add_enabled(
+            !app.yandex_import.running,
+            egui::TextEdit::singleline(&mut app.yandex_token)
+                .password(true)
+                .hint_text("Yandex Music OAuth token")
+                .desired_width(300.0),
+        );
+        let can_start = !app.yandex_import.running && !app.yandex_token.trim().is_empty();
+        if ui
+            .add_enabled(can_start, egui::Button::new(language.text("Import likes", "Импортировать лайки")))
+            .clicked()
+        {
+            app.start_yandex_import();
+        }
+    });
+    ui.collapsing(language.text("How to get a Yandex OAuth token", "Как получить токен Яндекс OAuth"), |ui| {
+        ui.label(Type::CAPTION.rich(
+            "Register your own application in Yandex OAuth, request the Yandex Music permission if it is offered for your account, and set the verification-code redirect URI. Then use Yandex's manual-token flow and paste only the access_token value above. Fastcloud never saves it. Do not paste your password or use third-party token generators. Yandex Music has no stable public API, so this import may stop working when Yandex changes its private endpoints.",
+            app.theme.text_dim,
+        ));
+        ui.horizontal_wrapped(|ui| {
+            ui.hyperlink_to(
+                "Register a Yandex OAuth app",
+                "https://oauth.yandex.ru/client/new",
+            );
+            ui.hyperlink_to(
+                "Official manual-token instructions",
+                "https://yandex.com/dev/id/doc/ru/tokens/debug-token",
+            );
+        });
+    });
+    if app.yandex_import.running {
+        let progress = if app.yandex_import.total == 0 {
+            0.0
+        } else {
+            app.yandex_import.current as f32 / app.yandex_import.total as f32
+        };
+        ui.add(
+            egui::ProgressBar::new(progress)
+                .show_percentage()
+                .text(format!(
+                    "{} / {} / {} matched",
+                    app.yandex_import.current, app.yandex_import.total, app.yandex_import.matched
+                )),
+        );
+        ui.label(Type::CAPTION.rich(&app.yandex_import.current_track, app.theme.text_dim));
+    }
 
     ui.add_space(Metrics::SP_2);
-    ui.label(Type::H4.rich("Storage", app.theme.text));
+    ui.label(Type::H4.rich(language.text("Storage", "Хранилище"), app.theme.text));
     let art_mb = app.art.decoded_byte_size() as f64 / 1_048_576.0;
-    let budget_mb = crate::images::MAX_DECODED_BYTES as f64 / 1_048_576.0;
+    let budget_mb = app.art.budget().decoded_bytes as f64 / 1_048_576.0;
     ui.label(Type::CAPTION.rich(
-        &format!("Decoded artwork: {art_mb:.1} MiB of {budget_mb:.0} MiB budget"),
+        &format!("{}: {art_mb:.1} MiB / {budget_mb:.0} MiB", language.text("Decoded artwork", "Обложки в памяти")),
         app.theme.text_dim,
     ));
     if !app.demo {
         ui.label(Type::CAPTION.rich(
-            &format!("Cached lists: {}", app.store.len()),
+            &format!("{}: {}", language.text("Cached lists", "Списки в кэше"), app.store.len()),
             app.theme.text_dim,
         ));
     }
+    let audio_bytes = app.player.audio_cache_size();
+    ui.horizontal(|ui| {
+        ui.label(Type::CAPTION.rich(
+            &format!("{}: {}", language.text("Audio cache", "Аудиокэш"), crate::util::fmt_bytes(audio_bytes)),
+            app.theme.text_dim,
+        ));
+        egui::ComboBox::from_id_salt("audio-cache-limit")
+            .selected_text(if app.settings.audio_cache_limit_mb == 0 {
+                language.text("Disabled", "Отключён").to_owned()
+            } else {
+                format!("{} MiB", app.settings.audio_cache_limit_mb)
+            })
+            .show_ui(ui, |ui| {
+                for limit in [0, 256, 512, 1024, 2048, 4096, 8192] {
+                    let label = if limit == 0 {
+                        language.text("Disabled", "Отключён").to_owned()
+                    } else {
+                        format!("{limit} MiB")
+                    };
+                    if ui
+                        .selectable_value(&mut app.settings.audio_cache_limit_mb, limit, label)
+                        .changed()
+                    {
+                        app.player.set_audio_cache_limit_mb(limit);
+                        if let Err(error) = app.settings.save() {
+                            app.toast(format!("Failed to save: {error}"));
+                        }
+                    }
+                }
+            });
+        if ui.button(language.text("Clear audio cache", "Очистить аудиокэш")).clicked() {
+            let freed = app.player.clear_audio_cache();
+            app.toast(format!(
+                "Cleared audio cache ({} freed)",
+                crate::util::fmt_bytes(freed)
+            ));
+        }
+    });
     ui.horizontal(|ui| {
         if ui
-            .button("Clear artwork cache")
+            .button(language.text("Clear artwork cache", "Очистить кэш обложек"))
             .on_hover_text("Deletes downloaded covers; playing is not affected")
             .clicked()
         {
@@ -3369,7 +5822,7 @@ fn settings(app: &mut App, ui: &mut egui::Ui) {
         }
         if !app.demo
             && ui
-                .button("Refresh everything")
+                .button(language.text("Refresh everything", "Обновить все данные"))
                 .on_hover_text("Forget every cached list and ask SoundCloud again")
                 .clicked()
         {
@@ -3377,28 +5830,37 @@ fn settings(app: &mut App, ui: &mut egui::Ui) {
             app.toast("Reloading from SoundCloud");
         }
     });
-
-    ui.add_space(Metrics::SP_2);
-    if ui.button("Keyboard shortcuts (F1)").clicked() {
-        app.show_shortcuts = true;
+    });
     }
 
-    ui.add_space(Metrics::SP_15);
-    ui.separator();
+    if active == SettingsSection::Shortcuts {
+    settings_section_card(app, ui, section_label, |app, ui| {
+        if ui.button(language.text("Keyboard shortcuts (F1)", "Горячие клавиши (F1)")).clicked() {
+            app.show_shortcuts = true;
+        }
+    });
+    }
+
+    if active == SettingsSection::About {
+    settings_section_card(app, ui, section_label, |app, ui| {
     ui.label(Type::CAPTION.rich(
         &format!(
             "Fastcloud {} · {}",
             app.version_build,
             if app.demo {
-                "demo library"
+                language.text("demo library", "демо-библиотека")
             } else if app.signed_in() {
-                "signed in"
+                language.text("signed in", "вход выполнен")
             } else {
-                "connection required"
+                language.text("connection required", "нужно подключение")
             }
         ),
         app.theme.text_dim,
     ));
+    });
+    }
+        });
+    });
 }
 
 /// The interface font row.
@@ -3408,6 +5870,7 @@ fn settings(app: &mut App, ui: &mut egui::Ui) {
 /// the site's exact letterforms; the change needs a restart because egui
 /// installs fonts once, when the context is created.
 fn interface_font_row(app: &mut App, ui: &mut egui::Ui) {
+    let language = app.settings.language;
     ui.add_space(Metrics::SP_075);
     let current = app
         .settings
@@ -3416,12 +5879,25 @@ fn interface_font_row(app: &mut App, ui: &mut egui::Ui) {
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
         .unwrap_or_else(|| "Inter (built in)".to_owned());
     ui.horizontal(|ui| {
-        ui.label(Type::CAPTION.rich(&format!("Interface font: {current}"), app.theme.text_dim));
         ui.label(Type::CAPTION.rich(
-            "· drop a .ttf/.otf on the window to change it",
+            &format!(
+                "{}: {current}",
+                language.text("Interface font", "Шрифт интерфейса")
+            ),
             app.theme.text_dim,
         ));
-        if app.settings.interface_font.is_some() && ui.button("Use Inter").clicked() {
+        ui.label(Type::CAPTION.rich(
+            language.text(
+                "· drop a .ttf/.otf on the window to change it",
+                "· перетащи .ttf/.otf в окно, чтобы заменить",
+            ),
+            app.theme.text_dim,
+        ));
+        if app.settings.interface_font.is_some()
+            && ui
+                .button(language.text("Use Inter", "Использовать Inter"))
+                .clicked()
+        {
             app.settings.interface_font = None;
             match app.settings.save() {
                 Ok(()) => app.toast("Interface font reset - restart to apply"),
@@ -3430,8 +5906,7 @@ fn interface_font_row(app: &mut App, ui: &mut egui::Ui) {
         }
     });
     ui.label(Type::CAPTION.rich(
-        "soundcloud.com uses Söhne, which is licensed and cannot be bundled. \
-         Own it? Drop the file on the window.",
+        language.text("soundcloud.com uses Söhne, which is licensed and cannot be bundled. Own it? Drop the file on the window.", "SoundCloud использует платный шрифт Söhne, поэтому мы не можем включить его в приложение. Если у тебя есть лицензия, перетащи файл шрифта в окно."),
         app.theme.text_dim,
     ));
 }
@@ -3444,23 +5919,33 @@ fn interface_font_row(app: &mut App, ui: &mut egui::Ui) {
 /// one browser sign-in; the fields below are the manual route for someone who
 /// already has a pair.
 fn account_section(app: &mut App, ui: &mut egui::Ui) {
-    ui.label(Type::H4.rich("Account", app.theme.text));
+    let language = app.settings.language;
+    ui.label(Type::H4.rich(language.text("Account", "Аккаунт"), app.theme.text));
 
     if app.demo {
         ui.label(Type::BODY.rich(
-            "Running on the built-in demo library — no network, no account.",
+            language.text(
+                "Running on the built-in demo library — no network, no account.",
+                "Демо-библиотека работает без сети и аккаунта.",
+            ),
             app.theme.text_dim,
         ));
     } else if app.signed_in() {
         let who = app.display_name();
         ui.horizontal(|ui| {
-            ui.label(Type::BODY.rich(&format!("Signed in as {who}"), app.theme.text));
-            if ui.button("Sign out").clicked() {
+            ui.label(Type::BODY.rich(
+                &format!("{} {who}", language.text("Signed in as", "Вы вошли как")),
+                app.theme.text,
+            ));
+            if ui.button(language.text("Sign out", "Выйти")).clicked() {
                 app.sign_out();
             }
             if ui
-                .button("Disconnect Fastcloud")
-                .on_hover_text("Revoke Fastcloud's OAuth access to this SoundCloud account")
+                .button(language.text("Disconnect Fastcloud", "Отключить Fastcloud"))
+                .on_hover_text(language.text(
+                    "Revoke Fastcloud's OAuth access to this SoundCloud account",
+                    "Отозвать доступ Fastcloud к аккаунту SoundCloud",
+                ))
                 .clicked()
             {
                 app.disconnect_account();
@@ -3470,11 +5955,10 @@ fn account_section(app: &mut App, ui: &mut egui::Ui) {
 
     ui.add_space(Metrics::SP_075);
     ui.label(Type::CAPTION.rich(
-        "No paid subscription is needed to listen: free SoundCloud accounts stream \
-         everything public in full. Tracks marked GO+ need a Go+ subscription on your \
-         own account; tracks marked BLOCKED are restricted by the rightsholder and \
-         cannot be played off soundcloud.com — we fall back to the 30-second preview \
-         when there is one.",
+        language.text(
+            "Public tracks do not require a paid listener subscription, but Fastcloud currently asks you to register an API app, which SoundCloud restricts to Artist Pro accounts. GO+ tracks require Go+; blocked tracks may only offer a preview.",
+            "Для публичных треков платная подписка слушателя не нужна, но сейчас Fastcloud просит зарегистрировать API-приложение, а SoundCloud разрешает это только с Artist Pro. Треки GO+ требуют Go+; заблокированные треки могут давать лишь фрагмент.",
+        ),
         app.theme.text_dim,
     ));
 }
@@ -3484,6 +5968,7 @@ fn account_section(app: &mut App, ui: &mut egui::Ui) {
 /// The right rail, as soundcloud.com has it: who to follow, what is new, and
 /// your last likes. Every list comes from the same store the pages use, so
 /// nothing here fetches on its own.
+#[allow(dead_code)]
 fn right_rail(app: &mut App, ui: &mut egui::Ui) {
     new_tracks_rail(app, ui);
     ui.add_space(Metrics::SP_5);
@@ -3690,6 +6175,7 @@ fn right_rail(app: &mut App, ui: &mut egui::Ui) {
     }
 }
 
+#[allow(dead_code)]
 fn new_tracks_rail(app: &mut App, ui: &mut egui::Ui) {
     ui.label(Type::H6.rich("New tracks", app.theme.text));
     ui.add_space(Metrics::SP_1);
@@ -3721,21 +6207,48 @@ fn new_tracks_rail(app: &mut App, ui: &mut egui::Ui) {
 }
 
 /// Main content + right rail, like soundcloud.com. Page scroll is outer.
+#[allow(dead_code)]
 fn two_columns(app: &mut App, ui: &mut egui::Ui, main: impl FnOnce(&mut App, &mut egui::Ui)) {
     ui.horizontal(|ui| {
         let total = ui.available_width();
-        let left_w = (total - 360.0).clamp(280.0, 820.0);
+        let with_rail = feed_shows_right_rail(total);
+        let left_w = if with_rail {
+            (total - 360.0).clamp(280.0, 820.0)
+        } else {
+            total
+        };
         ui.vertical(|ui| {
             ui.set_min_width(left_w);
             ui.set_max_width(left_w);
             main(app, ui);
         });
-        ui.separator();
-        ui.vertical(|ui| {
-            ui.set_min_width(180.0);
-            right_rail(app, ui);
-        });
+        if with_rail {
+            ui.separator();
+            ui.vertical(|ui| {
+                ui.set_min_width(180.0);
+                right_rail(app, ui);
+            });
+        }
     });
+}
+
+fn feed_shows_right_rail(width: f32) -> bool {
+    width >= 920.0
+}
+
+#[cfg(test)]
+mod feed_columns_tests {
+    use super::feed_shows_right_rail;
+
+    #[test]
+    fn feed_hides_the_right_rail_when_it_would_cramp_the_main_column() {
+        assert!(!feed_shows_right_rail(664.0));
+    }
+
+    #[test]
+    fn feed_keeps_the_right_rail_on_wide_content() {
+        assert!(feed_shows_right_rail(1_184.0));
+    }
 }
 
 /// Avatar placeholder: a disc in the same deterministic palette the artwork
@@ -3832,6 +6345,92 @@ fn playlist_tracks(app: &App, id: u64) -> Vec<Track> {
     tracks
 }
 
+fn library_selection_bar(app: &mut App, ui: &mut egui::Ui, tracks: &[Track]) {
+    if tracks.is_empty() {
+        return;
+    }
+    let songs = selected_tracks(tracks, &app.selected);
+    if songs.is_empty() {
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Select all visible").clicked() {
+                app.selected.extend(tracks.iter().map(|track| track.id));
+            }
+            ui.label(Type::CAPTION.rich(
+                "Ctrl-click to select · Shift-click for a range",
+                app.theme.text_dim,
+            ));
+        });
+        return;
+    }
+    egui::Panel::bottom(egui::Id::new("library-selection-actions"))
+        .resizable(false)
+        .show(ui, |ui| {
+            let action = airwave::selection_actions(ui, app.theme, songs.len(), |ui| {
+                widgets::picked_menu(app, ui, &songs, songs.len());
+            });
+            match action {
+                Some(airwave::SelectionAction::Play) => {
+                    app.play_user_queue(songs, 0, false);
+                    app.clear_selection();
+                }
+                Some(airwave::SelectionAction::Queue) => {
+                    app.toast(format!("Added {} songs to queue", songs.len()));
+                    app.player.enqueue(songs, false);
+                }
+                Some(airwave::SelectionAction::SelectAll) => {
+                    app.selected.extend(tracks.iter().map(|track| track.id));
+                }
+                Some(airwave::SelectionAction::Clear) => app.clear_selection(),
+                None => {}
+            }
+        });
+}
+
+fn selected_tracks(tracks: &[Track], selected: &std::collections::BTreeSet<u64>) -> Vec<Track> {
+    tracks
+        .iter()
+        .filter(|track| selected.contains(&track.id))
+        .cloned()
+        .collect()
+}
+
+#[cfg(test)]
+mod library_selection_tests {
+    use super::*;
+
+    fn tracks() -> Vec<Track> {
+        serde_json::from_str(
+            r#"[{"id":3,"title":"Three"},{"id":1,"title":"One"},{"id":2,"title":"Two"}]"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn selection_preserves_display_order() {
+        let selected = [1, 3].into_iter().collect();
+        let ids: Vec<_> = selected_tracks(&tracks(), &selected)
+            .iter()
+            .map(|track| track.id)
+            .collect();
+        assert_eq!(ids, [3, 1]);
+    }
+
+    #[test]
+    fn selection_excludes_tracks_hidden_by_filter() {
+        let selected = [1, 99].into_iter().collect();
+        let ids: Vec<_> = selected_tracks(&tracks(), &selected)
+            .iter()
+            .map(|track| track.id)
+            .collect();
+        assert_eq!(ids, [1]);
+    }
+
+    #[test]
+    fn empty_selection_has_no_actions() {
+        assert!(selected_tracks(&tracks(), &Default::default()).is_empty());
+    }
+}
+
 fn track_list(app: &mut App, ui: &mut egui::Ui, tracks: &[Track]) {
     egui::ScrollArea::vertical()
         .id_salt("track-list")
@@ -3841,29 +6440,22 @@ fn track_list(app: &mut App, ui: &mut egui::Ui, tracks: &[Track]) {
 }
 
 /// Same rows without their own scroll area — for pages that scroll as a whole.
-/// The queue is shared by reference: no per-row full-list clone (O(n²)).
+/// Borrow the queue while drawing; copy it only when playback starts.
 /// Ctrl/Cmd-click picks rows, Shift-click picks a range, plain click plays
 /// and clears the pick (fastpotify's multi-select).
 fn track_rows(app: &mut App, ui: &mut egui::Ui, tracks: &[Track]) {
     use crate::ui::widgets::RowAction;
-    let shared = std::sync::Arc::new(tracks.to_vec());
-    let order: Vec<u64> = shared.iter().map(|t| t.id).collect();
+    let order: Vec<u64> = tracks.iter().map(|t| t.id).collect();
     // Picked tracks in table order for the multi menu.
-    let multi: Vec<Track> = order
-        .iter()
-        .filter(|id| app.selected.contains(id))
-        .filter_map(|id| shared.iter().find(|t| &t.id == id).cloned())
-        .collect();
+    let multi = selected_tracks(tracks, &app.selected);
     let multi_ref = (!multi.is_empty()).then_some(multi.as_slice());
-    for (idx, t) in shared.iter().enumerate() {
-        let t = t.clone();
-        let shared = shared.clone();
+    for (idx, t) in tracks.iter().enumerate() {
         let picked = app.selected.contains(&t.id);
         let multi = if picked { multi_ref } else { None };
-        match widgets::track_row(app, ui, &t, idx, picked, multi) {
+        match widgets::track_row(app, ui, t, idx, picked, multi) {
             RowAction::Play => {
                 app.clear_selection();
-                let queue = (*shared).clone();
+                let queue = tracks.to_vec();
                 app.play_user_queue(queue, idx, false);
             }
             RowAction::SelectToggle(id) => app.toggle_select(id),
@@ -3907,23 +6499,6 @@ fn playlist_rows(app: &mut App, ui: &mut egui::Ui, playlist_id: u64, tracks: &[T
     });
 }
 
-fn page_title(app: &App, ui: &mut egui::Ui, title: &str, subtitle: Option<&str>) {
-    ui.add_space(4.0);
-    ui.label(
-        egui::RichText::new(title)
-            .font(Type::H1.font())
-            .color(app.theme.text),
-    );
-    if let Some(sub) = subtitle {
-        ui.label(
-            egui::RichText::new(sub)
-                .font(Type::BODY.font())
-                .color(app.theme.text_dim),
-        );
-    }
-    ui.add_space(8.0);
-}
-
 fn fmt_count(n: u64) -> String {
     if n >= 1_000_000 {
         format!("{:.1}M", n as f64 / 1_000_000.0)
@@ -3942,5 +6517,132 @@ fn truncate(s: &str, max: usize) -> String {
             "{}…",
             s.chars().take(max.saturating_sub(1)).collect::<String>()
         )
+    }
+}
+
+#[cfg(test)]
+mod search_filter_tests {
+    use super::{
+        SearchMode, SearchMove, SearchSurface, TextLane, interleave_discovery_lanes,
+        next_search_selection, page_wheel_multiplier, search_mode_picker, search_query_is_ready,
+        search_surface, text_mix_plan,
+    };
+    use crate::ui::route::Route;
+    use crate::ui::theme::Theme;
+    use eframe::egui;
+
+    #[test]
+    fn one_character_does_not_start_a_search() {
+        assert!(!search_query_is_ready(" a "));
+    }
+
+    #[test]
+    fn two_characters_start_a_search() {
+        assert!(search_query_is_ready(" ab "));
+    }
+
+    #[test]
+    fn donor_search_defaults_to_text() {
+        assert_eq!(SearchMode::default(), SearchMode::Text);
+    }
+
+    #[test]
+    fn empty_query_is_the_landing_wave() {
+        assert_eq!(
+            search_surface(" ", SearchMode::SoundCloud),
+            SearchSurface::Wave
+        );
+    }
+
+    #[test]
+    fn search_surface_follows_the_selected_source() {
+        assert_eq!(
+            search_surface("hyper", SearchMode::Text),
+            SearchSurface::Text
+        );
+        assert_eq!(
+            search_surface("hyper", SearchMode::Vibe),
+            SearchSurface::Vibe
+        );
+        assert_eq!(
+            search_surface("hyper", SearchMode::SoundCloud),
+            SearchSurface::SoundCloud
+        );
+    }
+
+    #[test]
+    fn next_result_wraps_to_the_first_result() {
+        assert_eq!(next_search_selection(3, 4, SearchMove::Next), 0);
+    }
+
+    #[test]
+    fn previous_result_wraps_to_the_last_result() {
+        assert_eq!(next_search_selection(0, 4, SearchMove::Previous), 3);
+    }
+
+    #[test]
+    fn empty_results_keep_a_safe_selection() {
+        assert_eq!(next_search_selection(8, 0, SearchMove::Next), 0);
+    }
+
+    #[test]
+    fn text_results_get_a_vibe_pinch_in_every_seventh_slot() {
+        assert_eq!(
+            text_mix_plan(8, 2),
+            vec![
+                TextLane::Lexical(0),
+                TextLane::Lexical(1),
+                TextLane::Lexical(2),
+                TextLane::Lexical(3),
+                TextLane::Lexical(4),
+                TextLane::Vibe(0),
+                TextLane::Lexical(5),
+                TextLane::Lexical(6),
+                TextLane::Lexical(7),
+                TextLane::Vibe(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn discovery_interleaves_sources_and_deduplicates_tracks() {
+        let track = |id| {
+            serde_json::from_value(serde_json::json!({
+                "id": id,
+                "title": format!("Track {id}")
+            }))
+            .unwrap()
+        };
+
+        let rows = interleave_discovery_lanes(vec![
+            vec![track(1), track(2), track(3)],
+            vec![track(10), track(2), track(11)],
+        ]);
+        let ids: Vec<_> = rows.iter().map(|track| track.id).collect();
+
+        assert_eq!(ids, [1, 10, 2, 3, 11]);
+    }
+
+    #[test]
+    fn settings_page_scrolls_faster_than_regular_pages() {
+        assert!(page_wheel_multiplier(&Route::Settings).y > page_wheel_multiplier(&Route::Home).y);
+    }
+
+    #[test]
+    fn search_mode_picker_only_consumes_its_control_row() {
+        let mut height = 0.0;
+        egui::__run_test_ui(|ui| {
+            ui.set_height(600.0);
+            height = search_mode_picker(
+                ui,
+                &Theme::dark(egui::Color32::from_rgb(255, 85, 0)),
+                SearchMode::Vibe,
+                crate::config::Language::English,
+            )
+            .response
+            .rect
+            .height();
+        });
+        assert!(height <= 40.0, "picker consumed {height}px of page height");
     }
 }

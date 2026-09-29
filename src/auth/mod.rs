@@ -51,9 +51,15 @@ pub const AUTH_ROOT: &str = "https://secure.soundcloud.com";
 
 pub const AUTH_SERVICE: &str = "com.fastcloud.tokens";
 pub const USER_ENTRY: &str = "oauth";
+pub const APP_ENTRY: &str = "oauth_app";
 pub const CLIENT_ID_ENTRY: &str = "client_id";
 pub const CLIENT_SECRET_ENTRY: &str = "client_secret";
 pub const REDIRECT_URI_ENTRY: &str = "redirect_uri";
+pub const REMOTE_ENTRY: &str = "approval_server";
+pub const REMOTE_CLIENT_ENTRY: &str = "approval_client_id";
+pub const REMOTE_REDIRECT_ENTRY: &str = "approval_redirect_uri";
+pub const REMOTE_USER_ENTRY: &str = "approval_oauth";
+pub const ADMIN_SERVER_ENTRY: &str = "approval_admin_server";
 
 /// Refresh this long before the token actually expires, so a request never
 /// starts with a token that dies mid-flight.
@@ -108,6 +114,7 @@ pub struct AppCredentials {
     pub client_secret: String,
     /// Must match the app registration character for character.
     pub redirect_uri: String,
+    pub server_url: Option<String>,
 }
 
 impl AppCredentials {
@@ -116,6 +123,7 @@ impl AppCredentials {
             client_id,
             client_secret,
             redirect_uri: redirect_uri.unwrap_or_else(|| DEFAULT_REDIRECT_URI.to_owned()),
+            server_url: None,
         }
     }
 
@@ -139,7 +147,48 @@ impl AppCredentials {
 
     /// Environment first (explicit beats stored), then the keyring.
     pub fn discover() -> Option<Self> {
-        Self::from_env().or_else(Self::from_keyring)
+        Self::from_env().or_else(Self::from_remote_keyring).or_else(Self::from_keyring)
+    }
+
+    pub fn from_remote_keyring() -> Option<Self> {
+        Some(Self {
+            client_id: read_secret(REMOTE_CLIENT_ENTRY)?,
+            client_secret: String::new(),
+            redirect_uri: read_secret(REMOTE_REDIRECT_ENTRY)?,
+            server_url: Some(read_secret(REMOTE_ENTRY)?),
+        })
+    }
+
+    pub async fn from_server(server_url: &str) -> Result<Self> {
+        let server_url = checked_server_url(server_url)?;
+        let response = reqwest::Client::new()
+            .get(format!("{server_url}/v1/config"))
+            .send().await.context("contact approval server")?
+            .error_for_status().context("read approval server configuration")?;
+        let body: serde_json::Value = response.json().await?;
+        let client_id = body["client_id"].as_str().filter(|value| !value.is_empty())
+            .context("server returned no client ID")?;
+        let redirect_uri = body["redirect_uri"].as_str().context("server returned no redirect URI")?;
+        let creds = Self {
+            client_id: client_id.to_owned(), client_secret: String::new(),
+            redirect_uri: redirect_uri.to_owned(), server_url: Some(server_url),
+        };
+        let redirect = url::Url::parse(&creds.redirect_uri).context("invalid server OAuth redirect")?;
+        anyhow::ensure!(redirect.scheme() == "http"
+            && matches!(redirect.host_str(), Some("127.0.0.1" | "localhost" | "::1"))
+            && redirect.path() == "/callback" && redirect.port().is_some()
+            && redirect.query().is_none() && redirect.fragment().is_none(),
+            "server OAuth redirect must be a loopback /callback URI");
+        Ok(creds)
+    }
+
+    pub fn save_remote(&self) -> Result<()> {
+        let server_url = self.server_url.as_deref().context("missing server URL")?;
+        write_secret(REMOTE_CLIENT_ENTRY, &self.client_id)?;
+        write_secret(REMOTE_REDIRECT_ENTRY, &self.redirect_uri)?;
+        write_secret(REMOTE_ENTRY, server_url)?;
+        write_secret(ADMIN_SERVER_ENTRY, server_url)?;
+        Ok(())
     }
 
     pub fn save_to_keyring(&self) -> Result<()> {
@@ -205,6 +254,27 @@ impl AppCredentials {
             || self.redirect_uri.starts_with("http://localhost")
             || self.redirect_uri.starts_with("http://[::1]")
     }
+}
+
+pub fn checked_server_url(value: &str) -> Result<String> {
+    let url = url::Url::parse(value.trim()).context("invalid server URL")?;
+    let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
+    anyhow::ensure!(url.scheme() == "https" || (url.scheme() == "http" && local),
+        "approval server requires HTTPS");
+    anyhow::ensure!(url.username().is_empty() && url.password().is_none()
+        && url.query().is_none() && url.fragment().is_none() && url.path() == "/",
+        "use the server origin without path, credentials or query");
+    Ok(url.as_str().trim_end_matches('/').to_owned())
+}
+
+pub fn saved_server_url() -> Option<String> {
+    read_secret(ADMIN_SERVER_ENTRY).or_else(|| read_secret(REMOTE_ENTRY))
+}
+
+pub fn save_server_url(value: &str) -> Result<String> {
+    let url = checked_server_url(value)?;
+    write_secret(ADMIN_SERVER_ENTRY, &url)?;
+    Ok(url)
 }
 
 fn read_secret(key: &str) -> Option<String> {
@@ -304,13 +374,33 @@ impl Tokens {
     // ===== Keyring persistence =====
 
     pub fn save(&self) -> Result<()> {
-        write_secret(USER_ENTRY, &serde_json::to_string(self)?)
+        let entry = if self.grant == Grant::User { USER_ENTRY } else { APP_ENTRY };
+        write_secret(entry, &serde_json::to_string(self)?)
+    }
+
+    fn save_for(&self, remote: bool) -> Result<()> {
+        if remote { write_secret(REMOTE_USER_ENTRY, &serde_json::to_string(self)?) }
+        else { self.save() }
+    }
+
+    fn load_for(remote: bool) -> Result<Option<Self>> {
+        if remote { Self::load_entry(REMOTE_USER_ENTRY) } else { Self::load() }
     }
 
     pub fn load() -> Result<Option<Self>> {
-        let entry = keyring::Entry::new(AUTH_SERVICE, USER_ENTRY).context("keyring entry")?;
+        let legacy = Self::load_entry(USER_ENTRY)?;
+        if legacy.as_ref().is_some_and(|tokens| {
+            tokens.grant == Grant::User && (!tokens.expired() || tokens.can_refresh())
+        }) {
+            return Ok(legacy);
+        }
+        Ok(Self::load_entry(APP_ENTRY)?.or(legacy))
+    }
+
+    fn load_entry(key: &str) -> Result<Option<Self>> {
+        let entry = keyring::Entry::new(AUTH_SERVICE, key).context("keyring entry")?;
         match entry.get_password() {
-            Ok(json) => Ok(serde_json::from_str(&json).ok()),
+            Ok(json) => Ok(Some(serde_json::from_str(&json).context("invalid stored OAuth token metadata")?)),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(e) => Err(anyhow::anyhow!("keyring: {e}")),
         }
@@ -318,6 +408,11 @@ impl Tokens {
 
     pub fn delete() -> Result<()> {
         delete_secret(USER_ENTRY)
+    }
+
+    pub fn delete_all() -> Result<()> {
+        Self::delete()?;
+        delete_secret(APP_ENTRY)
     }
 }
 
@@ -335,68 +430,38 @@ pub struct Session {
     creds: AppCredentials,
     tokens: tokio::sync::Mutex<Option<Tokens>>,
     client: Arc<crate::api::ApiClient>,
-    http: reqwest::Client,
 }
 
 impl Session {
+    pub fn is_remote(&self) -> bool {
+        self.creds.server_url.is_some()
+    }
+
     pub fn new(creds: AppCredentials, client: Arc<crate::api::ApiClient>) -> Arc<Self> {
         let session = Arc::new(Self {
             creds,
             tokens: tokio::sync::Mutex::new(None),
             client: client.clone(),
-            http: reqwest::Client::new(),
         });
         client.attach_session(&session);
         session
     }
 
-    /// Adopt whatever is in the keyring, refreshing it if stale. Returns the
-    /// grant now in force, or `None` when there is nothing to resume.
-    pub async fn resume(&self) -> Option<Grant> {
-        let saved = Tokens::load().ok().flatten()?;
-        let expired_without_refresh =
-            saved.grant == Grant::User && saved.expired() && !saved.can_refresh();
-        {
-            let mut held = self.tokens.lock().await;
-            *held = Some(saved);
+    /// Adopt a saved grant without making startup wait for SoundCloud. Token
+    /// refresh and validation happen on the first resource request instead.
+    pub async fn resume(&self) -> Result<Option<Grant>> {
+        let Some(saved) = Tokens::load_for(self.creds.server_url.is_some())? else { return Ok(None) };
+        if saved.expired() && !saved.can_refresh() {
+            // Retain the user grant in the keyring until an explicit sign-in
+            // replaces it. A public fallback must never erase the account.
+            return Ok(None);
         }
-        match self.access_token().await {
-            Ok(token) => {
-                let grant = self.grant().await;
-                if grant == Some(Grant::User) {
-                    match self.user_token_works(&token).await {
-                        Ok(true) => {}
-                        Ok(false) => {
-                            log::warn!(
-                                "stored user token cannot access /me; discarding invalid session"
-                            );
-                            *self.tokens.lock().await = None;
-                            self.client.clear_oauth();
-                            let _ = Tokens::delete();
-                            return None;
-                        }
-                        Err(e) => {
-                            // A temporary network failure must not destroy a
-                            // real login. Resource requests will retry later.
-                            log::warn!("could not validate stored user session: {e}");
-                        }
-                    }
-                }
-                grant
-            }
-            Err(e) => {
-                log::warn!("stored session unusable: {e}");
-                // Pairing deployments may issue a one-hour user token without
-                // a refresh token. Once it expires, forget it so startup can
-                // still mint an app token and keep public playback working.
-                if expired_without_refresh {
-                    *self.tokens.lock().await = None;
-                    self.client.clear_oauth();
-                    let _ = Tokens::delete();
-                }
-                None
-            }
+        let grant = saved.grant;
+        if !saved.expired() {
+            self.client.set_oauth(saved.access_token.clone());
         }
+        *self.tokens.lock().await = Some(saved);
+        Ok(Some(grant))
     }
 
     /// A valid access token, refreshing or re-minting as needed. Also pushes
@@ -429,11 +494,10 @@ impl Session {
             }
             Some(_) | None => self.mint_app_token().await?,
         };
-        self.client.set_oauth(fresh.access_token.clone());
         let token = fresh.access_token.clone();
-        let saved = fresh.save();
+        fresh.save_for(self.creds.server_url.is_some())?;
         *held = Some(fresh);
-        saved?;
+        self.client.set_oauth(token.clone());
         Ok(token)
     }
 
@@ -453,48 +517,31 @@ impl Session {
 
     pub async fn sign_in_notifying(&self, notify: impl FnOnce(String)) -> Result<()> {
         let tokens = authorize_notifying(&self.creds, notify).await?;
-        anyhow::ensure!(
-            self.user_token_works(&tokens.access_token).await?,
-            "SoundCloud authorized the app, but the token cannot access your profile"
-        );
-        tokens.save()?;
+        // The authorization-code exchange itself proves this is a user grant.
+        // Persist it before any resource request: /me can be slow or return a
+        // temporary 504, and closing the app during that wait used to lose the
+        // otherwise successful login.
+        tokens.save_for(self.creds.server_url.is_some())?;
         self.client.set_oauth(tokens.access_token.clone());
         let mut held = self.tokens.lock().await;
         *held = Some(tokens);
         Ok(())
     }
 
-    /// Pairing tokens issued by api-reg look like OAuth tokens but only work
-    /// for application registration. Probe `/me` before calling one a login.
-    async fn user_token_works(&self, token: &str) -> Result<bool> {
-        let response = self
-            .http
-            .get(format!("{}/me", crate::api::client::API_ROOT))
-            .header(reqwest::header::ACCEPT, "application/json; charset=utf-8")
-            .header(reqwest::header::AUTHORIZATION, format!("OAuth {token}"))
-            .send()
-            .await
-            .context("validate the SoundCloud account session")?;
-        if response.status().is_success() {
-            return Ok(true);
-        }
-        if matches!(
-            response.status(),
-            reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
-        ) {
-            return Ok(false);
-        }
-        anyhow::bail!("SoundCloud returned HTTP {} for /me", response.status())
-    }
-
     /// Invalidate the session server-side and forget it locally.
     pub async fn sign_out(&self) -> Result<()> {
-        crate::api::endpoints::sign_out(&self.client)
-            .await
-            .context("sign out from SoundCloud")?;
+        let signed_out = crate::api::endpoints::sign_out(&self.client).await;
+        if self.is_remote() {
+            if let Err(error) = signed_out {
+                log::warn!("SoundCloud sign-out failed; clearing remote session locally: {error}");
+            }
+        } else {
+            signed_out.context("sign out from SoundCloud")?;
+        }
         self.tokens.lock().await.take();
         self.client.clear_oauth();
-        Tokens::delete()?;
+        if self.creds.server_url.is_some() { delete_secret(REMOTE_USER_ENTRY)?; }
+        else { Tokens::delete()?; }
         Ok(())
     }
 
@@ -505,16 +552,23 @@ impl Session {
             .context("disconnect Fastcloud from SoundCloud")?;
         self.tokens.lock().await.take();
         self.client.clear_oauth();
-        Tokens::delete()?;
+        Tokens::delete_all()?;
         Ok(())
     }
 
     async fn mint_app_token(&self) -> Result<Tokens> {
+        anyhow::ensure!(self.creds.server_url.is_none(), "sign in to your SoundCloud account first");
         client_credentials(&self.creds).await
     }
 
     async fn refresh(&self, refresh_token: &str, grant: Grant) -> Result<Tokens> {
-        let mut refreshed = refresh(&self.creds, refresh_token).await?;
+        let mut refreshed = if let Some(server_url) = &self.creds.server_url {
+            remote_token(server_url, "/v1/oauth/refresh", &serde_json::json!({
+                "refresh_token": refresh_token
+            })).await?
+        } else {
+            refresh(&self.creds, refresh_token).await?
+        };
         // The response does not say which flow it came from; keep ours.
         refreshed.grant = grant;
         Ok(refreshed)
@@ -566,7 +620,56 @@ async fn authorize_notifying(
         constant_time_eq(&returned_state, &state),
         "OAuth state mismatch: the redirect did not come from our request"
     );
-    exchange_code(creds, &code, &pkce.verifier).await
+    if let Some(server_url) = &creds.server_url {
+        remote_token(server_url, "/v1/oauth/exchange", &serde_json::json!({
+            "code": code, "verifier": pkce.verifier
+        })).await
+    } else {
+        exchange_code(creds, &code, &pkce.verifier).await
+    }
+}
+
+async fn remote_token(server_url: &str, path: &str, body: &serde_json::Value) -> Result<Tokens> {
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20)).build()?;
+    let response = http.post(format!("{server_url}{path}"))
+        .json(body).send().await.context("contact approval server")?;
+    let status = response.status();
+    let value: serde_json::Value = response.json().await.context("read approval server response")?;
+    if !status.is_success() {
+        anyhow::bail!("approval server: {}", value["error"].as_str()
+            .or_else(|| value["message"].as_str()).unwrap_or("request failed"));
+    }
+    if status == reqwest::StatusCode::ACCEPTED {
+        anyhow::ensure!(path == "/v1/oauth/exchange", "unexpected pending token refresh");
+        let ticket = value["ticket"].as_str().filter(|ticket| ticket.len() == 43)
+            .context("approval server returned no pending ticket")?;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(14 * 60);
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            anyhow::ensure!(tokio::time::Instant::now() < deadline,
+                "approval timed out; connect again to request access");
+            let response = http.post(format!("{server_url}/v1/oauth/pending"))
+                .json(&serde_json::json!({ "ticket": ticket }))
+                .send().await;
+            let Ok(response) = response else { continue; };
+            let status = response.status();
+            if status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                continue;
+            }
+            let answer: serde_json::Value = match response.json().await {
+                Ok(answer) => answer,
+                Err(_) => continue,
+            };
+            if status == reqwest::StatusCode::ACCEPTED { continue; }
+            if !status.is_success() {
+                anyhow::bail!("approval server: {}", answer["error"].as_str()
+                    .unwrap_or("approval request failed"));
+            }
+            return Tokens::from_response(&answer, Grant::User);
+        }
+    }
+    Tokens::from_response(&value, Grant::User)
 }
 
 /// Wait for the browser to hit the loopback redirect, then answer it.
@@ -725,8 +828,12 @@ pub async fn start(client: Arc<crate::api::ApiClient>) -> Option<Arc<Session>> {
     let creds = AppCredentials::discover()?;
     let session = Session::new(creds, client);
     match session.resume().await {
-        Some(grant) => log::info!("resumed a {grant:?} session"),
-        None => match session.access_token().await {
+        Ok(Some(grant)) => log::info!("resumed a {grant:?} session"),
+        Err(error) => {
+            log::warn!("could not read the saved session: {error}");
+            return None;
+        }
+        Ok(None) => match session.access_token().await {
             Ok(_) => log::info!("running app-only (public resources)"),
             Err(e) => {
                 log::warn!("no usable token: {e}");

@@ -1,0 +1,66 @@
+.mini-winamp .player-bar { background: linear-gradient(#474e67, #252b42); border: 2px solid #8994aa; border-radius: 5px; }
+.mini-winamp .player-track strong { color: #d9e8c2; font-family: monospace; }
+.mini-winamp { background: #22283b; overflow: auto; }
+.wa-outer { position: relative; overflow: hidden; }
+.wa-stack { position: relative; transform-origin: top left; image-rendering: pixelated; font-family: Arial, sans-serif; }
+.wa-main, .wa-eq, .wa-playlist { position: absolute; left: 0; width: 275px; overflow: hidden; image-rendering: pixelated; }
+.wa-main { top: 0; }
+.wa-title { position: absolute; inset: 0 0 auto; height: 14px; }
+.wa-drag { position: absolute; z-index: 1; top: 0; left: 18px; width: 222px; height: 14px; cursor: move; }
+.wa-sprite { position: absolute; z-index: 2; margin: 0; padding: 0; border: 0; border-radius: 0; image-rendering: pixelated; }
+.wa-sprite:hover { filter: brightness(1.25); }
+.wa-time { position: absolute; left: 47px; top: 25px; color: #ff772c; font: bold 13px/16px monospace; letter-spacing: 1px; }
+.wa-name { position: absolute; left: 111px; top: 27px; width: 153px; overflow: hidden; color: #ff772c; font: bold 6px/7px monospace; white-space: nowrap; text-overflow: clip; text-transform: uppercase; }
+.wa-audio-meta { position: absolute; left: 113px; top: 43px; color: #ff772c; font: bold 6px/8px monospace; }
+.wa-visualiser { position: absolute; left: 24px; top: 43px; width: 76px; height: 16px; padding: 0; overflow: hidden; background: #0b1119; }
+.wa-visualiser svg { display: block; }
+.wa-volume { position: absolute; left: 107px; top: 57px; width: 68px; height: 13px; margin: 0; accent-color: #ff772c; }
+.wa-seek-art { position: absolute; left: 16px; top: 72px; width: 248px; height: 10px; }
+.wa-seek { position: absolute; left: 16px; top: 72px; width: 248px; height: 10px; margin: 0; opacity: .8; accent-color: #ff772c; }
+.wa-shade-name { position: absolute; left: 20px; top: 4px; width: 105px; overflow: hidden; white-space: nowrap; color: #ff772c; font: bold 6px/7px monospace; }
+.wa-shade-time { position: absolute; left: 127px; top: 4px; color: #ff772c; font: bold 6px/7px monospace; }
+.wa-shade-control { position: absolute; z-index: 2; top: 2px; width: 9px; height: 10px; padding: 0; }
+.wa-shade-seek { position: absolute; left: 226px; top: 4px; width: 17px; height: 7px; margin: 0; accent-color: #ff772c; }
+.wa-eq { height: 116px; color: #c9cfbb; }
+.wa-eq-heading, .wa-pl-heading { display: flex; align-items: center; justify-content: space-between; height: 15px; padding: 0 10px; color: #dedeca; font: bold 8px/15px monospace; letter-spacing: 1px; }
+.wa-eq-heading button, .wa-pl-heading button { padding: 0 3px; color: #eee; font: bold 14px/12px monospace; }
+.wa-eq-on { position: absolute; left: 20px; top: 23px; color: #b5db75; font: bold 8px monospace; }
+.wa-eq-on input { width: 9px; height: 9px; margin: 0; accent-color: #b5db75; }
+.wa-eq-auto { position: absolute; left: 45px; top: 23px; color: #b5db75; font: bold 8px monospace; }
+.wa-eq-auto input { width: 9px; height: 9px; margin: 0; accent-color: #b5db75; }
+.wa-eq-presets { position: absolute; left: 217px; top: 18px; color: #b5db75; font: bold 8px monospace; }
+.wa-eq-menu { position: absolute; z-index: 5; top: 31px; right: 5px; display: grid; width: 105px; padding: 3px; border: 1px solid #8c9e84; background: #111b21; box-shadow: 0 3px 10px #000b; }
+.wa-eq-menu button { padding: 2px 4px; color: #d6e5c6; text-align: left; font: 8px/10px monospace; }
+.wa-eq-menu button:hover, .wa-eq-menu button:focus-visible { background: #435d56; color: #fff; }
+.wa-eq-menu button:disabled { opacity: .45; }
+.wa-eq-graph { position: absolute; left: 86px; top: 17px; background: #0c121a; }
+.wa-eq-sliders { position: absolute; inset: 0; pointer-events: none; }
+.wa-eq-sliders input { position: absolute; top: 38px; width: 14px; height: 63px; margin: 0; writing-mode: vertical-lr; direction: rtl; accent-color: #b5db75; pointer-events: auto; }
+.wa-eq-shade-controls { position: absolute; left: 61px; top: 2px; display: flex; align-items: center; gap: 6px; height: 10px; }
+.wa-eq-shade-controls input:first-child { width: 97px; }
+.wa-eq-shade-controls input:last-child { width: 43px; }
+.wa-eq-shade-controls input { height: 7px; margin: 0; accent-color: #b5db75; }
+.wa-playlist { height: 162px; background: #303a50; border: 2px solid #7e8ba7; color: #c5d4b8; }
+.wa-pl-heading { height: 20px; background: #35394c; }
+.wa-pl-items { height: 103px; overflow: auto; padding: 2px 8px; background: #101620; scrollbar-width: thin; }
+.wa-pl-items button { display: block; width: 100%; padding: 1px 2px; overflow: hidden; color: #c2d3ab; text-align: left; text-overflow: ellipsis; white-space: nowrap; font: 9px/11px monospace; }
+.wa-pl-items button:hover, .wa-pl-items button.active { background: #52657b; color: #fff; }
+.wa-pl-footer { display: flex; align-items: center; justify-content: space-between; height: 35px; padding: 0 10px; font: 8px monospace; }
+.wa-pl-footer button { color: #c2d3ab; font: 8px monospace; }
+.wa-pl-resize { position: absolute; right: 1px; bottom: 1px; z-index: 3; width: 13px; height: 13px; padding: 0; color: #c2d3ab; cursor: ns-resize; touch-action: none; font: 10px/13px monospace; }
+.wa-pl-heading > div { display: flex; align-items: center; gap: 6px; }
+.wa-eq.shade .wa-eq-heading { height: 14px; line-height: 14px; }
+.wa-playlist.shade .wa-pl-heading { height: 10px; line-height: 10px; }
+.wa-playlist.shade .wa-pl-heading button { font-size: 10px; line-height: 10px; }
+.wa-error { position: absolute; left: 0; bottom: 0; width: 275px; padding: 3px; background: #642829; color: white; font: 8px monospace; }
+
+.wa-default-skin .wa-stack { filter: hue-rotate(var(--wa-hue-shift)) saturate(var(--wa-saturation)); }
+.wa-default-skin .wa-eq-on, .wa-default-skin .wa-eq-auto, .wa-default-skin .wa-eq-presets, .wa-default-skin .wa-pl-footer button { color: #ffad81; }
+.wa-default-skin .wa-eq-on input, .wa-default-skin .wa-eq-auto input, .wa-default-skin .wa-eq-sliders input, .wa-default-skin .wa-eq-shade-controls input { accent-color: #ff8b4e; }
+.wa-default-skin .wa-pl-items button { color: #ffd1b6; }
+.wa-default-skin .wa-pl-items button:hover, .wa-default-skin .wa-pl-items button.active { background: #713f36; color: #fff; }
+.wa-default-skin .wa-playlist { border-color: #796064; background: #322b38; }
+.wa-default-skin .wa-pl-heading { background: #352d3b; }
+.wa-default-skin .wa-visualiser { border: 1px solid #bb644f; }
+.wa-default-skin .wa-name { font-size: 7px; line-height: 8px; }
+.wa-default-skin .wa-eq-graph { border: 1px solid #664641; }

@@ -1,9 +1,9 @@
-//! SoundCloud's design tokens, ported to egui.
+//! Theme compatibility for the Airwave design system.
 //!
-//! Values are not guesses: they were read out of soundcloud.com's own
-//! stylesheet (`app-*.css`), where the theme is declared as CSS custom
-//! properties on `.theme-dark` / `.theme-light`. The two layers below mirror
-//! that structure:
+//! [`Palette`] keeps the original SoundCloud values for the handful of legacy
+//! views that still need donor-compatible colors. New and migrated UI resolves
+//! through [`crate::ui::design::SemanticColors`]. The public [`Theme`] fields
+//! remain as a compatibility facade while views move to semantic tokens.
 //!
 //! * [`Palette`] — the raw tokens, one field per `--*-color` SoundCloud
 //!   declares. Both themes are `const`, so the values are auditable.
@@ -26,12 +26,18 @@
 use eframe::egui;
 use egui::Color32;
 
+use super::design::SemanticColors;
+use super::design::components;
+use super::design::primitives::{Colors, Space};
+
 // ===========================================================================
 // Raw tokens
 // ===========================================================================
 
 /// `--special-color` — SoundCloud orange, the one hue both themes share.
 pub const ORANGE: Color32 = Color32::from_rgb(0xFF, 0x55, 0x00);
+/// FastCloud Airwave's warmer default accent.
+pub const AIRWAVE_ORANGE: Color32 = Colors::PULSE_ORANGE;
 /// The orange knocked back for rails and inactive fills.
 pub const ORANGE_DIM: Color32 = Color32::from_rgb(0x96, 0x3C, 0x0F);
 
@@ -120,40 +126,40 @@ pub struct Metrics;
 impl Metrics {
     // --spacing-0_25x … --spacing-8x
     pub const SP_QUARTER: f32 = 2.0;
-    pub const SP_HALF: f32 = 4.0;
+    pub const SP_HALF: f32 = Space::XS;
     pub const SP_075: f32 = 6.0;
-    pub const SP_1: f32 = 8.0;
+    pub const SP_1: f32 = Space::SM;
     pub const SP_125: f32 = 10.0;
-    pub const SP_15: f32 = 12.0;
+    pub const SP_15: f32 = Space::MD;
     pub const SP_175: f32 = 14.0;
-    pub const SP_2: f32 = 16.0;
+    pub const SP_2: f32 = Space::LG;
     pub const SP_25: f32 = 20.0;
-    pub const SP_3: f32 = 24.0;
+    pub const SP_3: f32 = Space::XL;
     pub const SP_35: f32 = 28.0;
-    pub const SP_4: f32 = 32.0;
+    pub const SP_4: f32 = Space::XXL;
     pub const SP_5: f32 = 40.0;
-    pub const SP_6: f32 = 48.0;
+    pub const SP_6: f32 = Space::SECTION;
     pub const SP_7: f32 = 56.0;
     pub const SP_8: f32 = 64.0;
 
     // --borderRadiuses-*
     /// Buttons, cards, banners — the radius SoundCloud uses almost everywhere.
-    pub const RADIUS: u8 = 4;
+    pub const RADIUS: u8 = components::CARD_RADIUS;
     /// Dialogs and popovers.
-    pub const RADIUS_LG: u8 = 8;
+    pub const RADIUS_LG: u8 = components::PANEL_RADIUS;
     /// Text inputs (`.sc-input`).
-    pub const RADIUS_INPUT: u8 = 3;
+    pub const RADIUS_INPUT: u8 = components::CONTROL_RADIUS;
     /// Pills and tags (`--tag-body-border-radius:100px`).
-    pub const RADIUS_PILL: u8 = 100;
+    pub const RADIUS_PILL: u8 = components::PILL_RADIUS;
 
     /// `--header-height`.
-    pub const HEADER_H: f32 = 46.0;
+    pub const HEADER_H: f32 = components::COMMAND_BAR_HEIGHT;
     /// `--play-controls-height`.
-    pub const PLAYER_H: f32 = 48.0;
+    pub const PLAYER_H: f32 = components::PLAYER_DECK_HEIGHT;
     /// `.sc-input` height.
-    pub const INPUT_H: f32 = 36.0;
+    pub const INPUT_H: f32 = components::CONTROL_HEIGHT;
     /// `.sc-button-medium` min height.
-    pub const BUTTON_H: f32 = 32.0;
+    pub const BUTTON_H: f32 = components::CONTROL_HEIGHT;
     /// `.sc-button-small.sc-button-icon` min size.
     pub const ICON_BUTTON: f32 = 24.0;
     /// `--tag-body-height`.
@@ -338,6 +344,8 @@ pub struct Theme {
     pub palette: Palette,
     /// True while the dark theme is active.
     pub dark: bool,
+    /// The complete Airwave semantic palette for new components.
+    pub tokens: SemanticColors,
 
     /// The page (`--surface-color`).
     pub bg: Color32,
@@ -369,53 +377,69 @@ pub struct Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        Self::dark(ORANGE)
+        Self::dark(AIRWAVE_ORANGE)
+    }
+}
+
+fn blend(from: Color32, to: Color32, amount: f32) -> Color32 {
+    let amount = amount.clamp(0.0, 1.0);
+    let channel = |a: u8, b: u8| ((a as f32 * (1.0 - amount)) + (b as f32 * amount)).round() as u8;
+    Color32::from_rgba_unmultiplied(
+        channel(from.r(), to.r()),
+        channel(from.g(), to.g()),
+        channel(from.b(), to.b()),
+        channel(from.a(), to.a()),
+    )
+}
+
+fn contrast_text(background: Color32) -> Color32 {
+    let luminance = 0.2126 * background.r() as f32
+        + 0.7152 * background.g() as f32
+        + 0.0722 * background.b() as f32;
+    if luminance > 155.0 {
+        Color32::from_rgb(0x12, 0x12, 0x12)
+    } else {
+        Color32::WHITE
     }
 }
 
 impl Theme {
-    /// Roles for a palette and an accent.
-    pub const fn new(palette: Palette, accent: Color32) -> Self {
-        // `Palette::is_dark` is not const-callable through a reference here,
-        // so the same comparison is inlined.
-        let dark =
-            (palette.surface.r() as u16 + palette.surface.g() as u16 + palette.surface.b() as u16)
-                < 384;
+    /// Compatibility constructor. The raw palette selects light or dark; UI
+    /// roles resolve through Airwave rather than duplicating donor colors.
+    pub fn new(palette: Palette, accent: Color32) -> Self {
+        let tokens = if palette.is_dark() {
+            SemanticColors::dark(accent)
+        } else {
+            SemanticColors::light(accent)
+        };
+        let dark = tokens.is_dark();
         Self {
             palette,
             dark,
-            bg: palette.surface,
-            surface: palette.highlight,
-            // SoundCloud fades *text* on hover rather than lifting the
-            // background; lists still need a hint, so the highlight is
-            // nudged one step further from the page.
-            surface_hover: if dark {
-                Color32::from_rgb(0x3D, 0x3D, 0x3D)
-            } else {
-                Color32::from_rgb(0xE7, 0xE7, 0xE7)
-            },
-            text: palette.primary,
-            text_dim: palette.secondary,
-            accent,
-            accent_dim: ORANGE_DIM,
-            on_accent: Color32::WHITE,
-            separator: palette.image_border,
-            link: palette.link,
-            error: palette.error,
-            success: palette.success,
-            overlay: palette.overlay,
+            tokens,
+            bg: tokens.canvas,
+            surface: tokens.surface_raised,
+            surface_hover: tokens.surface_hover,
+            text: tokens.text_primary,
+            text_dim: tokens.text_secondary,
+            accent: tokens.accent,
+            accent_dim: tokens.accent_soft,
+            on_accent: tokens.on_accent,
+            separator: tokens.border_subtle,
+            link: tokens.link,
+            error: tokens.danger,
+            success: tokens.success,
+            overlay: tokens.overlay,
         }
     }
 
-    /// soundcloud.com's dark theme: `#121212` page, `#303030` panels, white
-    /// text, `#999` metadata, orange accent.
-    pub const fn dark(accent: Color32) -> Self {
+    /// Airwave dark theme with the user's accent.
+    pub fn dark(accent: Color32) -> Self {
         Self::new(Palette::DARK, accent)
     }
 
-    /// soundcloud.com's light theme: white page, `#f3f3f3` panels, `#121212`
-    /// text, `#666` metadata.
-    pub const fn light(accent: Color32) -> Self {
+    /// Airwave light theme with the user's accent.
+    pub fn light(accent: Color32) -> Self {
         Self::new(Palette::LIGHT, accent)
     }
 
@@ -515,13 +539,14 @@ impl Theme {
         visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, self.text);
         // `--button-secondary-*`: highlight fill, primary ink.
         visuals.widgets.inactive.bg_fill = self.surface;
-        visuals.widgets.inactive.weak_bg_fill = self.surface;
-        visuals.widgets.hovered.bg_fill = self.surface_hover;
-        visuals.widgets.hovered.weak_bg_fill = self.surface_hover;
+        visuals.widgets.inactive.weak_bg_fill = blend(self.surface, self.accent, 0.12);
+        visuals.widgets.hovered.bg_fill = blend(self.surface_hover, self.accent, 0.20);
+        visuals.widgets.hovered.weak_bg_fill = blend(self.surface_hover, self.accent, 0.28);
         visuals.widgets.active.bg_fill = self.accent;
         visuals.widgets.active.weak_bg_fill = self.accent;
-        visuals.widgets.open.bg_fill = self.surface_hover;
-        visuals.widgets.open.weak_bg_fill = self.surface_hover;
+        visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, self.on_accent);
+        visuals.widgets.open.bg_fill = blend(self.surface_hover, self.accent, 0.24);
+        visuals.widgets.open.weak_bg_fill = blend(self.surface_hover, self.accent, 0.32);
 
         use egui::FontFamily::Monospace;
         use egui::{FontId, TextStyle as Ts};
@@ -565,7 +590,7 @@ impl Theme {
 /// Extract a dominant accent color from cover art pixels.
 pub fn accent_from_image(rgba: &[u8]) -> Color32 {
     // Average saturated bright pixels.
-    let mut best = ORANGE;
+    let mut best = AIRWAVE_ORANGE;
     let mut best_score = 0.0f32;
     let mut acc_r = 0u64;
     let mut acc_g = 0u64;
@@ -620,24 +645,25 @@ mod tests {
     fn accent_fallback_on_gray() {
         let img = [128u8, 128, 128, 255];
         let c = accent_from_image(&img);
-        assert_eq!(c, ORANGE);
+        assert_eq!(c, AIRWAVE_ORANGE);
     }
 
     #[test]
     fn theme_modes() {
-        let dark = Theme::from_mode(crate::config::ThemeMode::Dark, ORANGE);
+        let dark = Theme::from_mode(crate::config::ThemeMode::Dark, AIRWAVE_ORANGE);
         assert!(dark.dark);
-        assert_eq!(dark.bg, Color32::from_rgb(0x12, 0x12, 0x12));
-        assert_eq!(dark.surface, Color32::from_rgb(0x30, 0x30, 0x30));
-        assert_eq!(dark.text, Color32::WHITE);
-        assert_eq!(dark.text_dim, Color32::from_rgb(0x99, 0x99, 0x99));
+        assert_eq!(dark.bg, dark.tokens.canvas);
+        assert_eq!(dark.surface, dark.tokens.surface_raised);
+        assert_eq!(dark.text, dark.tokens.text_primary);
+        assert_eq!(dark.text_dim, dark.tokens.text_secondary);
 
-        let light = Theme::from_mode(crate::config::ThemeMode::Light, ORANGE);
+        let light = Theme::from_mode(crate::config::ThemeMode::Light, AIRWAVE_ORANGE);
         assert!(!light.dark);
-        assert_eq!(light.bg, Color32::WHITE);
-        assert_eq!(light.surface, Color32::from_rgb(0xF3, 0xF3, 0xF3));
-        assert_eq!(light.text, Color32::from_rgb(0x12, 0x12, 0x12));
-        assert_eq!(light.text_dim, Color32::from_rgb(0x66, 0x66, 0x66));
+        assert_eq!(light.bg, light.tokens.canvas);
+        assert_eq!(light.surface, light.tokens.surface_raised);
+        assert_eq!(light.text, light.tokens.text_primary);
+        assert_eq!(light.text_dim, light.tokens.text_secondary);
+        assert_ne!(dark.bg, light.bg);
     }
 
     /// The palettes are transcriptions, not taste: they must keep matching
@@ -720,5 +746,20 @@ mod tests {
             Type::H2.size
         );
         assert_eq!(style.spacing.item_spacing.x, Metrics::SP_1);
+    }
+
+    #[test]
+    fn custom_accent_drives_secondary_and_widget_states() {
+        let accent = Color32::from_rgb(0x31, 0xC4, 0xFF);
+        let theme = Theme::dark(accent);
+        assert_ne!(theme.accent_dim, ORANGE_DIM);
+
+        let ctx = egui::Context::default();
+        theme.apply(&ctx);
+        let style = ctx.global_style();
+        let visuals = &style.visuals;
+        assert_eq!(visuals.widgets.active.bg_fill, accent);
+        assert_eq!(visuals.widgets.active.fg_stroke.color, theme.on_accent);
+        assert_ne!(visuals.widgets.hovered.weak_bg_fill, theme.surface_hover);
     }
 }

@@ -364,7 +364,7 @@ pub async fn playlist_tracks(client: &Arc<ApiClient>, id: u64) -> Pager<Track> {
     Pager::new(
         client.clone(),
         &format!("/playlists/{urn}/tracks"),
-        q(&[("access", "playable,preview"), ("limit", "200")]),
+        q(&[("limit", "200")]),
     )
 }
 
@@ -372,7 +372,7 @@ pub async fn my_playlists(client: &Arc<ApiClient>) -> Pager<Playlist> {
     Pager::new(
         client.clone(),
         "/me/playlists",
-        q(&[("show_tracks", "true"), ("limit", "200")]),
+        q(&[("show_tracks", "false"), ("limit", "200")]),
     )
 }
 
@@ -381,7 +381,7 @@ pub async fn user_playlists(client: &Arc<ApiClient>, user_id: u64) -> Pager<Play
     Pager::new(
         client.clone(),
         &format!("/users/{urn}/playlists"),
-        q(&[("show_tracks", "true"), ("limit", "200")]),
+        q(&[("show_tracks", "false"), ("limit", "200")]),
     )
 }
 
@@ -502,7 +502,7 @@ pub async fn user_tracks(client: &Arc<ApiClient>, user_id: u64) -> Pager<Track> 
     Pager::new(
         client.clone(),
         &format!("/users/{urn}/tracks"),
-        q(&[("access", "playable,preview"), ("limit", "200")]),
+        q(&[("limit", "200")]),
     )
 }
 
@@ -669,6 +669,12 @@ pub async fn search_playlists(client: &Arc<ApiClient>, query: &str) -> Pager<Pla
         "/playlists",
         q(&[("q", query), ("show_tracks", "true")]),
     )
+}
+
+/// Browse public collections without a title query. SoundCloud exposes no
+/// dedicated album chart, so callers rank the returned release sample locally.
+pub async fn browse_playlists(client: &Arc<ApiClient>) -> Pager<Playlist> {
+    Pager::new(client.clone(), "/playlists", q(&[("show_tracks", "true"), ("limit", "100")]))
 }
 
 pub async fn search_users(client: &Arc<ApiClient>, query: &str) -> Pager<User> {

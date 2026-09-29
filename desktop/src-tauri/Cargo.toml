@@ -1,0 +1,53 @@
+[package]
+name = "fastcloud-desktop"
+version = "0.1.2"
+edition = "2024"
+rust-version = "1.95"
+build = "build.rs"
+
+[lib]
+name = "fastcloud_desktop"
+crate-type = ["rlib"]
+
+[[bin]]
+name = "fastcloud"
+path = "src/main.rs"
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "protocol-asset"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "query", "form", "multipart", "stream"] }
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+url = "2"
+base64 = "0.22"
+flate2 = "1"
+sha2 = "0.10"
+rand = "0.9"
+thiserror = "2"
+anyhow = "1"
+keyring = { version = "4", features = ["v1"] }
+directories = "6"
+symphonia = { version = "0.6", features = ["aac", "mp3", "isomp4"] }
+cpal = "0.18"
+chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
+parking_lot = "0.12"
+crossbeam-channel = "0.5"
+bytes = "1.12.1"
+webbrowser = "1.2.4"
+log = "0.4"
+env_logger = "0.11"
+discord-rich-presence = "1"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+tauri-plugin-deep-link = "2"
+souvlaki = { version = "0.8", default-features = false, features = ["use_zbus"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-updater = "2.13.0"
+tauri-plugin-process = "2.4.0"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,16 +1,23 @@
 pub mod connect;
 pub mod data;
+pub mod design;
 pub mod icons;
+pub mod layout;
 pub mod login;
 pub mod player_bar;
 pub mod queue;
 pub mod route;
+pub mod soundprint;
 pub mod theme;
 pub mod topbar;
+pub mod vibe;
 pub mod views;
 pub mod visualiser;
 pub mod widgets;
 pub mod winamp;
+
+#[cfg(test)]
+mod full_window_tests;
 
 use crate::player::Player;
 use eframe::egui;
@@ -29,6 +36,24 @@ pub struct App {
     pub settings: crate::config::Settings,
     pub demo: bool,
     pub search_query: String,
+    pub discover_query: String,
+    pub catalog_query: String,
+    pub catalog_committed_query: String,
+    pub catalog_query_edited_at: Option<std::time::Instant>,
+    pub catalog_artists: bool,
+    pub search_committed_query: String,
+    pub search_query_edited_at: Option<std::time::Instant>,
+    pub search_history: Vec<String>,
+    pub search_mode: views::SearchMode,
+    pub search_focus_requested: bool,
+    pub search_wave_seed: u64,
+    pub home_recommendation_seed: Option<u64>,
+    pub sidebar_collapsed: bool,
+    /// Keyboard-selected result on the Search page.
+    pub search_selection: usize,
+    pub background_draft: String,
+    pub yandex_token: String,
+    pub yandex_import: YandexImportState,
     pub library_tab: views::LibraryTab,
     pub new_playlist_name: String,
     /// Extra track ids dropped into demo playlists (id -> track ids).
@@ -49,6 +74,12 @@ pub struct App {
     last_track_id: Option<u64>,
     pub show_queue: bool,
     pub show_shortcuts: bool,
+    /// F12 diagnostics for performance baselines and repaint inspection.
+    pub debug_overlay: bool,
+    screenshot_path: Option<std::path::PathBuf>,
+    screenshot_frames_remaining: u8,
+    screenshot_requested: bool,
+    screenshot_scroll_offset: Option<f32>,
     /// Seek drag preview (0..=1) — shown while dragging, committed on release.
     pub seek_preview: Option<f32>,
     /// Volume drag preview (0..=1) — applied live, committed on release.
@@ -63,6 +94,8 @@ pub struct App {
     pub toasts: Vec<(String, f64)>,
     last_error: Option<String>,
     pub media: Option<crate::desktop::media::MediaIntegration>,
+    pub discord: crate::desktop::discord::Presence,
+    last_discord_playing: bool,
     pub hotkeys: Option<crate::desktop::hotkeys::Hotkeys>,
     pub ipc_rx: Option<crossbeam_channel::Receiver<crate::cli::IpcMessage>>,
     /// Own the native tray icon for the lifetime of the UI. Dropping this
@@ -73,6 +106,9 @@ pub struct App {
     pub version_build: &'static str,
     /// Bounded artwork loader (RAM budget + disk cache, see `images.rs`).
     pub art: crate::images::ArtLoader,
+    /// Last wallpaper which reached the GPU. Kept visible while a newly
+    /// selected file is decoded, so switching backgrounds never flashes.
+    ready_background_uri: Option<String>,
     /// Real SoundCloud waveform samples, fetched lazily from `waveform_url`.
     pub waveforms: crate::waveforms::WaveformLoader,
     last_art_evict: f64,
@@ -84,8 +120,6 @@ pub struct App {
     pub playlist_edits: crate::playlists::Edits,
     /// Selected section on an artist profile.
     pub user_tab: views::UserTab,
-    /// Selected category on the search results page.
-    pub search_tab: views::SearchTab,
     /// The Winamp mini player, once `Ctrl+M` has opened it. Behind a mutex
     /// because egui's deferred-viewport callback is `Fn + Send + Sync` and
     /// outlives the frame that registered it, so it cannot borrow `App`.
@@ -151,6 +185,11 @@ pub struct App {
     /// Like/follow writes running in the background.
     social_tx: crossbeam_channel::Sender<SocialDone>,
     social_rx: crossbeam_channel::Receiver<SocialDone>,
+    pending_likes: HashMap<u64, SocialWrite>,
+    pending_follows: HashMap<u64, SocialWrite>,
+    next_social_request_id: u64,
+    yandex_tx: crossbeam_channel::Sender<crate::import_yandex::Event>,
+    yandex_rx: crossbeam_channel::Receiver<crate::import_yandex::Event>,
     /// True while the browser flow is out.
     pub signing_in: bool,
     pub auth_url: Option<String>,
@@ -187,6 +226,15 @@ pub struct CreatorState {
     pub confirm_delete_playlist: Option<u64>,
 }
 
+#[derive(Debug, Default)]
+pub struct YandexImportState {
+    pub running: bool,
+    pub current: usize,
+    pub total: usize,
+    pub matched: usize,
+    pub current_track: String,
+}
+
 /// Result of a background sign-in / sign-out.
 pub enum AuthDone {
     Authorizing(String),
@@ -203,11 +251,13 @@ pub enum SocialDone {
     Like {
         track_id: u64,
         liked: bool,
+        request_id: u64,
         error: Option<String>,
     },
     Follow {
         user_id: u64,
         following: bool,
+        request_id: u64,
         error: Option<String>,
     },
     PlaylistCreated(Result<crate::api::models::Playlist, String>),
@@ -229,6 +279,46 @@ pub enum SocialDone {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SocialWrite {
+    request_id: u64,
+    target: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SocialCompletion {
+    Ignore,
+    Settled,
+    Retry,
+    Rollback,
+}
+
+fn social_completion(
+    pending: Option<SocialWrite>,
+    request_id: u64,
+    target: bool,
+    desired: bool,
+    failed: bool,
+) -> SocialCompletion {
+    if pending != Some(SocialWrite { request_id, target }) {
+        return SocialCompletion::Ignore;
+    }
+    if desired != target {
+        return if failed {
+            // The listener reversed the choice while the request was in flight;
+            // their latest choice already matches the pre-request server state.
+            SocialCompletion::Settled
+        } else {
+            SocialCompletion::Retry
+        };
+    }
+    if failed {
+        SocialCompletion::Rollback
+    } else {
+        SocialCompletion::Settled
+    }
+}
+
 /// Result of resolving a SoundCloud link in the background.
 /// Each variant carries the raw link for the messages inbox.
 ///
@@ -239,6 +329,164 @@ pub enum LinkDone {
     OpenPlaylist(u64, String),
     OpenUser(u64, String),
     Failed(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct WallpaperFrame {
+    vignette: f32,
+    top: f32,
+    bottom: f32,
+    left: f32,
+    dim: f32,
+}
+
+fn wallpaper_layer() -> egui::LayerId {
+    egui::LayerId::background()
+}
+
+fn ready_wallpaper_texture(
+    ctx: &egui::Context,
+    uri: &str,
+    size: egui::Vec2,
+) -> Option<egui::TextureId> {
+    let _ = ctx.try_load_bytes(uri);
+    match egui::Image::new(uri)
+        .show_loading_spinner(false)
+        .load_for_size(ctx, size)
+    {
+        Ok(egui::load::TexturePoll::Ready { texture }) => Some(texture.id),
+        _ => None,
+    }
+}
+
+fn wallpaper_frame(edge_darkening: f32, background_dim: f32) -> WallpaperFrame {
+    let edge = edge_darkening.clamp(0.0, 0.7);
+    WallpaperFrame {
+        vignette: 0.4 + edge * 0.45,
+        top: 0.45 + edge * 0.4,
+        bottom: 0.52 + edge * 0.4,
+        left: 0.28 + edge * 0.35,
+        dim: background_dim.clamp(0.0, 0.85),
+    }
+}
+
+fn wallpaper_ink(alpha: f32) -> egui::Color32 {
+    egui::Color32::from_rgba_unmultiplied(6, 6, 9, (alpha.clamp(0.0, 1.0) * 255.0).round() as u8)
+}
+
+fn paint_wallpaper_gradient(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    corners: [egui::Color32; 4],
+) {
+    let mut mesh = egui::Mesh::default();
+    for (position, color) in [
+        (rect.left_top(), corners[0]),
+        (rect.right_top(), corners[1]),
+        (rect.right_bottom(), corners[2]),
+        (rect.left_bottom(), corners[3]),
+    ] {
+        mesh.colored_vertex(position, color);
+    }
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    painter.add(egui::Shape::mesh(mesh));
+}
+
+fn paint_wallpaper_vignette(painter: &egui::Painter, rect: egui::Rect, alpha: f32) {
+    const CELLS: usize = 16;
+    let mut mesh = egui::Mesh::default();
+    let center = egui::pos2(rect.center().x, rect.top() + rect.height() * 0.38);
+    let radius = egui::vec2(rect.width() * 0.625, rect.height() * 0.55);
+    for y in 0..=CELLS {
+        for x in 0..=CELLS {
+            let position = egui::pos2(
+                egui::lerp(rect.x_range(), x as f32 / CELLS as f32),
+                egui::lerp(rect.y_range(), y as f32 / CELLS as f32),
+            );
+            let nx = (position.x - center.x) / radius.x.max(1.0);
+            let ny = (position.y - center.y) / radius.y.max(1.0);
+            let distance = nx.hypot(ny);
+            let progress = ((distance - 0.38) / 0.62).clamp(0.0, 1.0);
+            let smooth = progress * progress * (3.0 - 2.0 * progress);
+            mesh.colored_vertex(position, wallpaper_ink(alpha * smooth));
+        }
+    }
+    for y in 0..CELLS {
+        for x in 0..CELLS {
+            let top_left = (y * (CELLS + 1) + x) as u32;
+            let top_right = top_left + 1;
+            let bottom_left = top_left + (CELLS + 1) as u32;
+            let bottom_right = bottom_left + 1;
+            mesh.add_triangle(top_left, top_right, bottom_right);
+            mesh.add_triangle(top_left, bottom_right, bottom_left);
+        }
+    }
+    painter.add(egui::Shape::mesh(mesh));
+}
+
+fn paint_wallpaper_frame(painter: &egui::Painter, rect: egui::Rect, frame: WallpaperFrame) {
+    let clear = wallpaper_ink(0.0);
+    paint_wallpaper_vignette(painter, rect, frame.vignette);
+    paint_wallpaper_gradient(
+        painter,
+        egui::Rect::from_min_max(
+            rect.min,
+            egui::pos2(rect.right(), (rect.top() + 144.0).min(rect.bottom())),
+        ),
+        [
+            wallpaper_ink(frame.top),
+            wallpaper_ink(frame.top),
+            clear,
+            clear,
+        ],
+    );
+    paint_wallpaper_gradient(
+        painter,
+        egui::Rect::from_min_max(
+            egui::pos2(rect.left(), (rect.bottom() - 208.0).max(rect.top())),
+            rect.max,
+        ),
+        [
+            clear,
+            clear,
+            wallpaper_ink(frame.bottom),
+            wallpaper_ink(frame.bottom),
+        ],
+    );
+    paint_wallpaper_gradient(
+        painter,
+        egui::Rect::from_min_max(
+            rect.min,
+            egui::pos2((rect.left() + 160.0).min(rect.right()), rect.bottom()),
+        ),
+        [
+            wallpaper_ink(frame.left),
+            clear,
+            clear,
+            wallpaper_ink(frame.left),
+        ],
+    );
+    if frame.dim > 0.0 {
+        painter.rect_filled(rect, 0.0, wallpaper_ink(frame.dim));
+    }
+}
+
+fn initial_library_state(
+    settings: &crate::config::Settings,
+    demo: bool,
+) -> (HashSet<u64>, HashSet<u64>) {
+    if demo {
+        (
+            [1000, 1002, 1004].into_iter().collect(),
+            [12, 14].into_iter().collect(),
+        )
+    } else {
+        (
+            settings.liked_ids.iter().copied().collect(),
+            settings.followed_user_ids.iter().copied().collect(),
+        )
+    }
 }
 
 impl App {
@@ -259,21 +507,24 @@ impl App {
         session: Option<Arc<crate::auth::Session>>,
     ) -> Self {
         let theme_mode = settings.theme;
-        let theme = theme::Theme::from_mode(theme_mode, theme::ORANGE);
+        let accent = egui::Color32::from_rgb(
+            settings.accent_rgb[0],
+            settings.accent_rgb[1],
+            settings.accent_rgb[2],
+        );
+        let theme = theme::Theme::from_mode(theme_mode, accent);
+        let route = match settings.startup_page {
+            crate::config::StartupPage::Home => route::Route::Home,
+            crate::config::StartupPage::Search => route::Route::Search(String::new()),
+            crate::config::StartupPage::Library => route::Route::Library,
+            crate::config::StartupPage::Settings => route::Route::Settings,
+        };
         // Seed a lively demo library on first run (persisted afterwards).
-        let liked: HashSet<u64> = if demo {
-            [1000, 1002, 1004].into_iter().collect()
-        } else {
-            HashSet::new()
-        };
-        let followed: HashSet<u64> = if demo {
-            [12, 14].into_iter().collect()
-        } else {
-            HashSet::new()
-        };
+        let (liked, followed) = initial_library_state(&settings, demo);
         let (link_tx, link_rx) = crossbeam_channel::unbounded();
         let (auth_tx, auth_rx) = crossbeam_channel::unbounded();
         let (social_tx, social_rx) = crossbeam_channel::unbounded();
+        let (yandex_tx, yandex_rx) = crossbeam_channel::unbounded();
         let (connect_tx, connect_rx) = crossbeam_channel::unbounded();
         // Demo mode is a deliberate choice (`--demo`); a live session means
         // there is an application to call with. Neither: the connect screen.
@@ -287,18 +538,48 @@ impl App {
         // a retry instead of a fresh sign-in.
         let stored_app =
             session.is_none() && !demo && crate::auth::AppCredentials::discover().is_some();
+        let background_draft = settings.background_image.clone().unwrap_or_default();
+        let search_focus_requested = matches!(route, route::Route::Search(_));
+        let initial_search_query = match &route {
+            route::Route::Search(query) => query.clone(),
+            _ => String::new(),
+        };
+        let search_wave_seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos() as u64);
+        let discord = crate::desktop::discord::Presence::spawn();
+        if settings.discord_presence && !settings.discord_client_id.trim().is_empty() {
+            discord.configure(Some(settings.discord_client_id.clone()));
+        }
         Self {
             player,
-            route: route::Route::Home,
+            route,
             history: Vec::new(),
             future: Vec::new(),
             theme,
             theme_mode,
-            accent: theme::ORANGE,
+            accent,
             settings,
             demo,
-            search_query: String::new(),
-            library_tab: views::LibraryTab::Likes,
+            search_query: initial_search_query.clone(),
+            discover_query: String::new(),
+            catalog_query: String::new(),
+            catalog_committed_query: String::new(),
+            catalog_query_edited_at: None,
+            catalog_artists: false,
+            search_committed_query: initial_search_query,
+            search_query_edited_at: None,
+            search_history: Vec::new(),
+            search_mode: views::SearchMode::default(),
+            search_focus_requested,
+            search_wave_seed,
+            home_recommendation_seed: None,
+            sidebar_collapsed: false,
+            search_selection: 0,
+            background_draft,
+            yandex_token: String::new(),
+            yandex_import: YandexImportState::default(),
+            library_tab: views::LibraryTab::Overview,
             new_playlist_name: String::new(),
             extra_tracks: HashMap::new(),
             liked,
@@ -312,6 +593,11 @@ impl App {
             last_track_id: None,
             show_queue: false,
             show_shortcuts: false,
+            debug_overlay: false,
+            screenshot_path: None,
+            screenshot_frames_remaining: 0,
+            screenshot_requested: false,
+            screenshot_scroll_offset: None,
             seek_preview: None,
             volume_preview: None,
             last_volume: 0.8,
@@ -324,6 +610,8 @@ impl App {
             last_error: None,
             toasts: Vec::new(),
             media,
+            discord,
+            last_discord_playing: false,
             hotkeys,
             ipc_rx,
             _tray: tray,
@@ -331,12 +619,12 @@ impl App {
             quit_requested: false,
             version_build: concat!("v", env!("CARGO_PKG_VERSION")),
             art,
+            ready_background_uri: None,
             waveforms: crate::waveforms::WaveformLoader::new(rt.clone()),
             last_art_evict: 0.0,
             rt,
             playlist_edits: crate::playlists::Edits::new(),
             user_tab: views::UserTab::default(),
-            search_tab: views::SearchTab::default(),
             mini: None,
             mini_shared: None,
             window_is_mini: None,
@@ -363,6 +651,11 @@ impl App {
             auth_rx,
             social_tx,
             social_rx,
+            pending_likes: HashMap::new(),
+            pending_follows: HashMap::new(),
+            next_social_request_id: 1,
+            yandex_tx,
+            yandex_rx,
             signing_in: false,
             auth_url: None,
             auth_error: None,
@@ -378,6 +671,22 @@ impl App {
 
     pub fn toast(&mut self, msg: impl Into<String>) {
         self.toasts.push((msg.into(), 0.0));
+    }
+
+    /// Capture a stable demo page after a few warm-up frames, then exit.
+    pub fn configure_screenshot(&mut self, path: std::path::PathBuf, route: route::Route) {
+        if let route::Route::Search(query) = &route {
+            self.search_query.clone_from(query);
+            self.search_committed_query.clone_from(query);
+        }
+        self.route = route;
+        self.screenshot_path = Some(path);
+        self.screenshot_frames_remaining = 4;
+        self.screenshot_requested = false;
+    }
+
+    pub fn configure_screenshot_scroll(&mut self, offset: f32) {
+        self.screenshot_scroll_offset = Some(offset.max(0.0));
     }
 
     /// Toast, but only when the message changed since the last call
@@ -415,6 +724,36 @@ impl App {
         self.route = route;
     }
 
+    /// Open the donor-style search surface and focus the global input.
+    pub fn open_search(&mut self) {
+        self.search_focus_requested = true;
+        self.search_wave_seed = self.search_wave_seed.wrapping_add(1);
+        self.navigate(route::Route::Search(self.search_query.clone()));
+    }
+
+    pub fn mark_search_edited(&mut self) {
+        self.search_query_edited_at = Some(std::time::Instant::now());
+        self.search_selection = 0;
+    }
+
+    pub fn commit_search_now(&mut self) {
+        self.search_committed_query = self.search_query.trim().to_owned();
+        self.search_query_edited_at = None;
+        self.search_selection = 0;
+        self.remember_search();
+    }
+
+    pub fn remember_search(&mut self) {
+        let query = self.search_committed_query.trim();
+        if query.chars().count() < 2 {
+            return;
+        }
+        self.search_history
+            .retain(|saved| !saved.eq_ignore_ascii_case(query));
+        self.search_history.insert(0, query.to_owned());
+        self.search_history.truncate(20);
+    }
+
     pub fn can_go_back(&self) -> bool {
         !self.history.is_empty()
     }
@@ -429,6 +768,9 @@ impl App {
             self.route = prev;
             if let route::Route::Search(q) = &self.route {
                 self.search_query = q.clone();
+                self.search_committed_query = q.trim().to_owned();
+                self.search_query_edited_at = None;
+                self.search_selection = 0;
             }
         }
     }
@@ -439,6 +781,9 @@ impl App {
             self.route = next;
             if let route::Route::Search(q) = &self.route {
                 self.search_query = q.clone();
+                self.search_committed_query = q.trim().to_owned();
+                self.search_query_edited_at = None;
+                self.search_selection = 0;
             }
         }
     }
@@ -462,7 +807,7 @@ impl App {
             true
         };
         self.persist_library();
-        self.write_like(id, now);
+        self.queue_like_write(id);
         now
     }
 
@@ -475,7 +820,7 @@ impl App {
             true
         };
         self.persist_library();
-        self.write_follow(user_id, now);
+        self.queue_follow_write(user_id);
         now
     }
 
@@ -484,12 +829,22 @@ impl App {
         self.followed.contains(&user_id)
     }
 
-    /// Send a like/unlike. Demo mode and public-only sessions keep it local:
-    /// `/likes/tracks/{urn}` needs the account.
-    fn write_like(&mut self, track_id: u64, liked: bool) {
-        if self.demo || !self.signed_in() {
+    /// Serialize writes per entity. The UI may toggle again while a request is
+    /// in flight; its latest desired state is sent after that request lands.
+    fn queue_like_write(&mut self, track_id: u64) {
+        if self.demo || !self.signed_in() || self.pending_likes.contains_key(&track_id) {
             return;
         }
+        let liked = self.is_liked(track_id);
+        let request_id = self.next_social_request_id;
+        self.next_social_request_id = self.next_social_request_id.wrapping_add(1);
+        self.pending_likes.insert(
+            track_id,
+            SocialWrite {
+                request_id,
+                target: liked,
+            },
+        );
         let client = self.player.api().clone();
         let tx = self.social_tx.clone();
         self.rt.spawn(async move {
@@ -501,15 +856,26 @@ impl App {
             let _ = tx.send(SocialDone::Like {
                 track_id,
                 liked,
+                request_id,
                 error: result.err().map(|e| e.to_string()),
             });
         });
     }
 
-    fn write_follow(&mut self, user_id: u64, following: bool) {
-        if self.demo || !self.signed_in() {
+    fn queue_follow_write(&mut self, user_id: u64) {
+        if self.demo || !self.signed_in() || self.pending_follows.contains_key(&user_id) {
             return;
         }
+        let following = self.is_following(user_id);
+        let request_id = self.next_social_request_id;
+        self.next_social_request_id = self.next_social_request_id.wrapping_add(1);
+        self.pending_follows.insert(
+            user_id,
+            SocialWrite {
+                request_id,
+                target: following,
+            },
+        );
         let client = self.player.api().clone();
         let tx = self.social_tx.clone();
         self.rt.spawn(async move {
@@ -521,6 +887,7 @@ impl App {
             let _ = tx.send(SocialDone::Follow {
                 user_id,
                 following,
+                request_id,
                 error: result.err().map(|e| e.to_string()),
             });
         });
@@ -534,39 +901,76 @@ impl App {
                 SocialDone::Like {
                     track_id,
                     liked,
+                    request_id,
                     error,
-                } => match error {
-                    None => self.store.invalidate(&crate::store::Key::Likes),
-                    Some(why) => {
-                        // Put the heart back where the server has it.
-                        if liked {
-                            self.liked.remove(&track_id);
-                        } else {
-                            self.liked.insert(track_id);
-                        }
-                        self.persist_library();
-                        self.toast(format!("Like not saved: {why}"));
+                } => {
+                    let outcome = social_completion(
+                        self.pending_likes.get(&track_id).copied(),
+                        request_id,
+                        liked,
+                        self.is_liked(track_id),
+                        error.is_some(),
+                    );
+                    if outcome == SocialCompletion::Ignore {
+                        continue;
                     }
-                },
+                    self.pending_likes.remove(&track_id);
+                    match outcome {
+                        SocialCompletion::Retry => self.queue_like_write(track_id),
+                        SocialCompletion::Rollback => {
+                            if liked {
+                                self.liked.remove(&track_id);
+                            } else {
+                                self.liked.insert(track_id);
+                            }
+                            self.persist_library();
+                            if let Some(why) = error {
+                                self.toast(format!("Like not saved: {why}"));
+                            }
+                        }
+                        SocialCompletion::Settled => {
+                            self.store.invalidate(&crate::store::Key::Likes);
+                        }
+                        SocialCompletion::Ignore => unreachable!(),
+                    }
+                }
                 SocialDone::Follow {
                     user_id,
                     following,
+                    request_id,
                     error,
-                } => match error {
-                    None => {
-                        self.library_synced.1 = false;
-                        self.store.invalidate(&crate::store::Key::Following);
+                } => {
+                    let outcome = social_completion(
+                        self.pending_follows.get(&user_id).copied(),
+                        request_id,
+                        following,
+                        self.is_following(user_id),
+                        error.is_some(),
+                    );
+                    if outcome == SocialCompletion::Ignore {
+                        continue;
                     }
-                    Some(why) => {
-                        if following {
-                            self.followed.remove(&user_id);
-                        } else {
-                            self.followed.insert(user_id);
+                    self.pending_follows.remove(&user_id);
+                    match outcome {
+                        SocialCompletion::Retry => self.queue_follow_write(user_id),
+                        SocialCompletion::Rollback => {
+                            if following {
+                                self.followed.remove(&user_id);
+                            } else {
+                                self.followed.insert(user_id);
+                            }
+                            self.persist_library();
+                            if let Some(why) = error {
+                                self.toast(format!("Follow not saved: {why}"));
+                            }
                         }
-                        self.persist_library();
-                        self.toast(format!("Follow not saved: {why}"));
+                        SocialCompletion::Settled => {
+                            self.library_synced.1 = false;
+                            self.store.invalidate(&crate::store::Key::Following);
+                        }
+                        SocialCompletion::Ignore => unreachable!(),
                     }
-                },
+                }
                 SocialDone::PlaylistCreated(result) => match result {
                     Ok(playlist) => {
                         self.store.invalidate(&crate::store::Key::MyPlaylists);
@@ -644,6 +1048,78 @@ impl App {
         }
     }
 
+    /// Start a one-shot Yandex Music likes import. The OAuth token is moved
+    /// into the background task and is never persisted in Fastcloud settings.
+    pub fn start_yandex_import(&mut self) {
+        if self.yandex_import.running {
+            return;
+        }
+        if !self.signed_in() && !self.demo {
+            self.toast("Sign in to SoundCloud before importing");
+            return;
+        }
+        let token = std::mem::take(&mut self.yandex_token);
+        if token.trim().is_empty() {
+            self.toast("Paste a Yandex Music OAuth token first");
+            return;
+        }
+        self.yandex_import = YandexImportState {
+            running: true,
+            current_track: "Loading Yandex Music likes…".to_owned(),
+            ..YandexImportState::default()
+        };
+        let client = self.player.api().clone();
+        let tx = self.yandex_tx.clone();
+        self.rt
+            .spawn(crate::import_yandex::import_likes(token, client, tx));
+    }
+
+    fn poll_yandex_import(&mut self) {
+        while let Ok(event) = self.yandex_rx.try_recv() {
+            match event {
+                crate::import_yandex::Event::Progress {
+                    current,
+                    total,
+                    matched,
+                    title,
+                } => {
+                    self.yandex_import.current = current;
+                    self.yandex_import.total = total;
+                    self.yandex_import.matched = matched;
+                    self.yandex_import.current_track = title;
+                }
+                crate::import_yandex::Event::Finished {
+                    track_ids,
+                    not_found,
+                } => {
+                    self.yandex_import.running = false;
+                    self.yandex_import.current_track.clear();
+                    if track_ids.is_empty() {
+                        self.toast(format!(
+                            "Import finished, but none of the {} liked tracks were found on SoundCloud",
+                            self.yandex_import.total
+                        ));
+                    } else {
+                        let unique = track_ids.len();
+                        self.toast(format!(
+                            "Yandex import matched {} tracks ({not_found} not found); creating a playlist with {unique} unique tracks",
+                            self.yandex_import.matched
+                        ));
+                        self.create_playlist_with_tracks(
+                            "Yandex Music likes".to_owned(),
+                            track_ids,
+                        );
+                    }
+                }
+                crate::import_yandex::Event::Failed(why) => {
+                    self.yandex_import.running = false;
+                    self.yandex_import.current_track.clear();
+                    self.toast(format!("Yandex import failed: {why}"));
+                }
+            }
+        }
+    }
+
     /// Ctrl/Cmd-click: toggle one row, move the Shift-anchor to it.
     pub fn toggle_select(&mut self, id: u64) {
         if !self.selected.remove(&id) {
@@ -696,7 +1172,7 @@ impl App {
         let player = winamp::MiniPlayer::new(skin, self.settings.winamp_scale, self.player.clone());
         {
             let mut shared = player.shared.lock().unwrap_or_else(|p| p.into_inner());
-            shared.visualiser = self.settings.visualiser;
+            shared.visualiser = self.effective_visualiser();
             // The windows come back the way they were left.
             shared.stack = self.window_stack();
             shared.on_top = self.settings.winamp_on_top;
@@ -744,6 +1220,16 @@ impl App {
             auto: self.settings.eq_auto,
             preamp_db: self.settings.eq_preamp_db,
             gains_db: self.settings.eq_gains_db,
+        }
+    }
+
+    fn effective_visualiser(&self) -> crate::ui::visualiser::Mode {
+        if self.settings.reduced_motion
+            || self.settings.memory_profile == crate::config::MemoryProfile::Eco
+        {
+            crate::ui::visualiser::Mode::Off
+        } else {
+            self.settings.visualiser
         }
     }
 
@@ -884,7 +1370,7 @@ impl App {
                     );
                     {
                         let mut shared = player.shared.lock().unwrap_or_else(|p| p.into_inner());
-                        shared.visualiser = self.settings.visualiser;
+                        shared.visualiser = self.effective_visualiser();
                         shared.stack = self.window_stack();
                         shared.on_top = self.settings.winamp_on_top;
                         shared.eq = self.eq_settings();
@@ -965,7 +1451,7 @@ impl App {
             let mut shared = shared.lock().unwrap_or_else(|p| p.into_inner());
             // Keep the window's trace, pin and equaliser in step with the app:
             // the skin reads these rather than being told.
-            shared.visualiser = self.settings.visualiser;
+            shared.visualiser = self.effective_visualiser();
             shared.on_top = self.settings.winamp_on_top;
             shared.eq = winamp::EqSettings {
                 enabled: self.settings.eq_enabled,
@@ -1295,6 +1781,10 @@ impl App {
     /// undecorated and made unresizable while the skin is up, and put back
     /// when it goes away.
     fn show_mini(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+        if self.settings.mini_player_style == crate::config::MiniPlayerStyle::Airwave {
+            self.show_airwave_mini(ctx, ui);
+            return;
+        }
         let Some(mini) = self.mini.clone() else {
             return;
         };
@@ -1315,7 +1805,153 @@ impl App {
         });
     }
 
+    fn show_airwave_mini(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+        self.fit_mini_window(ctx, airwave_mini_size());
+        let (track, playing, position_ms) = {
+            let state = self.player.state.lock();
+            (
+                state
+                    .current
+                    .and_then(|index| state.queue.get(index).cloned()),
+                state.is_playing,
+                state.position_ms,
+            )
+        };
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::new()
+                    .fill(self.theme.tokens.canvas)
+                    .stroke(egui::Stroke::new(1.0, self.theme.tokens.border_subtle))
+                    .inner_margin(egui::Margin::same(10)),
+            )
+            .show(ui, |ui| {
+                let drag = ui.interact(
+                    ui.max_rect(),
+                    egui::Id::new("airwave-mini-drag"),
+                    egui::Sense::drag(),
+                );
+                if drag.drag_started() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
+                let mut close = false;
+                let mut toggle = false;
+                let mut next = false;
+                let mut like = false;
+                ui.horizontal(|ui| {
+                    let (id, title, artist, art) =
+                        track
+                            .as_ref()
+                            .map_or((0, "Nothing playing", "Fastcloud", None), |track| {
+                                (
+                                    track.id,
+                                    track.title.as_str(),
+                                    track.artist(),
+                                    track.artwork_url(),
+                                )
+                            });
+                    widgets::artwork_img(ui, art, id, title, 64.0, 10.0);
+                    ui.vertical(|ui| {
+                        ui.set_width(184.0);
+                        ui.add(
+                            egui::Label::new(theme::Type::H4.rich(title, self.theme.text))
+                                .truncate(),
+                        );
+                        ui.add(
+                            egui::Label::new(
+                                theme::Type::CAPTION.rich(artist, self.theme.text_dim),
+                            )
+                            .truncate(),
+                        );
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            toggle = icons::circle_button(
+                                ui,
+                                if playing {
+                                    icons::Icon::Pause
+                                } else {
+                                    icons::Icon::Play
+                                },
+                                34.0,
+                                self.theme.accent,
+                                self.theme.tokens.accent_hover,
+                                self.theme.on_accent,
+                                if playing { "Pause" } else { "Play" },
+                            )
+                            .clicked();
+                            next = icons::icon_button(
+                                ui,
+                                icons::Icon::SkipForward,
+                                18.0,
+                                34.0,
+                                self.theme.text_dim,
+                                self.theme.text,
+                                "Next",
+                            )
+                            .clicked();
+                            like = icons::icon_button(
+                                ui,
+                                icons::Icon::Heart,
+                                18.0,
+                                34.0,
+                                if track
+                                    .as_ref()
+                                    .is_some_and(|track| self.liked.contains(&track.id))
+                                {
+                                    self.theme.accent
+                                } else {
+                                    self.theme.text_dim
+                                },
+                                self.theme.tokens.accent_hover,
+                                "Like",
+                            )
+                            .clicked();
+                        });
+                    });
+                    close = icons::icon_button(
+                        ui,
+                        icons::Icon::X,
+                        16.0,
+                        30.0,
+                        self.theme.text_dim,
+                        self.theme.text,
+                        "Return to Fastcloud",
+                    )
+                    .clicked();
+                });
+                if let Some(track) = &track
+                    && let Some(fraction) = widgets::waveform(
+                        self,
+                        ui,
+                        track.id,
+                        position_ms,
+                        track.effective_duration_ms(),
+                        14.0,
+                        72,
+                        None,
+                    )
+                {
+                    self.player
+                        .seek_ms((fraction as f64 * track.effective_duration_ms() as f64) as u64);
+                }
+                if toggle {
+                    self.player.play_pause();
+                }
+                if next {
+                    self.player.next();
+                }
+                if like && let Some(track) = &track {
+                    self.toggle_like(track.id);
+                }
+                if close {
+                    self.close_mini();
+                }
+            });
+    }
+
     fn mini_target_size(&self, ctx: &egui::Context) -> Option<egui::Vec2> {
+        if self.settings.mini_player_style == crate::config::MiniPlayerStyle::Airwave {
+            return self.mini.as_ref().map(|_| airwave_mini_size());
+        }
         let mini = self.mini.as_ref()?.lock();
         Some(mini_window_size(
             mini.scale,
@@ -2181,7 +2817,7 @@ impl App {
         // Both are requests, so neither can be awaited here.
         let tx = self.auth_tx.clone();
         self.rt.spawn(async move {
-            if session.resume().await == Some(crate::auth::Grant::User) {
+            if matches!(session.resume().await, Ok(Some(crate::auth::Grant::User))) {
                 let _ = tx.send(AuthDone::SignedIn);
                 return;
             }
@@ -2266,6 +2902,8 @@ impl App {
             match done {
                 AuthDone::Authorizing(_) => unreachable!(),
                 AuthDone::SignedIn => {
+                    self.pending_likes.clear();
+                    self.pending_follows.clear();
                     self.auth_url = None;
                     self.auth_error = None;
                     self.library_synced = (false, false);
@@ -2275,22 +2913,30 @@ impl App {
                     self.toast("Signed in to SoundCloud");
                 }
                 AuthDone::SignedOut => {
+                    self.pending_likes.clear();
+                    self.pending_follows.clear();
                     self.store.set_signed_in(false);
                     self.liked.clear();
                     self.followed.clear();
+                    self.persist_library();
                     self.toast("Signed out");
                 }
                 AuthDone::Disconnected => {
+                    self.pending_likes.clear();
+                    self.pending_follows.clear();
                     self.store.set_signed_in(false);
                     self.store.clear();
                     self.liked.clear();
                     self.followed.clear();
+                    self.persist_library();
                     self.connection = connect::Connection::Connected { username: None };
                     self.toast("Fastcloud disconnected from this SoundCloud account");
                 }
                 // App-only access is live: public browsing works, and the store
                 // may have cached "sign in for this" answers while it did not.
                 AuthDone::AppTokenReady => {
+                    self.pending_likes.clear();
+                    self.pending_follows.clear();
                     self.store.set_signed_in(false);
                     self.store.clear();
                     self.connection = connect::Connection::Connected { username: None };
@@ -2308,6 +2954,107 @@ impl App {
             ctx.request_repaint();
         }
     }
+
+    fn show_debug_overlay(&self, ctx: &egui::Context) {
+        if !self.debug_overlay {
+            return;
+        }
+        let frame_ms = ctx.input(|input| input.stable_dt.max(0.000_001)) * 1_000.0;
+        let fps = 1_000.0 / frame_ms;
+        let art = self.art.stats();
+        let budget = self.art.budget();
+        let playing = self.player.state.lock().is_playing;
+        let reason = if playing {
+            "playback cadence"
+        } else if self.settings.reduced_motion {
+            "reduced-motion idle"
+        } else {
+            "idle/event cadence"
+        };
+        egui::Window::new("Airwave diagnostics · F12")
+            .id(egui::Id::new("airwave-debug-overlay"))
+            .default_pos(egui::pos2(84.0, 72.0))
+            .collapsible(true)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.monospace(format!("FPS {:>5.1} · frame {:>5.1} ms", fps, frame_ms));
+                ui.monospace(format!("Repaint: {reason}"));
+                ui.monospace(format!(
+                    "Artwork: {} entries ({} ready / {} pending / {} failed)",
+                    art.entries, art.ready, art.pending, art.failed
+                ));
+                ui.monospace(format!(
+                    "Encoded: {} / {}",
+                    crate::util::fmt_bytes(art.encoded_bytes as u64),
+                    crate::util::fmt_bytes(budget.encoded_bytes as u64)
+                ));
+                ui.monospace(format!(
+                    "Decoded: {} / {}",
+                    crate::util::fmt_bytes(art.decoded_bytes as u64),
+                    crate::util::fmt_bytes(budget.decoded_bytes as u64)
+                ));
+                ui.monospace(format!("Store keys: {}", self.store.len()));
+            });
+    }
+
+    fn finish_screenshot(&mut self, ctx: &egui::Context) -> bool {
+        let image = ctx.input(|input| {
+            input.events.iter().find_map(|event| match event {
+                egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                _ => None,
+            })
+        });
+        let Some(image) = image else {
+            return false;
+        };
+        let Some(path) = self.screenshot_path.take() else {
+            return false;
+        };
+        match save_color_image(&path, &image) {
+            Ok(()) => log::info!("saved UI screenshot to {}", path.display()),
+            Err(error) => log::error!("failed to save UI screenshot {}: {error}", path.display()),
+        }
+        self.player.shutdown();
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        true
+    }
+
+    fn request_screenshot_when_ready(&mut self, ctx: &egui::Context) {
+        if self.screenshot_path.is_none() || self.screenshot_requested {
+            return;
+        }
+        if self.screenshot_frames_remaining > 0 {
+            self.screenshot_frames_remaining -= 1;
+            ctx.request_repaint();
+            return;
+        }
+        self.screenshot_requested = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+        ctx.request_repaint();
+    }
+}
+
+fn save_color_image(path: &std::path::Path, image: &egui::ColorImage) -> anyhow::Result<()> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    let pixels: Vec<u8> = image
+        .pixels
+        .iter()
+        .flat_map(|pixel| pixel.to_srgba_unmultiplied())
+        .collect();
+    image::save_buffer_with_format(
+        path,
+        &pixels,
+        image.size[0] as u32,
+        image.size[1] as u32,
+        image::ColorType::Rgba8,
+        image::ImageFormat::Png,
+    )?;
+    Ok(())
 }
 
 impl eframe::App for App {
@@ -2328,6 +3075,7 @@ impl eframe::App for App {
         self.poll_connect(ctx);
         self.poll_auth(ctx);
         self.poll_social();
+        self.poll_yandex_import();
         self.poll_mini();
         self.apply_window_mode(ctx);
         // Lists that landed since the last frame; repaint so they appear now
@@ -2374,16 +3122,37 @@ impl eframe::App for App {
             self.last_art_evict = now;
             self.art.evict(ctx);
         }
-        // Repaint at ~5 Hz so IPC commands, hotkeys and the seek bar stay
-        // responsive even when paused or hidden.
-        ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        // Playback needs only a modest UI cadence; everything else wakes the
+        // app explicitly. Reduced motion also keeps paused windows quiet.
+        let playing = self.player.state.lock().is_playing;
+        let refresh_ms = if self.settings.reduced_motion && !playing {
+            1_000
+        } else {
+            self.settings.memory_profile.playback_refresh_ms()
+        };
+        ctx.request_repaint_after(std::time::Duration::from_millis(refresh_ms));
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if self.finish_screenshot(&ctx) {
+            return;
+        }
+        self.art.install_context_budget(&ctx);
+        ctx.data_mut(|data| {
+            data.insert_temp(
+                egui::Id::new("fastcloud::reduced-motion"),
+                self.settings.reduced_motion,
+            );
+        });
+        if ctx.input(|input| input.key_pressed(egui::Key::F12)) {
+            self.debug_overlay = !self.debug_overlay;
+        }
         self.handle_egui_hotkeys(&ctx);
 
         self.theme.apply(&ctx);
+        self.paint_background(&ctx);
+        self.show_debug_overlay(&ctx);
 
         // The mini player *is* the window while it is open: the app's own
         // interface is not drawn behind it, as Winamp had one window and
@@ -2411,49 +3180,106 @@ impl eframe::App for App {
             return;
         }
 
-        player_bar::show(self, ui);
-        // The panel itself carries the fill and the padding: a Frame *inside*
-        // the panel paints only its own rect, which left the page colour
-        // showing along the top bar's edges.
+        let mut shell_layout =
+            design::components::ShellLayout::resolve(ctx.content_rect().width(), self.show_queue);
+        if self.sidebar_collapsed {
+            shell_layout.sidebar = design::components::SidebarMode::Compact;
+            shell_layout.sidebar_width = design::components::SIDEBAR_COMPACT_WIDTH;
+        }
+        // The title bar owns the complete window width; the navigation rail
+        // starts beneath it, just like a native desktop chrome layout.
         egui::Panel::top(egui::Id::new("topbar"))
             .exact_size(topbar::BAR_HEIGHT)
             .resizable(false)
             .show_separator_line(false)
-            .frame(egui::Frame::new().fill(self.theme.bg).inner_margin(0))
+            .frame(
+                egui::Frame::new()
+                    .fill(if self.settings.background_image.is_some() {
+                        if self.theme.dark {
+                            egui::Color32::from_black_alpha(148)
+                        } else {
+                            egui::Color32::from_white_alpha(148)
+                        }
+                    } else {
+                        self.theme.tokens.glass
+                    })
+                    .stroke(egui::Stroke::new(1.0, self.theme.tokens.glass_border))
+                    .inner_margin(egui::Margin::symmetric(8, 0)),
+            )
+            .show(ui, |ui| topbar::show(self, ui));
+        let sidebar_fill = if self.settings.background_image.is_some() {
+            egui::Color32::from_rgba_unmultiplied(
+                self.theme.tokens.glass_clear.r(),
+                self.theme.tokens.glass_clear.g(),
+                self.theme.tokens.glass_clear.b(),
+                self.theme.tokens.glass_clear.a(),
+            )
+        } else {
+            self.theme.tokens.glass_strong
+        };
+        egui::Panel::left(egui::Id::new("airwave-sidebar"))
+            .exact_size(shell_layout.sidebar_width)
+            .resizable(false)
+            .show_separator_line(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(sidebar_fill)
+                    .stroke(egui::Stroke::new(1.0, self.theme.tokens.glass_border))
+                    .inner_margin(egui::Margin::symmetric(
+                        theme::Metrics::SP_125 as i8,
+                        theme::Metrics::SP_1 as i8,
+                    )),
+            )
             .show(ui, |ui| {
-                let available = ui.available_width();
-                let width = available.min(1220.0);
-                let left = ui.max_rect().left() + ((available - width) / 2.0).max(0.0);
-                let rect = egui::Rect::from_min_size(
-                    egui::pos2(left, ui.max_rect().top()),
-                    egui::vec2(width, ui.available_height()),
-                );
-                ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
-                    topbar::show(self, ui);
-                });
+                layout::sidebar::show(self, ui, shell_layout.sidebar);
             });
-        if self.show_queue {
+        // Reserve the player after the rail so the bottom panel only consumes
+        // the content region and the sidebar reaches the viewport edge.
+        player_bar::show(self, ui);
+        if self.show_queue && shell_layout.dock_context_rail {
             egui::Panel::right(egui::Id::new("queue"))
-                .default_size(300.0)
-                .min_size(240.0)
+                .exact_size(design::components::CONTEXT_RAIL_WIDTH)
+                .resizable(false)
+                .show_separator_line(false)
+                .frame(
+                    egui::Frame::new()
+                        .fill(self.theme.tokens.glass_strong)
+                        .stroke(egui::Stroke::new(1.0, self.theme.tokens.glass_border))
+                        .inner_margin(egui::Margin::same(theme::Metrics::SP_2 as i8)),
+                )
                 .show(ui, |ui| {
                     queue::show(self, ui);
                 });
         }
-        egui::CentralPanel::default().show(ui, |ui| {
-            // Centered content column like soundcloud.com (~1220px).
-            let avail_w = ui.available_width();
-            let content_w = avail_w.min(1220.0);
-            let pad = ((avail_w - content_w) / 2.0).max(0.0);
-            let x0 = ui.max_rect().left() + pad;
-            let rect = egui::Rect::from_min_size(
-                egui::pos2(x0, ui.max_rect().top()),
-                egui::vec2(content_w, ui.available_height()),
-            );
-            ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
-                views::show(self, ui);
+        let page_fill = if self.settings.background_image.is_some() {
+            if self.theme.dark {
+                egui::Color32::from_black_alpha(112)
+            } else {
+                egui::Color32::from_white_alpha(112)
+            }
+        } else {
+            self.theme.bg
+        };
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(page_fill))
+            .show(ui, |ui| {
+                let avail_w = ui.available_width();
+                let content_w = avail_w.min(1220.0);
+                let pad = ((avail_w - content_w) / 2.0).max(0.0);
+                let x0 = ui.max_rect().left() + pad;
+                let rect = egui::Rect::from_min_size(
+                    egui::pos2(x0, ui.max_rect().top()),
+                    egui::vec2(content_w, ui.available_height()),
+                );
+                ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                    design::widgets::canvas_backdrop(ui, self.theme);
+                    views::show(self, ui);
+                });
             });
-        });
+
+        if self.show_queue && !shell_layout.dock_context_rail {
+            layout::context_rail::show_overlay(self, &ctx);
+        }
 
         self.show_toasts(&ctx);
 
@@ -2498,6 +3324,7 @@ impl eframe::App for App {
             self.player.shutdown();
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
+        self.request_screenshot_when_ready(&ctx);
     }
 
     /// The window is see-through where the skin leaves it out; the app's own
@@ -2512,6 +3339,65 @@ impl eframe::App for App {
 }
 
 impl App {
+    pub fn reload_discord_presence(&mut self) {
+        let client_id = self
+            .settings
+            .discord_presence
+            .then(|| self.settings.discord_client_id.trim().to_owned())
+            .filter(|id| !id.is_empty());
+        self.discord.configure(client_id);
+        // Force the next player poll to publish the current paused/playing state.
+        self.last_discord_playing = !self.player.state.lock().is_playing;
+    }
+
+    fn paint_background(&mut self, ctx: &egui::Context) {
+        let Some(uri) = self
+            .settings
+            .background_image
+            .as_deref()
+            .map(str::trim)
+            .filter(|uri| !uri.is_empty())
+        else {
+            self.ready_background_uri = None;
+            return;
+        };
+        let wallpaper_uri = crate::images::wallpaper_uri(uri, self.settings.background_blur);
+        let previous_uri = self.ready_background_uri.clone();
+        let art = self.art.clone();
+        let frame = wallpaper_frame(
+            self.settings.background_opacity,
+            self.settings.background_dim,
+        );
+        let rect = ctx.viewport_rect();
+        let desired_texture = ready_wallpaper_texture(ctx, &wallpaper_uri, rect.size());
+        let desired_ready = desired_texture.is_some();
+        let shown = desired_texture
+            .map(|texture| (wallpaper_uri.as_str(), texture))
+            .or_else(|| {
+                previous_uri.as_deref().and_then(|uri| {
+                    ready_wallpaper_texture(ctx, uri, rect.size()).map(|texture| (uri, texture))
+                })
+            });
+
+        // Paint directly into egui's canonical bottom layer. An `Area` with
+        // `Order::Background` still has its own layer id and can be sorted above
+        // panels that use the same order, making the wallpaper cover the UI.
+        let painter = ctx.layer_painter(wallpaper_layer());
+        if let Some((shown_uri, texture)) = shown {
+            let uv = art
+                .dimensions(shown_uri)
+                .map(|dimensions| crate::images::cover_uv(dimensions, rect.size()))
+                .unwrap_or_else(|| {
+                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0))
+                });
+            painter.image(texture, rect, uv, egui::Color32::WHITE);
+        }
+        paint_wallpaper_frame(&painter, rect, frame);
+        if desired_ready {
+            self.ready_background_uri = Some(wallpaper_uri);
+        }
+    }
+
     fn handle_ipc_and_tray(&mut self) {
         let mut inbox: Vec<crate::cli::IpcMessage> = Vec::new();
         if let Some(rx) = &self.ipc_rx {
@@ -2762,7 +3648,9 @@ impl App {
         let next = ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::ArrowRight));
         let prev = ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::ArrowLeft));
         let space = ctx.input(|i| i.key_pressed(egui::Key::Space));
-        let search = ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::F));
+        let search = ctx.input(|i| {
+            i.modifiers.ctrl && (i.key_pressed(egui::Key::F) || i.key_pressed(egui::Key::K))
+        });
         let mute = ctx.input(|i| i.key_pressed(egui::Key::M));
         let fwd5 = ctx.input(|i| {
             i.key_pressed(egui::Key::ArrowRight) && !i.modifiers.ctrl && !i.modifiers.alt
@@ -2780,7 +3668,7 @@ impl App {
             self.player.prev();
         }
         if search {
-            self.navigate(crate::ui::route::Route::Search(String::new()));
+            self.open_search();
         }
         if mute {
             let next = if self.settings.volume < 0.01 {
@@ -2813,7 +3701,8 @@ impl App {
         // has to know whether there is one to forget. Done on the edge rather
         // than every poll, because applying a curve saves settings to disk.
         let track_id = current.as_ref().map(|t| t.id);
-        if track_id != self.last_track_id {
+        let track_changed = track_id != self.last_track_id;
+        if track_changed {
             self.last_track_id = track_id;
             self.autoload_eq_preset();
         }
@@ -2862,7 +3751,23 @@ impl App {
                 );
                 media.update_playback(playing, pos);
             }
+            if self.settings.discord_presence
+                && (track_changed || playing != self.last_discord_playing)
+            {
+                self.discord.update(crate::desktop::discord::NowPlaying {
+                    title: track.title.clone(),
+                    artist: track.artist().to_owned(),
+                    artwork_url: track.artwork_url().map(str::to_owned),
+                    track_url: track.permalink_url.clone(),
+                    duration_secs: (track.effective_duration_ms() / 1000) as i64,
+                    elapsed_secs: (pos / 1000) as i64,
+                    playing,
+                });
+            }
+        } else if track_changed {
+            self.discord.clear();
         }
+        self.last_discord_playing = playing;
     }
 
     fn show_toasts(&mut self, ctx: &egui::Context) {
@@ -2991,6 +3896,10 @@ pub fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+fn airwave_mini_size() -> egui::Vec2 {
+    egui::vec2(360.0, 112.0)
+}
+
 /// What the mini player's window should measure, in points.
 ///
 /// The skin is art at whole pixels, so it is sized in *physical* pixels and
@@ -3015,8 +3924,106 @@ fn mini_transition_should_reveal(
 #[cfg(test)]
 mod tests {
     use super::{
-        counts_after, fmt_relative, mini_transition_should_reveal, mini_window_size, range_between,
+        SocialCompletion, SocialWrite, counts_after, fmt_relative, initial_library_state,
+        mini_transition_should_reveal, mini_window_size, range_between, save_color_image,
+        social_completion, wallpaper_frame, wallpaper_layer,
     };
+
+    #[test]
+    fn saved_library_state_is_restored_on_launch() {
+        let settings = crate::config::Settings {
+            liked_ids: vec![31, 31, 42],
+            followed_user_ids: vec![7],
+            ..crate::config::Settings::default()
+        };
+        let (liked, followed) = initial_library_state(&settings, false);
+        assert_eq!(liked.len(), 2);
+        assert!(liked.contains(&31));
+        assert!(liked.contains(&42));
+        assert!(followed.contains(&7));
+
+        let (demo_liked, demo_followed) = initial_library_state(&settings, true);
+        assert!(!demo_liked.contains(&31));
+        assert!(!demo_followed.contains(&7));
+    }
+
+    #[test]
+    fn rapid_social_toggles_settle_on_the_latest_choice() {
+        let pending = Some(SocialWrite {
+            request_id: 7,
+            target: true,
+        });
+        assert_eq!(
+            social_completion(pending, 7, true, false, false),
+            SocialCompletion::Retry,
+            "a completed like must be followed by the requested unlike"
+        );
+        assert_eq!(
+            social_completion(pending, 7, true, false, true),
+            SocialCompletion::Settled,
+            "a rejected like already leaves the server unliked"
+        );
+        assert_eq!(
+            social_completion(pending, 7, true, true, true),
+            SocialCompletion::Rollback
+        );
+        assert_eq!(
+            social_completion(pending, 6, true, true, false),
+            SocialCompletion::Ignore,
+            "old account/request responses cannot change this choice"
+        );
+    }
+
+    #[test]
+    fn screenshot_writer_preserves_dimensions_and_rgba_pixels() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("airwave.png");
+        let mut screenshot = egui::ColorImage::filled([2, 1], egui::Color32::TRANSPARENT);
+        screenshot.pixels[0] = egui::Color32::from_rgba_unmultiplied(10, 20, 30, 40);
+        screenshot.pixels[1] = egui::Color32::from_rgb(50, 60, 70);
+        let expected: Vec<_> = screenshot
+            .pixels
+            .iter()
+            .flat_map(|pixel| pixel.to_srgba_unmultiplied())
+            .collect();
+
+        save_color_image(&path, &screenshot).unwrap();
+        let saved = image::open(path).unwrap().into_rgba8();
+
+        assert_eq!(saved.dimensions(), (2, 1));
+        assert_eq!(saved.into_raw(), expected);
+    }
+
+    #[test]
+    fn wallpaper_is_painted_on_eguis_canonical_bottom_layer() {
+        assert_eq!(wallpaper_layer(), egui::LayerId::background());
+    }
+
+    #[test]
+    fn donor_wallpaper_frame_keeps_the_center_vivid_at_zero_edge_setting() {
+        let frame = wallpaper_frame(0.0, 0.0);
+
+        assert_eq!(
+            (
+                frame.vignette,
+                frame.top,
+                frame.bottom,
+                frame.left,
+                frame.dim
+            ),
+            (0.4, 0.45, 0.52, 0.28, 0.0)
+        );
+    }
+
+    #[test]
+    fn donor_wallpaper_frame_clamps_its_two_user_controls() {
+        let frame = wallpaper_frame(2.0, 2.0);
+
+        assert!(
+            (frame.vignette - 0.715).abs() < f32::EPSILON
+                && (frame.dim - 0.85).abs() < f32::EPSILON
+        );
+    }
 
     #[test]
     fn history_threshold() {
