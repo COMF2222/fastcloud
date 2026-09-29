@@ -7,7 +7,7 @@ const sizeLabel = (bytes: number) => bytes >= 1073741824 ? `${(bytes / 107374182
 
 export type SettingsSection = 'general' | 'appearance' | 'sound' | 'integrations' | 'storage' | 'account'
 
-export function SettingsSections({ section, settings, update }: { section: SettingsSection; settings: Settings; update: (key: string, value: unknown) => Promise<void> }) {
+export function SettingsSections({ section, settings, update, showDeveloperSettings }: { section: SettingsSection; settings: Settings; update: (key: string, value: unknown) => Promise<void>; showDeveloperSettings: boolean }) {
   const queryClient = useQueryClient()
   const [background, setBackground] = useState('')
   const [discord, setDiscord] = useState('')
@@ -77,7 +77,13 @@ export function SettingsSections({ section, settings, update }: { section: Setti
   </>
 
   if (section === 'integrations') return <>
-    <div className="settings-card"><h3>Discord Rich Presence</h3><p className="muted">{t('Показывать текущий трек в Discord. Нужен только публичный Application ID (Client ID), а не Bot Token или Client Secret. После добавления ID в сборку пользователям вводить его не придётся.', 'Show the current track in Discord. Only the public Application ID (Client ID) is needed, not a Bot Token or Client Secret. Once bundled, users will not need to enter it.')}</p><label className="setting-row"><span>{t('Показывать текущий трек', 'Show current track')}</span><input type="checkbox" disabled={!settings.discord_client_id} checked={settings.discord_presence} onChange={event => void update('discord_presence', event.target.checked)} /></label>{!settings.discord_client_id && <p className="muted">{t('Сейчас нужен собственный Discord Application ID Fastcloud. Чужой ID покажет в Discord чужое приложение.', 'Fastcloud needs its own Discord Application ID. Another ID would show another app in Discord.')}</p>}<details className="advanced-setting"><summary>{t('Настройка для разработчика', 'Developer setting')}</summary><label className="field-label">Application ID<div className="inline-form"><input value={discord} onChange={event => setDiscord(event.target.value)} placeholder="Application ID" /><button className="secondary-button" onClick={() => void update('discord_client_id', discord.trim())}>{t('Сохранить', 'Save')}</button></div></label></details></div>
+    <div className="settings-card">
+      <h3>Discord Rich Presence</h3>
+      <p className="muted">{t('Показывай текущий трек в Discord на этом компьютере.', 'Show the current track in Discord on this computer.')}</p>
+      <label className="setting-row"><span>{t('Показывать текущий трек', 'Show current track')}</span><input type="checkbox" disabled={!settings.discord_client_id} checked={settings.discord_presence} onChange={event => void update('discord_presence', event.target.checked)} /></label>
+      {!settings.discord_client_id && <p className="muted">{t('В этой сборке не настроено подключение к Discord.', 'Discord is not configured in this build.')}</p>}
+      {showDeveloperSettings && <details className="advanced-setting"><summary>{t('Настройка для разработчика', 'Developer setting')}</summary><label className="field-label">Application ID<div className="inline-form"><input value={discord} onChange={event => setDiscord(event.target.value)} placeholder="Application ID" /><button className="secondary-button" onClick={() => void update('discord_client_id', discord.trim())}>{t('Сохранить', 'Save')}</button></div></label></details>}
+    </div>
     <div className="settings-card">
       <h3>{t('Импорт из Яндекс Музыки', 'Import from Yandex Music')}</h3>
       <p className="muted">{t('Любимые треки ищутся в SoundCloud и собираются в отдельный плейлист.', 'Liked tracks are matched in SoundCloud and added to a separate playlist.')}</p>

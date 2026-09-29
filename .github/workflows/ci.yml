@@ -58,6 +58,7 @@ jobs:
         run: |
           if (-not $env:TAURI_SIGNING_PRIVATE_KEY) { throw 'TAURI_SIGNING_PRIVATE_KEY GitHub secret is missing' }
           if (-not $env:VITE_FASTCLOUD_SERVER_URL) { throw 'FASTCLOUD_SERVER_URL GitHub secret is missing' }
+          if ($env:FASTCLOUD_DISCORD_CLIENT_ID -notmatch '^\d{17,20}$') { throw 'FASTCLOUD_DISCORD_CLIENT_ID repository variable must be a numeric Discord Application ID' }
       - run: npm ci
         working-directory: desktop
       - name: Prepare pinned CLAP model and Windows worker

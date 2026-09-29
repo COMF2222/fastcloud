@@ -679,7 +679,7 @@ function SettingsPage() {
   const { data: approvalUsers, refetch: refreshApprovals } = useQuery({
     queryKey: ['approval-users', account?.status === 'ready' ? account.data.id : null],
     queryFn: () => api.approvalUsers(FASTCLOUD_SERVER_URL),
-    enabled: section === 'account' && connection?.status === 'signed_in' && account?.status === 'ready' && !!FASTCLOUD_SERVER_URL && !api.preview,
+    enabled: (section === 'account' || section === 'integrations') && connection?.status === 'signed_in' && account?.status === 'ready' && !!FASTCLOUD_SERVER_URL && !api.preview,
     retry: false,
     staleTime: 30_000,
   })
@@ -713,7 +713,7 @@ function SettingsPage() {
       <div className="approval-users">{approvalUsers.length === 0 ? <p>{english ? 'No access requests yet.' : 'Заявок пока нет.'}</p> : approvalUsers.map(user => <div className="setting-row" key={user.id}><span><strong>{user.username}</strong><small>SoundCloud ID {user.id} · {user.status}</small></span><div className="approval-actions"><button className="secondary-button" disabled={accountBusy || user.status === 'approved'} onClick={() => void setApproval(user.id, 'approved')}>{english ? 'Approve' : 'Одобрить'}</button><button className="secondary-button" disabled={accountBusy || user.status === 'denied'} onClick={() => void setApproval(user.id, 'denied')}>{english ? 'Deny' : 'Отклонить'}</button></div></div>)}</div>
     </div>}
     {section === 'general' && <UpdateSettingsCard english={english} />}
-    {data && <SettingsSections section={section} settings={data} update={update} />}
+    {data && <SettingsSections section={section} settings={data} update={update} showDeveloperSettings={connection?.status === 'signed_in' && account?.status === 'ready' && approvalUsers !== undefined} />}
     {section === 'sound' && data && <Equalizer settings={data} update={update} />}
     {error && <p className="error-text">{error}</p>}</div></div></div>
 }
@@ -935,6 +935,10 @@ export default function App() {
     if (!status) return
     const previous = previousConnection.current
     previousConnection.current = status
+    if (!api.preview && status !== 'signed_in') {
+      queryClient.removeQueries({ queryKey: ['my-profile'] })
+      queryClient.removeQueries({ queryKey: ['approval-users'] })
+    }
     if (previous && previous !== status && ['demo', 'public', 'signed_in'].includes(status)) {
       if (status === 'signed_in') void queryClient.invalidateQueries({ predicate: query => query.queryKey[0] !== 'connection' })
       else void queryClient.resetQueries({ predicate: query => query.queryKey[0] !== 'connection' })

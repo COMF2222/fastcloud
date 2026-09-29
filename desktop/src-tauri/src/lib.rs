@@ -279,8 +279,9 @@ impl AppState {
             .enable_all()
             .build()?;
         let mut settings = config::Settings::load().unwrap_or_default();
-        if settings.discord_client_id.is_empty() {
+        if settings.discord_client_id.trim().is_empty() {
             settings.discord_client_id = option_env!("FASTCLOUD_DISCORD_CLIENT_ID")
+                .filter(|id| !id.trim().is_empty())
                 .unwrap_or_default()
                 .to_owned();
         }

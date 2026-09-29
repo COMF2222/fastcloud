@@ -82,8 +82,8 @@ pub struct Settings {
     /// opacity + forced-dim implementation; version one matches the donor.
     #[serde(default = "default_background_style_version")]
     pub background_style_version: u8,
-    /// Discord application id. It is intentionally user/project supplied:
-    /// borrowing another application's public id would attribute Fastcloud to it.
+    /// Discord application id. The desktop release provides a public default
+    /// at build time; the owner may override it for development.
     #[serde(default)]
     pub discord_client_id: String,
     #[serde(default)]

@@ -8,7 +8,7 @@ import './style.css'
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: 1, staleTime: 800, refetchOnWindowFocus: false } } })
 onLibraryUpdate((key, value, accountChanged) => {
-  if (accountChanged) queryClient.removeQueries({ predicate: query => ['my-profile', 'tracks', 'playlists'].includes(String(query.queryKey[0])) })
+  if (accountChanged) queryClient.removeQueries({ predicate: query => ['my-profile', 'tracks', 'playlists', 'approval-users'].includes(String(query.queryKey[0])) })
   const trackView = key.startsWith('tracks:') ? key.slice(7) : null
   const queryKey = key === 'profile' ? ['my-profile'] : trackView
     ? ['likes', 'discover'].includes(trackView) ? ['tracks', trackView, undefined, undefined] : ['tracks', trackView]
