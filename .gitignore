@@ -7,8 +7,9 @@
 /desktop/src-tauri/gen
 /desktop/src-tauri/resources/clap/
 /desktop/src-tauri/tauri.private.conf.json
-/desktop/.env.local
-/desktop/.env.*.local
+/desktop/.env
+/desktop/.env.*
+!/desktop/.env.example
 *.log
 **/tests/snapshots/**/*.diff.png
 **/tests/snapshots/**/*.new.png
