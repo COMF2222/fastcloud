@@ -807,3 +807,26 @@ html[data-theme="light"] .secondary-button:hover { background: color-mix(in srgb
 .update-sidebar-button > span:first-child { display: inline-grid; place-items: center; width: 19px; height: 19px; font-size: 20px; }
 .update-settings-card .secondary-button { margin-top: 8px; }
 .now-playing { --text: #f6f7fa; --text-muted: #c2c6d2; --accent-readable: color-mix(in srgb, var(--accent) 35%, white); }
+
+.login-screen { display: grid; place-items: center; min-height: 100vh; padding: 32px 20px; overflow-y: auto; background: radial-gradient(circle at 50% 10%, #293041 0, #171a25 40%, #0d0f14 100%); color: #f5f5f7; }
+.login-card { width: min(100%, 460px); padding: 32px; border: 1px solid #ffffff1c; border-radius: 24px; background: #151821e8; box-shadow: 0 30px 90px #0009; }
+.login-logo { display: flex; align-items: center; gap: 10px; margin-bottom: 48px; font-size: 22px; font-weight: 700; letter-spacing: -.8px; }
+.login-logo svg { color: #ff7959; }
+.login-icon { display: grid; place-items: center; width: 54px; height: 54px; margin-bottom: 20px; border-radius: 16px; background: #ff704c20; color: #ff9679; }
+.login-card h1 { margin: 0 0 10px; font-size: clamp(25px, 4vw, 32px); line-height: 1.18; letter-spacing: -.7px; }
+.login-description { min-height: 48px; margin: 0 0 24px; color: #bfc2cd; font-size: 14px; line-height: 1.55; }
+.login-primary { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 46px; padding: 10px 16px; border-radius: 10px; background: #f66b49; color: #171418; font-size: 14px; font-weight: 700; text-decoration: none; }
+.login-primary:hover:not(:disabled) { background: #ff8465; }
+.login-primary:disabled { background: #a85c4b; color: #292024; opacity: .8; }
+.login-pending { display: flex; align-items: center; gap: 8px; margin-top: 16px; color: #c3c5cf; font-size: 12px; }
+.login-spinner { animation: login-spin 1s linear infinite; }
+@keyframes login-spin { to { transform: rotate(360deg); } }
+.login-error { margin: 16px 0 0; padding: 12px; border: 1px solid #e56a6055; border-radius: 8px; background: #9c322f22; color: #ffaaa0; font-size: 12px; overflow-wrap: anywhere; }
+.login-advanced, .login-updates { margin-top: 20px; color: #aeb2bf; font-size: 12px; }
+.login-advanced summary, .login-updates summary { cursor: pointer; width: fit-content; }
+.login-advanced button { margin-top: 12px; padding: 9px 12px; border: 1px solid #ffffff38; border-radius: 8px; color: #e5e6eb; }
+.login-updates { margin-top: 12px; }
+.login-updates .settings-card { margin-top: 12px; }
+html[data-theme="light"] .login-screen { background: radial-gradient(circle at 50% 10%, #e3e6f0 0, #f1f2f7 60%, #e9ebf1 100%); }
+html[data-theme="light"] .login-card { background: #fff; border-color: #d9dce4; color: #202431; box-shadow: 0 30px 75px #363c5b22; }
+html[data-theme="light"] .login-description, html[data-theme="light"] .login-pending, html[data-theme="light"] .login-advanced, html[data-theme="light"] .login-updates { color: #626979; }

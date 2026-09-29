@@ -39,6 +39,7 @@ jobs:
     env:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+      VITE_FASTCLOUD_SERVER_URL: ${{ secrets.FASTCLOUD_SERVER_URL }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
@@ -55,6 +56,7 @@ jobs:
         shell: pwsh
         run: |
           if (-not $env:TAURI_SIGNING_PRIVATE_KEY) { throw 'TAURI_SIGNING_PRIVATE_KEY GitHub secret is missing' }
+          if (-not $env:VITE_FASTCLOUD_SERVER_URL) { throw 'FASTCLOUD_SERVER_URL GitHub secret is missing' }
       - run: npm ci
         working-directory: desktop
       - name: Prepare pinned CLAP model and Windows worker

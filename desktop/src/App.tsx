@@ -20,6 +20,8 @@ import { genreKey, sameGenre } from './genres'
 import { RemoteImage } from './RemoteImage'
 import { useVirtualRows } from './useVirtualRows'
 import { UpdateSettingsCard, UpdateSidebarButton } from './Updater'
+import { LoginGate } from './LoginGate'
+import { FASTCLOUD_SERVER_URL } from './server'
 import { hasRestoredNavigation, useApp, type Page } from './store'
 import { artist, artistCredit, artworkForSize, cover, duration, quickAccessTarget, sameArtistName, type Data, type MainWindowBounds, type Playlist, type QuickAccessShortcut, type Settings, type Track, type User } from './types'
 
@@ -33,7 +35,6 @@ const sidebar: { page: Page; label: string; english: string; icon: typeof Home }
 const title: Record<Page, string> = { home: 'Главная', discover: 'Обзор', catalog: 'Каталог', search: 'Результаты поиска', feed: 'Лента', library: 'Библиотека', offline: 'Офлайн', likes: 'Мне нравится', history: 'История', reposts: 'Репосты', inbox: 'Входящие', settings: 'Настройки', playlist: 'Плейлист', artist: 'Автор', track: 'Трек' }
 const englishTitle: Record<Page, string> = { home: 'Home', discover: 'Discover', catalog: 'Catalog', search: 'Search results', feed: 'Feed', library: 'Library', offline: 'Offline', likes: 'Likes', history: 'History', reposts: 'Reposts', inbox: 'Inbox', settings: 'Settings', playlist: 'Playlist', artist: 'Artist', track: 'Track' }
 const MemoryProfile = createContext<Settings['memory_profile']>('Balanced')
-const FASTCLOUD_SERVER_URL = 'https://77.223.107.226'
 const useEnglish = () => useQuery({ queryKey: ['settings'], queryFn: api.settings }).data?.language === 'English'
 const windowBoundsKey = 'fastcloud:main-window-bounds-v2'
 const savedWindowBounds = (): MainWindowBounds | null => {
@@ -701,14 +702,9 @@ function SettingsPage() {
   const english = data?.language === 'English'
   const sections: { id: SettingsSection; label: string; en: string }[] = [{ id: 'general', label: 'Общее', en: 'General' }, { id: 'appearance', label: 'Оформление', en: 'Appearance' }, { id: 'sound', label: 'Звук', en: 'Sound' }, { id: 'integrations', label: 'Интеграции', en: 'Integrations' }, { id: 'storage', label: 'Хранилище', en: 'Storage' }, { id: 'account', label: 'Аккаунт', en: 'Account' }]
   return <div className="page-content settings-page"><SectionTitle title={english ? 'Settings' : 'Настройки'} subtitle={english ? 'Choose a section' : 'Выбери раздел слева'} /><div className="settings-layout"><nav className="settings-nav" aria-label={english ? 'Settings sections' : 'Разделы настроек'}>{sections.map(item => <button key={item.id} className={section === item.id ? 'active' : ''} onClick={() => setSection(item.id)}>{english ? item.en : item.label}<ChevronRight size={15} /></button>)}</nav><div className="settings-body">
-    {section === 'account' && <div className="settings-card"><h3>{english ? 'SoundCloud account' : 'Аккаунт SoundCloud'}</h3><p>{accountBusy && connection?.status === 'connecting' ? english ? 'Complete sign-in in your browser. If approval is needed, this window will connect automatically when the owner approves.' : 'Завершите вход в браузере. Если нужна заявка, приложение подключится автоматически после одобрения владельцем.' : accountBusy && connection?.status === 'public' ? english ? 'Waiting for sign-in in your browser…' : 'Ожидаем подтверждения входа в браузере…' : connection?.status === 'signed_in' ? english ? 'You are signed in to SoundCloud.' : 'Вы вошли в SoundCloud.' : connection?.status === 'public' ? english ? 'Public catalog is available. Sign in to see your collections.' : 'Доступен публичный каталог. Войдите, чтобы видеть свои подборки.' : connection?.status === 'pairing' ? english ? `Open the activation page and enter code ${connection.code}.` : `Откройте страницу активации и введите код ${connection.code}.` : connection?.status === 'registering' ? english ? 'Finishing connection…' : 'Завершаем подключение…' : connection?.status === 'connecting' ? english ? 'Connecting to SoundCloud…' : 'Подключаемся к SoundCloud…' : english ? 'Local demo mode is active.' : 'Сейчас открыт локальный демо-режим.'}</p>
+    {section === 'account' && <div className="settings-card"><h3>{english ? 'SoundCloud account' : 'Аккаунт SoundCloud'}</h3><p>{connection?.status === 'signed_in' ? english ? 'You are signed in to SoundCloud.' : 'Вы вошли в SoundCloud.' : english ? 'Interface preview.' : 'Предпросмотр интерфейса.'}</p>
       {account?.status === 'ready' && <div className="account-details">{account.data.avatar_url ? <RemoteImage src={account.data.avatar_url} pixels={160} alt="" /> : <span className="account-avatar"><Music2 size={22} /></span>}<div><strong>{account.data.username}</strong><span>SoundCloud ID {account.data.id}{account.data.followers_count != null ? ` · ${account.data.followers_count} ${english ? 'followers' : 'подписчиков'}` : ''}</span></div></div>}
-      {connection?.status === 'pairing' && <a href={connection.url} target="_blank" rel="noreferrer" className="text-button">{english ? 'Open connection page' : 'Открыть страницу подключения'} <ArrowRight size={15} /></a>}
-      {(connection?.status === 'demo' || connection?.status === 'error') && <><button className="secondary-button" disabled={accountBusy} onClick={() => void accountAction(() => api.connectServer(FASTCLOUD_SERVER_URL))}>{english ? 'Sign in with SoundCloud' : 'Войти через SoundCloud'}</button>
-        <details className="connection-advanced"><summary>{english ? 'I have my own Artist Pro app' : 'У меня есть своё приложение Artist Pro'}</summary><button className="secondary-button" disabled={accountBusy} onClick={() => void accountAction(api.connect)}>{english ? 'Connect my app' : 'Подключить своё приложение'}</button></details></>}
-      {connection?.status === 'public' && <button className="secondary-button" disabled={accountBusy} onClick={() => void accountAction(api.signIn)}>{accountBusy ? english ? 'Waiting for sign-in…' : 'Ожидаем входа…' : english ? 'Sign in' : 'Войти в аккаунт'}</button>}
       {connection?.status === 'signed_in' && <button className="secondary-button" disabled={accountBusy} onClick={() => void accountAction(api.signOut)}>{english ? 'Sign out' : 'Выйти из аккаунта'}</button>}
-      {connection?.status === 'error' && <p className="error-text">{connection.message}</p>}
     </div>}
     {section === 'account' && connection?.status === 'signed_in' && <div className="settings-card"><h3>{english ? 'Access requests' : 'Заявки на доступ'}</h3>
       <p>{english ? 'The owner of the Fastcloud SoundCloud app can review access requests here.' : 'Владелец SoundCloud-приложения Fastcloud может просматривать здесь заявки на доступ.'}</p>
@@ -896,7 +892,7 @@ export default function App() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('fastcloud:sidebar-collapsed') === 'true')
   const previousVolume = useRef(.8)
-  const { data: connection } = useQuery({ queryKey: ['connection'], queryFn: api.connection, refetchInterval: result => !result.state.data || ['connecting', 'registering', 'pairing'].includes(result.state.data.status) ? 250 : 2500 })
+  const { data: connection, error: connectionError } = useQuery({ queryKey: ['connection'], queryFn: api.connection, refetchInterval: result => !result.state.data || ['connecting', 'registering', 'pairing'].includes(result.state.data.status) ? 250 : 2500 })
   const { data: profile } = useQuery({ queryKey: ['my-profile'], queryFn: api.myProfile, enabled: connection?.status === 'signed_in' || api.preview, refetchInterval: result => dataRefreshInterval(result.state.data) })
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.settings })
   const english = settings?.language === 'English'
@@ -1039,7 +1035,11 @@ export default function App() {
     } catch (cause) { setLinkError(String(cause)) }
   }
   useEffect(() => {
-    if (!connection || ['connecting', 'registering', 'pairing'].includes(connection.status)) return
+    if (api.preview || connection?.status === 'signed_in' || !settings?.winamp_window) return
+    void api.setSetting('winamp_window', false).then(() => queryClient.invalidateQueries({ queryKey: ['settings'] })).catch(error => setLinkError(String(error)))
+  }, [connection?.status, settings?.winamp_window, queryClient])
+  useEffect(() => {
+    if (!api.preview && connection?.status !== 'signed_in') return
     const check = () => { void api.takePendingLink().then(link => { if (link) void openLink(link) }).catch(error => setLinkError(String(error))) }
     check()
     const interval = window.setInterval(check, 1500)
@@ -1068,6 +1068,7 @@ export default function App() {
     return () => { disposed = true; unlisten?.() }
   }, [queryClient])
   useEffect(() => {
+    if (!api.preview && connection?.status !== 'signed_in') return
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
       const typing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target?.isContentEditable
@@ -1096,7 +1097,9 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [settings, queryClient])
+  }, [settings, queryClient, connection?.status])
+
+  if (!api.preview && connection?.status !== 'signed_in') return <LoginGate connection={connection} connectionError={connectionError ? String(connectionError) : undefined} english={english} />
 
   return <MemoryProfile.Provider value={settings?.memory_profile || 'Balanced'}><div className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${wallpaperUrl ? 'has-wallpaper' : ''} ${settings?.winamp_window ? 'mini-player' : ''}`} style={wallpaperUrl && settings ? { '--wallpaper-image': `url("${wallpaperUrl.replaceAll('"', '%22')}")`, '--wallpaper-dim': settings.background_dim, '--wallpaper-opacity': settings.background_opacity, '--wallpaper-blur': `${settings.background_blur}px` } as React.CSSProperties : undefined}><aside className="sidebar"><button className="brand" onClick={() => setPage('home')}><span className="brand-icon"><AudioLines size={23} strokeWidth={2.4} /></span><span>fastcloud</span></button>
     <div className="sidebar-caption">{settings?.language === 'English' ? 'NAVIGATION' : 'НАВИГАЦИЯ'}</div><nav aria-label={english ? 'Navigation' : 'Навигация'}>{sidebar.map(item => <button key={item.page} title={settings?.language === 'English' ? item.english : item.label} className={`nav-item ${page === item.page ? 'active' : ''}`} onClick={() => setPage(item.page)}><item.icon size={19} strokeWidth={1.9} /><span>{settings?.language === 'English' ? item.english : item.label}</span>{page === item.page && <span className="nav-marker" />}</button>)}</nav>

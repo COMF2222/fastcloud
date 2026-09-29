@@ -51,8 +51,8 @@ cache, player state, and desktop integrations used by the Tauri application.
 - Supports Russian and English, dark and light themes, custom accent colours,
   user backgrounds, custom fonts, reduced motion, and Eco/Balanced/Quality
   performance profiles.
-- Starts in an offline demo when no SoundCloud account or API credentials are
-  available.
+- Opens the SoundCloud sign-in screen until an account is connected. The browser
+  preview still uses simulated data for layout work.
 
 ## Download and builds
 
@@ -72,6 +72,8 @@ platform.
 git clone https://github.com/COMF2222/fastcloud
 cd fastcloud/desktop
 npm ci
+cp .env.example .env.local
+# Set VITE_FASTCLOUD_SERVER_URL in .env.local to your HTTPS access server.
 npm run tauri dev
 ```
 
@@ -92,6 +94,8 @@ and kept outside the public source tree. On Windows, prepare them and build:
 ```powershell
 cd D:\projects\fastcloud\desktop
 npm ci
+Copy-Item .env.example .env.local
+# Set VITE_FASTCLOUD_SERVER_URL in .env.local to your HTTPS access server.
 ../tools/prepare_private_clap.ps1
 $env:TAURI_SIGNING_PRIVATE_KEY = "$env:USERPROFILE\.tauri\fastcloud-updater.key"
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ''
@@ -99,13 +103,14 @@ npm run tauri:private -- --bundles nsis
 ```
 
 The installer is written to
-`desktop/src-tauri/target/release/bundle/nsis/Fastcloud_0.1.2_x64-setup.exe`.
+`desktop/src-tauri/target/release/bundle/nsis/Fastcloud_<version>_x64-setup.exe`.
 The regular `npm run tauri build` command does not include CLAP.
 
 ## Connect a SoundCloud account
 
-Fastcloud does not ship a SoundCloud client secret. The normal sign-in button
-connects to the Fastcloud access server using each listener's own SoundCloud
+Fastcloud does not ship a SoundCloud client secret. The first screen asks users
+to sign in. The normal sign-in button connects to the Fastcloud access server
+using each listener's own SoundCloud
 account. The owner approves new accounts in Settings → Account. The separate
 [backend](https://github.com/COMF2222/fastcloud-backend) holds the shared app
 credentials and access decisions.
@@ -129,14 +134,15 @@ $env:FASTCLOUD_CLIENT_ID = '…'
 $env:FASTCLOUD_CLIENT_SECRET = '…'
 ```
 
-Without account authorization, Fastcloud can still search and play public
-tracks. Go+ tracks and rightsholder restrictions follow SoundCloud's own access
-rules.
+Go+ tracks and rightsholder restrictions follow SoundCloud's own access rules.
 
 ### Connect through an owner-hosted server
 
-The desktop app also accepts an HTTPS approval-server URL in **Settings →
-Account**. Users authorize their own SoundCloud account. The server keeps the
+The desktop build receives its HTTPS approval-server URL through
+`VITE_FASTCLOUD_SERVER_URL` (`desktop/.env.local` for local builds, the
+`FASTCLOUD_SERVER_URL` Actions secret for tagged releases). The URL is compiled
+into the client and is visible to users of the installed app. Users authorize
+their own SoundCloud account. The server keeps the
 owner's API client secret and a small list of approved SoundCloud account IDs;
 playback, cache, interface, library actions and SoundCloud API requests remain
 local. The owner can open **Access requests** from the same screen while signed

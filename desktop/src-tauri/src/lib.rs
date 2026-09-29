@@ -2759,6 +2759,16 @@ async fn approval_admin_token(state: &AppState) -> Result<String, String> {
     session.access_token().await.map_err(|error| error.to_string())
 }
 
+async fn approval_response_error(response: reqwest::Response) -> String {
+    let status = response.status();
+    let detail = response.json::<serde_json::Value>().await.ok()
+        .and_then(|body| body.get("error").and_then(|value| value.as_str().map(str::to_owned)));
+    match detail {
+        Some(detail) if !detail.is_empty() => format!("Approval server returned {status}: {}", detail.chars().take(200).collect::<String>()),
+        _ => format!("Approval server returned {status}"),
+    }
+}
+
 #[tauri::command]
 async fn approval_users(state: tauri::State<'_, AppState>, server_url: String) -> Result<Vec<ApprovalUser>, String> {
     let url = auth::save_server_url(&server_url).map_err(|error| error.to_string())?;
@@ -2767,7 +2777,7 @@ async fn approval_users(state: tauri::State<'_, AppState>, server_url: String) -
         .header(reqwest::header::AUTHORIZATION, format!("OAuth {token}"))
         .send().await.map_err(|error| error.to_string())?;
     if !response.status().is_success() {
-        return Err(format!("Approval server returned {}", response.status()));
+        return Err(approval_response_error(response).await);
     }
     response.json::<ApprovalUsers>().await.map(|body| body.users)
         .map_err(|error| error.to_string())
@@ -2785,7 +2795,7 @@ async fn approval_set_user(state: tauri::State<'_, AppState>, server_url: String
         .json(&serde_json::json!({ "status": status }))
         .send().await.map_err(|error| error.to_string())?;
     if !response.status().is_success() {
-        return Err(format!("Approval server returned {}", response.status()));
+        return Err(approval_response_error(response).await);
     }
     Ok(())
 }
