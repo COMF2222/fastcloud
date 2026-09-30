@@ -16,7 +16,8 @@ import { ArtistPage, CatalogPage, LibraryExtra, LibraryOverview, PlaylistPage, R
 import { SettingsSections, type SettingsSection } from './SettingsSections'
 import { NowPlaying } from './NowPlaying'
 import { GenreCarousel, musicGenres } from './GenreCarousel'
-import { genreKey, sameGenre } from './genres'
+import { sameGenre } from './genres'
+import { favouriteGenres, searchRecommendations } from './searchRecommendations'
 import { RemoteImage } from './RemoteImage'
 import { shuffleTracks } from './shuffle'
 import { useVirtualRows } from './useVirtualRows'
@@ -428,29 +429,17 @@ function SearchPage({ query }: { query: string }) {
   const { data: tracks } = useTracks(genreSearch ? 'genre' : 'search', query, undefined, searching && tab === 'tracks')
   const { data: likes } = useTracks('likes', undefined, undefined, !searching)
   const { data: discover } = useTracks('discover', undefined, undefined, !searching)
+  const { data: recent } = useTracks('history', undefined, undefined, !searching)
   const likedTracks = likes?.status === 'ready' ? likes.data : []
-  const dailyGenres = useMemo(() => {
-    const favourites = musicGenres.filter(genre => likedTracks.some(track => sameGenre(track.genre, genre)))
-    const choices = favourites.length > 1 ? favourites : [...favourites, ...musicGenres.filter(genre => !favourites.includes(genre))]
-    return [choices[discoveryDay % choices.length], choices[(discoveryDay + 1) % choices.length]]
-  }, [likedTracks, discoveryDay])
+  const dailyGenres = useMemo(() => favouriteGenres(likedTracks, musicGenres, discoveryDay), [likedTracks, discoveryDay])
   const { data: dailyPicks } = useQuery({ queryKey: ['search-daily-picks', discoveryDay, ...dailyGenres], queryFn: async () => {
     const responses = await Promise.allSettled(dailyGenres.map(genre => api.tracks('genre', genre)))
     return responses.flatMap((result, index) => result.status === 'fulfilled' && result.value.status === 'ready' ? result.value.data.filter(track => sameGenre(track.genre, dailyGenres[index])) : [])
-  }, enabled: !searching, staleTime: 6 * 60 * 60_000 })
+  }, enabled: !searching && likes?.status === 'ready', staleTime: 6 * 60 * 60_000 })
   const suggested = useMemo(() => {
     const pool = [...new Map([...(dailyPicks || []), ...(discover?.status === 'ready' ? discover.data : [])].map(track => [track.id, track])).values()]
-    const shuffle = (items: Track[]) => { const result = [...items]; let random = shuffleSeed; for (let i = result.length - 1; i > 0; i--) { random = (Math.imul(random, 1664525) + 1013904223) >>> 0; const j = random % (i + 1); [result[i], result[j]] = [result[j], result[i]] } return result }
-    if (!likedTracks.length) return shuffle(pool)
-    const likedIds = new Set(likedTracks.map(track => track.id))
-    const genres = new Map<string, number>()
-    const artists = new Set(likedTracks.map(track => track.user?.id).filter((id): id is number => id != null))
-    likedTracks.forEach(track => { const key = genreKey(track.genre); if (key) genres.set(key, (genres.get(key) || 0) + 1) })
-    const ranked = pool.filter(track => !likedIds.has(track.id)).map((track, index) => ({ track, index, score: (genres.get(genreKey(track.genre)) || 0) * 3 + (track.user?.id && artists.has(track.user.id) ? 2 : 0) }))
-    ranked.sort((a, b) => b.score - a.score || a.index - b.index)
-    const shortlist = ranked.slice(0, 48).map(item => item.track)
-    return ranked.length ? [...shuffle(shortlist), ...ranked.slice(48).map(item => item.track)] : shuffle(likedTracks)
-  }, [discover, dailyPicks, likedTracks, shuffleSeed])
+    return searchRecommendations(likedTracks, pool, recent?.status === 'ready' ? recent.data : [], shuffleSeed)
+  }, [discover, dailyPicks, likedTracks, recent, shuffleSeed])
   const resultTracks = tracks?.status === 'ready' ? genreSearch ? tracks.data.filter(track => sameGenre(track.genre, query)) : tracks.data : []
   useEffect(() => setTab(searchKind), [searchKind])
   useEffect(() => setSelectedIndex(0), [query])
@@ -481,9 +470,8 @@ function SearchPage({ query }: { query: string }) {
     useApp.getState().clearArtistLookup()
     if (match) openArtist(match.id, match.username)
   }, [artistLookup, query, users, openArtist])
-  const { data: recent } = useTracks('history', undefined, undefined, !query.trim())
   const { data: vibe, isLoading: vibeLoading, error: vibeError } = useQuery({ queryKey: ['vibe', query], queryFn: () => api.vibeSearch(query), enabled: tab === 'vibe' && query.trim().length >= 2 })
-  if (!searching) return <div className="page-content search-page"><GenreCarousel onSelect={genre => useApp.getState().setSearch(genre)} english={english} /><div className="search-welcome"><span className="page-kicker">FASTCLOUD / {t('ПОИСК', 'SEARCH')}</span><h1>{t('С чего начнём?', 'What are we listening to?')}</h1><p>{t('Ищи трек, автора или настроение. А пока — музыка, которая может тебе понравиться.', 'Find a track, artist or mood. Here is something for you right now.')}</p></div><SectionTitle title={likedTracks.length ? t('На основе твоего вкуса', 'For your taste') : t('С чего начать', 'Start listening')} subtitle={likedTracks.length ? t('Жанры и авторы из твоих лайков', 'Genres and artists from your likes') : t('Треки из каталога', 'Tracks from the catalog')} />{suggested.length ? <TrackRows tracks={suggested.slice(0, 16)} /> : <Status value={discover}>{items => <TrackRows tracks={items.slice(0, 16)} />}</Status>}{recent?.status === 'ready' && recent.data.length > 0 && <><SectionTitle title={t('Недавно слушал', 'Recently played')} /><TrackRows tracks={recent.data.slice(0, 6)} /></>}</div>
+  if (!searching) return <div className="page-content search-page"><GenreCarousel onSelect={genre => useApp.getState().setSearch(genre)} english={english} /><div className="search-welcome"><span className="page-kicker">FASTCLOUD / {t('ПОИСК', 'SEARCH')}</span><h1>{t('С чего начнём?', 'What are we listening to?')}</h1><p>{t('Ищи трек, автора или настроение. А пока — музыка, которая может тебе понравиться.', 'Find a track, artist or mood. Here is something for you right now.')}</p></div><SectionTitle title={likedTracks.length ? t('На основе твоего вкуса', 'For your taste') : t('С чего начать', 'Start listening')} subtitle={likedTracks.length ? t('Жанры и авторы из твоих лайков', 'Genres and artists from your likes') : t('Треки из каталога', 'Tracks from the catalog')} />{suggested.length ? <TrackRows tracks={suggested} /> : <Status value={discover}>{() => <Empty message={t('Пока нет новых рекомендаций', 'No new recommendations yet')} detail={t('Попробуй открыть поиск позже.', 'Try opening search again later.')} />}</Status>}{recent?.status === 'ready' && recent.data.length > 0 && <><SectionTitle title={t('Недавно слушал', 'Recently played')} /><TrackRows tracks={recent.data.slice(0, 6)} /></>}</div>
   return <div className="page-content search-page"><GenreCarousel selected={query} onSelect={genre => useApp.getState().setSearch(genre)} english={english} /><SectionTitle title={`${t('Результаты', 'Results')}: “${query}”`} subtitle={t('Поиск по SoundCloud', 'Search SoundCloud')} />{keyError && <p className="error-text" role="alert">{keyError}</p>}<div className="tabs"><button className={tab === 'tracks' ? 'active' : ''} onClick={() => setTab('tracks')}>{t('Треки', 'Tracks')}</button><button className={tab === 'vibe' ? 'active' : ''} onClick={() => setTab('vibe')}>{t('По настроению', 'By mood')}</button><button className={tab === 'playlists' ? 'active' : ''} onClick={() => setTab('playlists')}>{t('Плейлисты', 'Playlists')}</button><button className={tab === 'albums' ? 'active' : ''} onClick={() => setTab('albums')}>{t('Альбомы', 'Albums')}</button><button className={tab === 'artists' ? 'active' : ''} onClick={() => setTab('artists')}>{t('Авторы', 'Artists')}</button></div>
     {tab === 'tracks' && <div className="search-results"><Status value={tracks}>{() => <TrackRows tracks={resultTracks} activeIndex={selectedIndex} />}</Status></div>}
     {tab === 'vibe' && <>{query.trim().length < 2 ? <Empty message={t('Опиши настроение', 'Describe a mood')} detail={t('Например: спокойная ночная музыка', 'For example: calm music for the night')} /> : vibeLoading ? <div className="status"><LoaderCircle className="spin" /> {t('Ищем подходящее звучание…', 'Finding the right sound…')}</div> : vibeError ? <Empty message={t('Поиск не удался', 'Search failed')} detail={String(vibeError)} /> : <TrackRows tracks={vibe || []} />}</>}

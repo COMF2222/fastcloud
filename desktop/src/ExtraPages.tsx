@@ -10,8 +10,8 @@ import { GenreCarousel } from './GenreCarousel'
 import { releaseGenres, releaseMatchesGenre, sameGenre } from './genres'
 import { artist, duration, type Data, type Playlist, type Track, type User } from './types'
 
-function useRemote<T>(key: unknown[], load: () => Promise<T>, enabled = true) {
-  return useQuery({ queryKey: key, queryFn: load, enabled, refetchInterval: result => {
+function useRemote<T>(key: unknown[], load: () => Promise<T>, enabled = true, staleTime = 0) {
+  return useQuery({ queryKey: key, queryFn: load, enabled, staleTime, refetchInterval: result => {
     const status = (result.state.data as { status?: string } | undefined)?.status
     return status === 'loading' || status === 'unavailable' ? 1200 : status === 'failed' ? 6000 : false
   } })
@@ -227,9 +227,7 @@ export function CatalogPage() {
   useEffect(() => { const timer = window.setTimeout(() => setDebouncedQuery(query.trim()), 250); return () => window.clearTimeout(timer) }, [query])
   const [day, setDay] = useState(() => Math.floor(Date.now() / 86400000))
   useEffect(() => { const timer = window.setInterval(() => setDay(Math.floor(Date.now() / 86400000)), 60_000); return () => window.clearInterval(timer) }, [])
-  const { data: lists } = useRemote(['catalog-releases', day, debouncedQuery], () => debouncedQuery ? api.playlists('search', debouncedQuery) : api.catalogReleases(day), tab === 'albums')
-  const { data: own } = useRemote(['playlists', 'mine'], () => api.playlists('mine'), tab === 'albums' && !debouncedQuery)
-  const { data: saved } = useRemote(['playlists', 'liked'], () => api.playlists('liked'), tab === 'albums' && !debouncedQuery)
+  const { data: lists } = useRemote(['catalog-releases', day, debouncedQuery], () => debouncedQuery ? api.playlists('search', debouncedQuery) : api.catalogReleases(day), tab === 'albums', debouncedQuery ? 0 : 10 * 60_000)
   const { data: users } = useRemote(['users', debouncedQuery], () => api.users(debouncedQuery), tab === 'artists' && !!debouncedQuery)
   const { data: tracks } = useRemote(['tracks', 'genre', genre], () => api.tracks('genre', genre), !debouncedQuery && !!genre)
   const genreTracks = tracks?.status === 'ready' ? tracks.data.filter(track => sameGenre(track.genre, genre)) : []
@@ -238,6 +236,9 @@ export function CatalogPage() {
   const isRelease = (item: Playlist) => item.is_album || ['album', 'ep', 'single', 'compilation'].includes((item.set_type || item.playlist_type || '').toLocaleLowerCase())
   const albums = searched.filter(item => isRelease(item) && (!genre || debouncedQuery || releaseMatchesGenre(item, genre)))
   const collections = searched.filter(item => !isRelease(item) && (!genre || debouncedQuery || releaseMatchesGenre(item, genre)))
+  const loadPersonalAlbums = tab === 'albums' && !debouncedQuery && lists?.status === 'ready' && !albums.length
+  const { data: own } = useRemote(['playlists', 'mine'], () => api.playlists('mine'), loadPersonalAlbums)
+  const { data: saved } = useRemote(['playlists', 'liked'], () => api.playlists('liked'), loadPersonalAlbums)
   const personalAlbums = [...new Map([...(saved?.status === 'ready' ? saved.data : []), ...(own?.status === 'ready' ? own.data : [])].filter(isAlbum).map(item => [item.id, item])).values()]
   const showPersonalAlbums = !debouncedQuery && lists?.status === 'ready' && !albums.length && personalAlbums.length > 0
   const personalAlbumsPending = !debouncedQuery && !albums.length && (!own || !saved || own.status === 'loading' || saved.status === 'loading')

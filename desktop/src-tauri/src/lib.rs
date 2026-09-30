@@ -1054,30 +1054,30 @@ async fn playlists_data(
 async fn catalog_releases(state: tauri::State<'_, AppState>, day: u32) -> Result<Data<Vec<Playlist>>, String> {
     if state.client.is_demo() { return Ok(Data::Ready(demo::demo_playlists())); }
     if matches!(*state.connection.lock(), Connection::Connecting) { return Ok(Data::Loading); }
-    let mut rows = Vec::new();
-    let mut pager = api::endpoints::browse_playlists(&state.client).await;
-    match pager.next_page().await {
-        Ok(page) => {
-            rows.extend(page);
-            for _ in 0..(day % 3 + 1) {
-                let next = pager.next_page().await.unwrap_or_default();
-                if next.is_empty() { break; }
-                rows.extend(next);
-            }
+    let started = std::time::Instant::now();
+    let rotating = ["album", "ep", "single", "compilation"][day as usize % 4];
+    let browse = async {
+        let mut pager = api::endpoints::browse_playlists(&state.client).await;
+        let mut rows = pager.next_page().await.ok()?;
+        for _ in 0..(day % 3 + 1) {
+            let next = pager.next_page().await.unwrap_or_default();
+            if next.is_empty() { break; }
+            rows.extend(next);
         }
-        Err(_) => {
-            rows.extend(api::endpoints::search_playlists(&state.client, "album").await.next_page().await.map_err(|error| error.to_string())?);
-        }
-    }
-    if rows.is_empty() {
+        Some(rows)
+    };
+    let extra = async { api::endpoints::search_playlists(&state.client, rotating).await.next_page().await.ok() };
+    let (browsed, extra) = tokio::join!(browse, extra);
+    let mut rows = browsed.unwrap_or_default();
+    if rows.is_empty() && (rotating != "album" || extra.as_ref().is_none_or(Vec::is_empty)) {
         rows.extend(api::endpoints::search_playlists(&state.client, "album").await.next_page().await.map_err(|error| error.to_string())?);
     }
-    let rotating = ["album", "ep", "single", "compilation"][day as usize % 4];
-    if let Ok(extra) = api::endpoints::search_playlists(&state.client, rotating).await.next_page().await {
+    if let Some(extra) = extra {
         rows.extend(extra);
     }
     let mut seen = std::collections::HashSet::new();
     rows.retain(|item| seen.insert(item.id));
+    log::debug!("Catalog releases loaded {} entries in {:?}", rows.len(), started.elapsed());
     Ok(Data::Ready(rows))
 }
 
