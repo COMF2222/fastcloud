@@ -203,9 +203,14 @@ export const api = {
   },
   transport: (action: string, value?: number, index?: number, target?: number) => {
     if (!preview) return invoke<void>('transport', { action, value, index, target })
+    const moveTo = (next: number) => {
+      previewPlayer.current = previewPlayer.queue[next] ? next : null
+      previewPlayer.positionMs = 0
+      previewPlayer.durationMs = previewPlayer.queue[next]?.full_duration_ms || previewPlayer.queue[next]?.duration || 0
+    }
     if (action === 'toggle') previewPlayer.isPlaying = !previewPlayer.isPlaying
-    if (action === 'next') previewPlayer.current = Math.min((previewPlayer.current ?? -1) + 1, previewPlayer.queue.length - 1)
-    if (action === 'previous') previewPlayer.current = Math.max((previewPlayer.current ?? 0) - 1, 0)
+    if (action === 'next') moveTo(Math.min((previewPlayer.current ?? -1) + 1, previewPlayer.queue.length - 1))
+    if (action === 'previous') moveTo(Math.max((previewPlayer.current ?? 0) - 1, 0))
     if (action === 'volume') previewPlayer.volume = value || 0
     if (action === 'speed') previewPlayer.playbackSpeed = Math.max(.5, Math.min(2, value || 1))
     if (action === 'seek') previewPlayer.positionMs = value || 0
@@ -217,7 +222,7 @@ export const api = {
       else if (previewPlayer.positionMs >= previewPlayer.abStartMs + 500) previewPlayer.abEndMs = previewPlayer.positionMs
     }
     if (action === 'ab_clear') { previewPlayer.abStartMs = null; previewPlayer.abEndMs = null }
-    if (action === 'skip_to') previewPlayer.current = index ?? 0
+    if (action === 'skip_to') moveTo(index ?? 0)
     if (action === 'remove' && index != null) {
       previewPlayer.queue = previewPlayer.queue.filter((_, i) => i !== index)
       if (previewPlayer.current != null) previewPlayer.current = index < previewPlayer.current ? previewPlayer.current - 1 : index === previewPlayer.current ? null : previewPlayer.current
