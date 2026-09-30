@@ -87,16 +87,11 @@ export function SettingsSections({ section, settings, update, showDeveloperSetti
     <div className="settings-card">
       <h3>{t('Импорт из Яндекс Музыки', 'Import from Yandex Music')}</h3>
       <p className="muted">{t('Любимые треки ищутся в SoundCloud и собираются в отдельный плейлист.', 'Liked tracks are matched in SoundCloud and added to a separate playlist.')}</p>
-      <details className="advanced-setting">
-        <summary>{t('Где взять токен', 'How to get a token')}</summary>
-        <ol>
-          <li>{t('Открой инструкцию сообщества yandex-music-api и получи токен через OAuth Device Flow или браузер.', 'Open the yandex-music-api community guide and get a token through OAuth Device Flow or your browser.')}</li>
-          <li>{t('Войди в нужный аккаунт Яндекса и скопируй только значение access_token.', 'Sign in to the intended Yandex account and copy only the access_token value.')}</li>
-          <li>{t('Вставь токен ниже и нажми «Проверить токен», затем «Импортировать лайки».', 'Paste the token below, select “Check token”, then “Import likes”.')}</li>
-        </ol>
-        <p><a href="https://github.com/MarshalX/yandex-music-api/blob/main/docs/source/token.md" target="_blank" rel="noreferrer">{t('Открыть инструкцию по токену ↗', 'Open token guide ↗')}</a></p>
-        <p className="muted">{t('Токен нужен только на этом компьютере для импорта. Не отправляй его другим людям и не вставляй в чат.', 'The token is used on this computer for import. Do not send it to others or paste it into chat.')}</p>
-      </details>
+      <div className="yandex-token-guide">
+        <strong>{t('Как получить токен Яндекс Музыки:', 'How to get a Yandex Music token:')}</strong>
+        <p><a href="https://ym.marshal.dev/token/" target="_blank" rel="noreferrer">ym.marshal.dev/token/</a> — {t('открой раздел «Альтернативные способы», выбери подходящий способ и вставь полученный OAuth-токен ниже.', 'open “Alternative methods”, choose a suitable method, then paste the OAuth token below.')}</p>
+        <p>{t('Токен даёт доступ к твоей Яндекс Музыке. Вставляй его только в Fastcloud и никому не отправляй.', 'The token grants access to your Yandex Music account. Paste it only into Fastcloud and do not share it.')}</p>
+      </div>
       <div className="inline-form">
         <input type="password" autoComplete="off" value={token} disabled={checkingToken || importState?.running} onChange={event => { setToken(event.target.value); setTokenCheck('') }} placeholder={t('OAuth токен Яндекс Музыки', 'Yandex Music OAuth token')} aria-label={t('Токен Яндекс Музыки', 'Yandex Music token')} />
         <button className="secondary-button" disabled={!token.trim() || checkingToken || importState?.running} onClick={() => { setCheckingToken(true); setTokenCheck(''); void api.checkYandexToken(token).then(count => setTokenCheck(t(`Токен работает: доступно ${count} лайков.`, `Token works: ${count} liked tracks available.`))).catch(error => setTokenCheck(String(error))).finally(() => setCheckingToken(false)) }}>{checkingToken ? t('Проверяем…', 'Checking…') : t('Проверить токен', 'Check token')}</button>

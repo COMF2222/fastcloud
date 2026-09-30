@@ -317,6 +317,11 @@ impl Player {
         st.queue_revision = st.queue_revision.wrapping_add(1);
         st.shuffle = shuffle;
         st.order = build_order(st.queue.len(), shuffle);
+        if shuffle {
+            if let Some(position) = st.order.iter().position(|&index| index == start) {
+                st.order.swap(0, position);
+            }
+        }
         st.current = Some(start);
         let track = st.queue[start].clone();
         drop(st);
@@ -325,22 +330,45 @@ impl Player {
 
     pub fn enqueue(&self, tracks: Vec<Track>, play_next: bool) {
         let mut st = self.state.lock();
+        if tracks.is_empty() {
+            return;
+        }
         if st.queue.is_empty() {
             drop(st);
             self.play_queue(tracks, 0, false);
             return;
         }
+        let old_len = st.queue.len();
+        let added = tracks.len();
         if play_next {
             let cur = st.current.unwrap_or(0);
             let split = (cur + 1).min(st.queue.len());
             let mut tail = st.queue.split_off(split);
             st.queue.extend(tracks);
             st.queue.append(&mut tail);
+            if st.shuffle {
+                for index in &mut st.order {
+                    if *index >= split {
+                        *index += added;
+                    }
+                }
+                let insert_at = st.current.and_then(|current| st.order.iter().position(|&index| index == current))
+                    .map_or(st.order.len(), |position| position + 1);
+                st.order.splice(insert_at..insert_at, split..split + added);
+            }
         } else {
             st.queue.extend(tracks);
+            if st.shuffle {
+                let mut incoming: Vec<usize> = (old_len..old_len + added).collect();
+                use rand::seq::SliceRandom;
+                incoming.shuffle(&mut rand::rng());
+                st.order.extend(incoming);
+            }
         }
         st.queue_revision = st.queue_revision.wrapping_add(1);
-        st.order = build_order(st.queue.len(), st.shuffle);
+        if !st.shuffle {
+            st.order = build_order(st.queue.len(), false);
+        }
     }
 
     /// Keep the current track, upcoming tracks and a short back history.
@@ -379,13 +407,13 @@ impl Player {
     pub fn toggle_shuffle(&self) {
         let mut st = self.state.lock();
         st.shuffle = !st.shuffle;
-        let cur = st.current;
-        st.order = build_order(st.queue.len(), st.shuffle);
-        if let Some(c) = cur {
-            // Keep current track first in shuffle order.
-            if let Some(pos) = st.order.iter().position(|&x| x == c) {
-                st.order.swap(0, pos);
-            }
+        if st.shuffle {
+            let upcoming_start = st.current.and_then(|current| st.order.iter().position(|&index| index == current))
+                .map_or(0, |position| position + 1);
+            use rand::seq::SliceRandom;
+            st.order[upcoming_start..].shuffle(&mut rand::rng());
+        } else {
+            st.order = build_order(st.queue.len(), false);
         }
     }
 
@@ -762,7 +790,15 @@ impl Player {
     /// which is what made dragging the bar backwards jump to wherever the
     /// buffer happened to start.
     pub fn seek_ms(&self, ms: u64) {
-        if self.output.can_seek_to(ms) {
+        let loading = {
+            let mut st = self.state.lock();
+            if st.preview_fallback && ms >= st.duration_ms {
+                st.error = Some("SoundCloud provides only a short preview for this track".into());
+                return;
+            }
+            st.loading
+        };
+        if !loading && self.output.can_seek_to(ms) {
             self.output.seek_ms(ms);
             let mut st = self.state.lock();
             st.position_ms = ms;
@@ -910,7 +946,9 @@ impl Player {
 
         let mut first_samples: Vec<f32>;
         let mut decode_skip_ms = start_ms;
-        let mut is_preview = false;
+        let mut output_start_ms = start_ms;
+        let available_duration_ms: u64;
+        let is_preview: bool;
         let source_rate: u32;
         let bitrate_kbps;
         let channels: u16;
@@ -924,9 +962,13 @@ impl Player {
                 if !self.load_is_current(generation) {
                     return Ok(());
                 }
+                let duration_ms = pl.duration_ms().context("empty HLS playlist")?;
+                available_duration_ms = duration_ms;
+                is_preview = duration_ms.saturating_add(10_000) < track.effective_duration_ms();
+                output_start_ms = preview_seek_start(start_ms, duration_ms);
                 let is_fmp4 = pl.init_uri.is_some();
-                let (first_segment, segment_start_ms) = pl.seek_point(start_ms);
-                decode_skip_ms = start_ms.saturating_sub(segment_start_ms);
+                let (first_segment, segment_start_ms) = pl.seek_point(output_start_ms);
+                decode_skip_ms = output_start_ms.saturating_sub(segment_start_ms);
                 {
                     let mut slot = self.decoder.lock();
                     slot.playlist = Some(pl);
@@ -1012,6 +1054,13 @@ impl Player {
             first_samples = samples;
             source_rate = rate;
             channels = chans;
+            let duration_ms = first_samples.len() as u64 / 2 * 1000 / u64::from(rate.max(1));
+            anyhow::ensure!(duration_ms > 0, "preview stream contained no audio");
+            available_duration_ms = duration_ms;
+            if start_ms >= duration_ms {
+                output_start_ms = preview_seek_start(start_ms, duration_ms);
+                decode_skip_ms = output_start_ms;
+            }
             // The field names its own rate, as the full streams do.
             bitrate_kbps = 128;
             is_preview = true;
@@ -1025,18 +1074,24 @@ impl Player {
             let skip_frames = (decode_skip_ms * source_rate as u64 / 1000) as usize * 2;
             first_samples.drain(..skip_frames.min(first_samples.len()));
         }
+        anyhow::ensure!(!first_samples.is_empty(), "seek position has no decodable audio");
 
         if !self.load_is_current(generation) {
             return Ok(());
         }
 
         self.output
-            .start_track(first_samples, source_rate, true, start_ms);
+            .start_track(first_samples, source_rate, true, output_start_ms);
         {
             let mut st = self.state.lock();
             st.loading = false;
             st.is_playing = true;
             st.preview_fallback = is_preview;
+            st.duration_ms = available_duration_ms;
+            st.position_ms = output_start_ms;
+            if start_ms >= available_duration_ms {
+                st.error = Some("SoundCloud stream is shorter than the requested position".into());
+            }
             st.sample_rate = source_rate;
             st.bitrate_kbps = bitrate_kbps;
             st.channels = channels;
@@ -1086,6 +1141,8 @@ impl Player {
     /// segments as needed, advance the queue on track end (gapless).
     pub async fn run(self: Arc<Self>) {
         let mut last_checkpoint = Instant::now();
+        let mut segment_failures = 0u8;
+        let mut failure_generation = 0u64;
         loop {
             if *self.stop.lock() {
                 return;
@@ -1107,6 +1164,7 @@ impl Player {
                 continue;
             }
             if should_decode_more(buffered, loading) {
+                let cycle_generation = self.load_generation.load(Ordering::Acquire);
                 let action = {
                     let mut slot = self.decoder.lock();
                     if slot.exhausted {
@@ -1169,17 +1227,37 @@ impl Player {
                         }
                     }
                 };
+                if !self.load_is_current(cycle_generation) {
+                    continue;
+                }
                 match action {
                     DecodeAction::None => {}
                     DecodeAction::Samples(out, rate) => {
                         self.output.append_samples(&out, rate);
                     }
                     DecodeAction::FetchMore => {
-                        let generation = self.load_generation.load(Ordering::Acquire);
-                        if let Err(e) = self.fetch_and_append(2, generation).await {
-                            log::warn!("segment fetch: {e}");
-                            self.decoder.lock().inner.wait_for_append();
-                            tokio::time::sleep(Duration::from_millis(350)).await;
+                        if failure_generation != cycle_generation {
+                            failure_generation = cycle_generation;
+                            segment_failures = 0;
+                        }
+                        match self.fetch_and_append(2, cycle_generation).await {
+                            Ok(()) => segment_failures = 0,
+                            Err(e) if self.load_is_current(cycle_generation) => {
+                                segment_failures = segment_failures.saturating_add(1);
+                                log::warn!("segment fetch (attempt {segment_failures}): {e}");
+                                if segment_failures >= 3 {
+                                    let mut slot = self.decoder.lock();
+                                    slot.failed = true;
+                                    slot.exhausted = true;
+                                    drop(slot);
+                                    self.pause();
+                                    self.state.lock().error = Some(format!("Audio stream interrupted: {e}"));
+                                } else {
+                                    self.decoder.lock().inner.wait_for_append();
+                                    tokio::time::sleep(Duration::from_millis(350)).await;
+                                }
+                            }
+                            Err(_) => {}
                         }
                     }
                     DecodeAction::TrackEnd => {
@@ -1401,6 +1479,10 @@ fn build_order(len: usize, shuffle: bool) -> Vec<usize> {
     order
 }
 
+fn preview_seek_start(requested_ms: u64, preview_duration_ms: u64) -> u64 {
+    if requested_ms >= preview_duration_ms { 0 } else { requested_ms }
+}
+
 /// Upcoming indices after `current` in play `order`.
 fn upcoming_order(order: &[usize], current: Option<usize>) -> Vec<usize> {
     let Some(cur) = current else {
@@ -1465,6 +1547,46 @@ mod tests {
     #[test]
     fn order_linear() {
         assert_eq!(build_order(3, false), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn seeking_past_a_short_preview_restarts_it_instead_of_playing_an_empty_buffer() {
+        assert_eq!(preview_seek_start(120_000, 30_000), 0);
+        assert_eq!(preview_seek_start(12_000, 30_000), 12_000);
+    }
+
+    #[test]
+    fn shuffle_enqueue_keeps_current_and_existing_upcoming_tracks() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let player = Player::new(
+            Arc::new(AudioOutput::silent([0.0; 10], 0.8)),
+            Arc::new(crate::api::ApiClient::demo()),
+            Arc::new(AudioCache::disabled()),
+            dir.path().join("settings.json"),
+            runtime.handle().clone(),
+        );
+        let track = |id| Track {
+            id, title: format!("Track {id}"),
+            ..serde_json::from_str(r#"{"id":0,"title":"Track"}"#).unwrap()
+        };
+        {
+            let mut state = player.state.lock();
+            state.queue = (1..=4).map(track).collect();
+            state.current = Some(1);
+            state.order = vec![0, 1, 3, 2];
+            state.shuffle = true;
+        }
+        player.enqueue(vec![track(5)], true);
+        {
+            let state = player.state.lock();
+            assert_eq!(state.current, Some(1));
+            assert_eq!(state.order, vec![0, 1, 2, 4, 3]);
+            assert_eq!(state.queue[2].id, 5);
+        }
+        player.enqueue(vec![track(6)], false);
+        let state = player.state.lock();
+        assert_eq!(state.order, vec![0, 1, 2, 4, 3, 5]);
     }
 
     #[test]

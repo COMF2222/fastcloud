@@ -16,6 +16,17 @@ pub struct MediaPlaylist {
 }
 
 impl MediaPlaylist {
+    pub fn duration_ms(&self) -> Option<u64> {
+        if self.segments.is_empty() {
+            return None;
+        }
+        let fallback = self.target_duration.filter(|seconds| *seconds > 0.0).unwrap_or(10.0);
+        Some(self.segments.iter().enumerate().map(|(index, _)| {
+            let seconds = self.segment_durations.get(index).copied().filter(|seconds| *seconds > 0.0).unwrap_or(fallback);
+            (seconds * 1000.0).round() as u64
+        }).sum())
+    }
+
     /// Pick the segment containing `target_ms` and return its absolute start.
     /// Seeking can then download only that segment onward instead of replaying
     /// the entire stream from byte zero.
@@ -123,7 +134,7 @@ impl HlsDownloader {
     }
 
     fn request(&self, url: &str) -> reqwest::RequestBuilder {
-        let mut request = self.http.get(url);
+        let mut request = self.http.get(url).timeout(std::time::Duration::from_secs(20));
         // Stream URLs now start on the API host and redirect to a CDN.
         // Authorize that first hop only; reqwest strips it on cross-host redirects.
         if needs_oauth(url)
@@ -252,6 +263,7 @@ mod tests {
         assert_eq!(pl.segments[0], "https://media.example/hls/seg1.ts");
         assert_eq!(pl.segments[1], "https://cdn.example/seg2.ts");
         assert_eq!(pl.segment_durations, vec![9.9, 9.9]);
+        assert_eq!(pl.duration_ms(), Some(19_800));
         assert_eq!(pl.target_duration, Some(10.0));
     }
 

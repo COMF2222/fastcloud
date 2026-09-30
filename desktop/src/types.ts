@@ -67,6 +67,7 @@ export type PlayerState = {
   loading: boolean
   positionMs: number
   durationMs: number
+  previewFallback: boolean
   volume: number
   playbackSpeed: number
   shuffle: boolean

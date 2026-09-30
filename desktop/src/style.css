@@ -383,6 +383,10 @@ html[data-theme="light"] { --surface-base: #eff0f4; --surface-nav: #f9f9fb; --su
 .storage-paths span { overflow-wrap: anywhere; color: var(--text-muted); }
 .advanced-setting { margin-top: 14px; color: var(--text-muted); font-size: 11px; }
 .advanced-setting summary { cursor: pointer; }
+.yandex-token-guide { margin: 18px 0; color: var(--text-muted); font-size: 12px; line-height: 1.6; }
+.yandex-token-guide strong { color: var(--text); }
+.yandex-token-guide a { color: var(--accent); }
+.yandex-token-guide p { margin: 8px 0 0; }
 .offline-summary strong { color: var(--text); font-size: 18px; }
 .offline-summary span { color: var(--text-muted); font-size: 10px; }
 .offline-summary .primary-button { margin-left: auto; }

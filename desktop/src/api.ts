@@ -37,7 +37,7 @@ const demo: Track[] = [
   'Northern Lights', 'Sunset Drive', 'Rain on Glass', 'Neon District', 'Paper Planes',
   'Golden Hour', 'Static Fields', 'Low Tide', 'Concrete Garden', 'Afterglow',
 ].map((title, index) => ({ id: 1000 + index, title, duration: 120000 + index * 13000, user: { id: 1, username: 'SoundCloud Demo' }, genre: 'Ambient / Electronic', playback_count: 10000 + index * 2341 }))
-let previewPlayer: PlayerState = { queue: [...demo], current: null, waveActive: false, isPlaying: false, loading: false, positionMs: 0, durationMs: 0, volume: .8, playbackSpeed: 1, shuffle: false, repeat: 'Off', abStartMs: null, abEndMs: null, bitrateKbps: 0, sampleRate: 0, error: null }
+let previewPlayer: PlayerState = { queue: [...demo], current: null, waveActive: false, isPlaying: false, loading: false, positionMs: 0, durationMs: 0, previewFallback: false, volume: .8, playbackSpeed: 1, shuffle: false, repeat: 'Off', abStartMs: null, abEndMs: null, bitrateKbps: 0, sampleRate: 0, error: null }
 const previewLikes = new Set<number>()
 const previewWaveDislikes = new Set<number>()
 const previewOffline = new Map<number, OfflineEntry>()
