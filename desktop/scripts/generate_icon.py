@@ -1,16 +1,13 @@
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image
 
 root = Path(__file__).resolve().parents[1] / "src-tauri" / "icons"
 root.mkdir(parents=True, exist_ok=True)
 
-image = Image.new("RGBA", (256, 256), (0, 0, 0, 0))
-draw = ImageDraw.Draw(image)
-draw.rounded_rectangle((12, 12, 244, 244), radius=62, fill=(248, 103, 70, 255))
-for x, height in [(75, 52), (104, 105), (133, 142), (162, 93), (191, 43)]:
-    top = (256 - height) // 2
-    draw.rounded_rectangle((x - 7, top, x + 7, top + height), radius=7, fill="white")
+source = Path(__file__).resolve().parents[1] / "src" / "assets" / "fastcloud-logo.png"
+image = Image.open(source).convert("RGBA")
+image = image.resize((256, 256), Image.Resampling.LANCZOS)
 
 image.save(root / "icon.png")
 image.resize((32, 32), Image.Resampling.LANCZOS).save(root / "32x32.png")

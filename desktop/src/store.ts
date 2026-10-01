@@ -47,7 +47,7 @@ function savedNavigation(): { location: Location; libraryTab: AppStore['libraryT
         trackId: Number.isSafeInteger(saved.trackId) ? saved.trackId : null,
         trackTitle: typeof saved.trackTitle === 'string' ? saved.trackTitle : '',
       },
-      libraryTab: libraryTabs.includes(saved.libraryTab) ? saved.libraryTab : 'overview',
+      libraryTab: libraryTabs.includes(saved.libraryTab) ? saved.libraryTab : 'tracks',
     }
   } catch { return null }
 }
@@ -62,7 +62,7 @@ const navigate = (state: AppStore, next: Location) => ({
 })
 
 export const useApp = create<AppStore>((set) => ({
-  ...initial, artistLookup: null, queueOpen: false, uploadPath: null, libraryTab: restored?.libraryTab || 'overview', history: [initial], historyIndex: 0,
+  ...initial, artistLookup: null, queueOpen: false, uploadPath: null, libraryTab: restored?.libraryTab || 'tracks', history: [initial], historyIndex: 0,
   setPage: page => set(state => state.page === page ? state : navigate(state, { ...location(state), page })),
   setSearch: search => set(state => {
     const next = { ...location(state), page: 'search' as Page, search, searchKind: 'tracks' as const }

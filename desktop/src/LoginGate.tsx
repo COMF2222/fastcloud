@@ -1,10 +1,11 @@
 import { useState } from 'react'
-import { AudioLines, ArrowRight, LoaderCircle, Music2 } from 'lucide-react'
+import { ArrowRight, LoaderCircle, Music2 } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { api } from './api'
 import { UpdateNotice, UpdateSettingsCard } from './Updater'
 import { FASTCLOUD_SERVER_URL } from './server'
 import type { Connection } from './types'
+import logo from '../src-tauri/icons/128x128.png'
 
 export function LoginGate({ connection, connectionError, english }: { connection?: Connection; connectionError?: string; english: boolean }) {
   const queryClient = useQueryClient()
@@ -37,7 +38,7 @@ export function LoginGate({ connection, connectionError, english }: { connection
         : english ? 'Sign in with your SoundCloud account to open Fastcloud.' : 'Войди в свой SoundCloud-аккаунт, чтобы открыть Fastcloud.'
 
   return <main className="login-screen"><div className="login-card">
-    <div className="login-logo"><AudioLines size={24} strokeWidth={2.4} /><span>fastcloud</span></div>
+    <div className="login-logo"><img src={logo} alt="" /><span>fastcloud</span></div>
     <UpdateNotice english={english} />
     <div className="login-icon"><Music2 size={26} /></div>
     <h1>{english ? 'Your music starts here' : 'Твоя музыка начинается здесь'}</h1>

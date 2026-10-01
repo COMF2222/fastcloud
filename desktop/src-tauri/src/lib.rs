@@ -2186,8 +2186,28 @@ fn set_setting(
         "background_blur" => {
             settings.background_blur = value.as_u64().ok_or("Expected a number")?.min(50) as u8
         }
+        "background_overlay" => {
+            settings.background_overlay = (value.as_f64().ok_or("Expected a number")? as f32).clamp(0.0, 1.0)
+        }
+        "lyrics_scale" => {
+            settings.lyrics_scale = (value.as_f64().ok_or("Expected a number")? as f32).clamp(0.8, 1.5)
+        }
+        "lyrics_blur_past" => {
+            settings.lyrics_blur_past = value.as_bool().ok_or("Expected true or false")?
+        }
+        "lyrics_auto_scroll" => {
+            settings.lyrics_auto_scroll = value.as_bool().ok_or("Expected true or false")?
+        }
         "show_track_numbers" => {
             settings.show_track_numbers = value.as_bool().ok_or("Expected true or false")?
+        }
+        "quick_access" => {
+            let shortcuts: Vec<config::QuickAccessShortcut> =
+                serde_json::from_value(value).map_err(|error| error.to_string())?;
+            if shortcuts.len() > 100 {
+                return Err("Too many quick access shortcuts".into());
+            }
+            settings.quick_access = shortcuts;
         }
         "soundcloud_profile_url" => {
             settings.soundcloud_profile_url =

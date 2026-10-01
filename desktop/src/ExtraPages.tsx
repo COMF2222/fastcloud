@@ -1,3 +1,4 @@
+import { libraryCollections } from './types'
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Heart, MapPin, Music2, Play, Repeat2, Send, Share2, Shuffle } from 'lucide-react'
@@ -21,7 +22,7 @@ function People({ users }: { users: User[] }) {
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.settings })
   const english = settings?.language === 'English'
   if (!users.length) return <Empty message={english ? 'No artists yet' : 'Авторов пока нет'} />
-  return <div className="artist-grid">{users.map(user => <button className="artist-card" key={user.id} onClick={() => useApp.getState().openArtist(user.id, user.username)}>{user.avatar_url ? <RemoteImage className="artist-avatar" src={user.avatar_url} pixels={160} alt="" loading="lazy" /> : <span className="artist-avatar">{user.username.slice(0, 1).toUpperCase()}</span>}<strong>{user.username}</strong><small>{user.followers_count ? `${user.followers_count.toLocaleString(english ? 'en-US' : 'ru-RU')} ${english ? 'followers' : 'подписчиков'}` : english ? 'SoundCloud artist' : 'Автор SoundCloud'}</small></button>)}</div>
+  return <div className="artist-grid">{users.map(user => <button className="artist-card" key={user.id} onClick={() => useApp.getState().openArtist(user.id, user.username)}>{user.avatar_url ? <RemoteImage className="artist-avatar" src={user.avatar_url} pixels={500} alt="" loading="lazy" /> : <span className="artist-avatar">{user.username.slice(0, 1).toUpperCase()}</span>}<strong>{user.username}</strong><small>{user.followers_count ? `${user.followers_count.toLocaleString(english ? 'en-US' : 'ru-RU')} ${english ? 'followers' : 'подписчиков'}` : english ? 'SoundCloud artist' : 'Автор SoundCloud'}</small></button>)}</div>
 }
 
 const isAlbum = (item: Playlist) => item.is_album || item.playlist_type?.toLowerCase() === 'album' || item.set_type?.toLowerCase() === 'album'
@@ -161,7 +162,7 @@ export function LibraryExtra({ tab, filter, view }: { tab: 'liked_playlists' | '
   const english = settings?.language === 'English'
   const t = (ru: string, en: string) => english ? en : ru
   const { data: liked } = useRemote(['playlists', 'liked'], () => api.playlists('liked'), tab === 'liked_playlists' || tab === 'albums')
-  const { data: mine } = useRemote(['playlists', 'mine'], () => api.playlists('mine'), tab === 'albums' && liked != null && liked.status !== 'loading')
+  const { data: mine } = useRemote(['playlists', 'mine'], () => api.playlists('mine'), tab === 'albums')
   const { data: uploads } = useRemote(['tracks', 'uploads'], () => api.tracks('uploads'), tab === 'uploads')
   const { data: history } = useRemote(['tracks', 'history'], () => api.tracks('history'), tab === 'history' || tab === 'stations')
   const { data: likes } = useRemote(['tracks', 'likes', undefined, undefined], () => api.tracks('likes'), tab === 'stations')
@@ -171,7 +172,7 @@ export function LibraryExtra({ tab, filter, view }: { tab: 'liked_playlists' | '
     try { await api.setSetting('autoplay', true); const related = await api.tracks('related', undefined, track.id); await api.play([track, ...(related.status === 'ready' ? related.data : [])], 0); await queryClient.invalidateQueries({ queryKey: ['player'] }) } catch (cause) { setError(String(cause)) }
   }
   if (tab === 'liked_playlists') return <Status value={liked}>{items => <LibraryPlaylists playlists={items.filter(item => !isAlbum(item))} filter={filter} view={view} />}</Status>
-  if (tab === 'albums') return <><SectionTitle title={t('Сохранённые альбомы', 'Saved albums')} /><Status value={liked}>{items => <LibraryPlaylists playlists={items.filter(isAlbum)} filter={filter} view={view} />}</Status>{(mine?.status !== 'ready' || mine.data.some(isAlbum)) && <><SectionTitle title={t('Мои альбомы', 'My albums')} /><Status value={mine}>{items => <LibraryPlaylists playlists={items.filter(isAlbum)} filter={filter} view={view} />}</Status></>}</>
+  if (tab === 'albums') return <Status value={libraryCollections([liked, mine], true)}>{items => <LibraryPlaylists playlists={items} filter={filter} view={view} />}</Status>
   if (tab === 'uploads') return <><UploadForm /><SectionTitle title={t('Загруженные треки', 'Uploaded tracks')} /><Status value={uploads}>{items => <LibraryTracks tracks={items} filter={filter} view={view} />}</Status></>
   if (tab === 'history') return <Status value={history}>{items => <LibraryTracks tracks={items} filter={filter} view={view} />}</Status>
   const seeds = history?.status === 'ready' && history.data.length ? history.data.slice(0, 8) : likes?.status === 'ready' ? likes.data.slice(0, 8) : []

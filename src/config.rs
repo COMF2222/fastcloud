@@ -78,6 +78,18 @@ pub struct Settings {
     /// Blur radius applied to the wallpaper before it reaches the renderer.
     #[serde(default = "default_background_blur")]
     pub background_blur: u8,
+    /// Opacity of the reading layer above a custom wallpaper, 0–1.
+    #[serde(default = "default_background_overlay")]
+    pub background_overlay: f32,
+    /// Relative size of lyrics in the regular right panel and full-screen view.
+    #[serde(default = "default_lyrics_scale")]
+    pub lyrics_scale: f32,
+    /// Soften inactive lyrics around the current line. The saved key is retained.
+    #[serde(default = "default_true")]
+    pub lyrics_blur_past: bool,
+    /// Follow the current lyric line automatically.
+    #[serde(default = "default_true")]
+    pub lyrics_auto_scroll: bool,
     /// Wallpaper renderer semantics. Version zero was Fastcloud's old global
     /// opacity + forced-dim implementation; version one matches the donor.
     #[serde(default = "default_background_style_version")]
@@ -215,6 +227,10 @@ impl Default for Settings {
             background_opacity: default_background_opacity(),
             background_dim: default_background_dim(),
             background_blur: default_background_blur(),
+            background_overlay: default_background_overlay(),
+            lyrics_scale: default_lyrics_scale(),
+            lyrics_blur_past: true,
+            lyrics_auto_scroll: true,
             background_style_version: 1,
             discord_client_id: String::new(),
             discord_presence: false,
@@ -269,7 +285,7 @@ impl Settings {
             self.quick_access.remove(index);
             false
         } else {
-            self.quick_access.push(shortcut);
+            self.quick_access.insert(0, shortcut);
             true
         }
     }
@@ -293,6 +309,14 @@ fn default_background_dim() -> f32 {
 
 fn default_background_blur() -> u8 {
     0
+}
+
+fn default_background_overlay() -> f32 {
+    0.8
+}
+
+fn default_lyrics_scale() -> f32 {
+    1.0
 }
 
 fn default_background_style_version() -> u8 {
@@ -631,6 +655,26 @@ mod tests {
             artwork_url: None,
         }));
         assert!(settings.quick_access.is_empty());
+    }
+
+    #[test]
+    fn newest_quick_access_shortcut_appears_first() {
+        let mut settings = Settings::default();
+        let first = QuickAccessShortcut::Track {
+            id: 1,
+            title: "First".into(),
+            artist: "Artist".into(),
+            artwork_url: None,
+        };
+        let second = QuickAccessShortcut::Track {
+            id: 2,
+            title: "Second".into(),
+            artist: "Artist".into(),
+            artwork_url: None,
+        };
+        settings.toggle_quick_access(first.clone());
+        settings.toggle_quick_access(second.clone());
+        assert_eq!(settings.quick_access, [second, first]);
     }
 
     #[test]

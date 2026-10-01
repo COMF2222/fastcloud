@@ -55,6 +55,17 @@ export type QuickAccessShortcut =
   | 'likes' | 'daily_mix' | 'fresh' | 'vibe' | 'history' | 'station'
 export const quickAccessTarget = (item: QuickAccessShortcut) => typeof item === 'string' ? null : 'track' in item ? { kind: 'track' as const, ...item.track } : 'playlist' in item ? { kind: 'playlist' as const, ...item.playlist } : { kind: 'album' as const, ...item.album }
 export type Data<T> = { status: 'loading' } | { status: 'unavailable' } | { status: 'ready'; data: T } | { status: 'failed'; data: string }
+export function libraryCollections(sources: (Data<Playlist[]> | undefined)[], albums: boolean): Data<Playlist[]> {
+  const items = new Map<number, Playlist>()
+  for (const source of sources) if (source?.status === 'ready') for (const item of source.data) {
+    if (!!(item.is_album || item.playlist_type === 'album' || item.set_type === 'album') === albums) items.set(item.id, item)
+  }
+  if (items.size) return { status: 'ready', data: [...items.values()] }
+  if (sources.some(source => !source || source.status === 'loading')) return { status: 'loading' }
+  const errors = sources.flatMap(source => source?.status === 'failed' ? [source.data] : [])
+  if (errors.length) return { status: 'failed', data: errors.join('\n') }
+  return { status: 'ready', data: [] }
+}
 export type Connection =
   | { status: 'demo' | 'public' | 'signed_in' | 'connecting' | 'registering' }
   | { status: 'pairing'; code: string; url: string }
@@ -81,7 +92,7 @@ export type PlayerState = {
 export type OfflineEntry = { track: Track; bytes: number }
 export type StorageReport = { installationBytes: number; clapModelBytes: number; clapPreparationBytes: number; offlineBytes: number; audioCacheBytes: number; artworkCacheBytes: number; otherDataBytes: number; otherCacheBytes: number; extraAppDataBytes: number; installationPath: string; dataPath: string; cachePath: string; extraAppDataPath: string }
 export type MainWindowBounds = { x: number; y: number; width: number; height: number; maximized: boolean }
-export type Settings = { autoplay: boolean; compact_rows: boolean; visualiser: 'Spectrum' | 'Scope' | 'Off'; theme: 'Dark' | 'Light' | 'System'; language: 'English' | 'Russian'; liked_ids: number[]; followed_user_ids: number[]; quick_access: QuickAccessShortcut[]; inbox: { label: string; link: string; at: number }[]; mono: boolean; balance: number; eq_enabled: boolean; eq_preamp_db: number; eq_gains_db: number[]; startup_page: 'Home' | 'Search' | 'Library' | 'Settings'; main_window_bounds: MainWindowBounds | null; close_to_tray: boolean; memory_profile: 'Eco' | 'Balanced' | 'Quality'; reduced_motion: boolean; accent_rgb: number[]; background_image: string | null; interface_font: string | null; background_opacity: number; background_dim: number; background_blur: number; show_track_numbers: boolean; soundcloud_profile_url: string | null; discord_client_id: string; discord_presence: boolean; audio_cache_limit_mb: number; eq_auto: boolean; mini_player_style: 'Airwave' | 'Winamp'; winamp_window: boolean; winamp_on_top: boolean; winamp_skin: string | null; winamp_shade: boolean; winamp_eq_window: boolean; winamp_eq_shade: boolean; winamp_pl_window: boolean; winamp_pl_shade: boolean; winamp_pl_rows: number; winamp_scale: number }
+export type Settings = { autoplay: boolean; compact_rows: boolean; visualiser: 'Spectrum' | 'Scope' | 'Off'; theme: 'Dark' | 'Light' | 'System'; language: 'English' | 'Russian'; liked_ids: number[]; followed_user_ids: number[]; quick_access: QuickAccessShortcut[]; inbox: { label: string; link: string; at: number }[]; mono: boolean; balance: number; eq_enabled: boolean; eq_preamp_db: number; eq_gains_db: number[]; startup_page: 'Home' | 'Search' | 'Library' | 'Settings'; main_window_bounds: MainWindowBounds | null; close_to_tray: boolean; memory_profile: 'Eco' | 'Balanced' | 'Quality'; reduced_motion: boolean; accent_rgb: number[]; background_image: string | null; interface_font: string | null; background_opacity: number; background_dim: number; background_blur: number; background_overlay: number; lyrics_scale: number; lyrics_blur_past: boolean; lyrics_auto_scroll: boolean; show_track_numbers: boolean; soundcloud_profile_url: string | null; discord_client_id: string; discord_presence: boolean; audio_cache_limit_mb: number; eq_auto: boolean; mini_player_style: 'Airwave' | 'Winamp'; winamp_window: boolean; winamp_on_top: boolean; winamp_skin: string | null; winamp_shade: boolean; winamp_eq_window: boolean; winamp_eq_shade: boolean; winamp_pl_window: boolean; winamp_pl_shade: boolean; winamp_pl_rows: number; winamp_scale: number }
 export type VisualiserFrame = { bars: number[]; peaks: (number | null)[]; scope: number[] }
 export type WaveformSamples = { values: number[]; height: number }
 
@@ -126,8 +137,8 @@ export const soundcloudImageAt = (source: string, pixels: number) => {
 }
 
 export const artworkForSize = (item: Track | Playlist, size: 'row' | 'card' | 'hero', profile: Settings['memory_profile']) => {
-  const pixels = { row: 200, card: 500, hero: 1080 }[size]
-  const source = profile === 'Eco' ? item.artwork?.['150x150'] || cover(item) : cover(item)
+  const pixels = profile === 'Eco' ? 200 : profile === 'Balanced' && size === 'hero' ? 500 : { row: 200, card: 500, hero: 1080 }[size]
+  const source = cover(item)
   if (!source) return undefined
   return soundcloudImageAt(source, pixels)
 }
