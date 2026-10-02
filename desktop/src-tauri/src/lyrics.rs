@@ -499,26 +499,19 @@ fn genius_text(html: &str) -> Option<String> {
     (!output.is_empty() && output.len() <= 64_000).then(|| output.to_owned())
 }
 
-async fn genius(
-    client: &reqwest::Client,
-    artist: &str,
-    title: &str,
-) -> Result<Option<LyricsRecord>, String> {
-    let response = client
-        .get("https://genius.com/api/search/song")
-        .query(&[("q", format!("{artist} {title}"))])
-        .send()
-        .await
-        .map_err(|_| "Genius connection failed")?;
-    if !response.status().is_success() {
-        return Err(format!("Genius HTTP {}", response.status()));
-    }
-    let data = response
-        .json::<Value>()
-        .await
-        .map_err(|_| "Invalid Genius response")?;
+struct GeniusCandidate {
+    id: u64,
+    title: String,
+    artist: String,
+    url: reqwest::Url,
+}
+
+// Complete JSON traversal before awaiting a page request. Only owned candidates
+// cross await points, keeping the command future compatible with Tauri's Send bound.
+fn genius_candidates(data: &Value, artist: &str, title: &str) -> Vec<GeniusCandidate> {
+    let mut candidates = Vec::new();
     let Some(sections) = data.pointer("/response/sections").and_then(Value::as_array) else {
-        return Ok(None);
+        return candidates;
     };
     for hit in sections
         .iter()
@@ -556,8 +549,41 @@ async fn genius(
         if url.scheme() != "https" || url.host_str() != Some("genius.com") {
             continue;
         }
+        candidates.push(GeniusCandidate {
+            id: song.get("id").and_then(Value::as_u64).unwrap_or(0),
+            title: found_title.into(),
+            artist: found_artist.into(),
+            url,
+        });
+    }
+    candidates
+}
+
+async fn genius(
+    client: &reqwest::Client,
+    artist: &str,
+    title: &str,
+) -> Result<Option<LyricsRecord>, String> {
+    let response = client
+        .get("https://genius.com/api/search/song")
+        .query(&[("q", format!("{artist} {title}"))])
+        .send()
+        .await
+        .map_err(|_| "Genius connection failed")?;
+    if !response.status().is_success() {
+        return Err(format!("Genius HTTP {}", response.status()));
+    }
+    let candidates = genius_candidates(
+        &response
+            .json::<Value>()
+            .await
+            .map_err(|_| "Invalid Genius response")?,
+        artist,
+        title,
+    );
+    for candidate in candidates {
         let mut response = client
-            .get(url.clone())
+            .get(candidate.url.clone())
             .send()
             .await
             .map_err(|_| "Genius page unavailable")?;
@@ -578,16 +604,16 @@ async fn genius(
         let text = String::from_utf8(bytes).map_err(|_| "Invalid Genius page")?;
         if let Some(plain) = genius_text(&text) {
             return Ok(Some(LyricsRecord {
-                id: song.get("id").and_then(Value::as_u64).unwrap_or(0),
-                track_name: found_title.into(),
-                artist_name: found_artist.into(),
+                id: candidate.id,
+                track_name: candidate.title,
+                artist_name: candidate.artist,
                 album_name: None,
                 duration: None,
                 plain_lyrics: Some(plain),
                 synced_lyrics: None,
                 instrumental: false,
                 source: "Genius".into(),
-                source_url: Some(url.to_string()),
+                source_url: Some(candidate.url.to_string()),
             }));
         }
     }
@@ -626,10 +652,10 @@ async fn lookup_sources(
         }
     }
     // This provider cannot distinguish recording versions; never use it for edited audio.
-    for (performer, song) in pairs
-        .iter()
-        .filter(|(_, song)| version_tags(song).is_empty())
-    {
+    for (performer, song) in &pairs {
+        if !version_tags(song).is_empty() {
+            continue;
+        }
         match lyrics_ovh(&client, performer, song).await {
             Ok(Some(record)) => return Ok(Some(record)),
             Ok(None) => answered = true,
@@ -698,6 +724,43 @@ pub async fn search(query: String) -> Result<Vec<LyricsRecord>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lookup_future_satisfies_the_tauri_send_bound() {
+        fn assert_send<T: Send>(_: T) {}
+        // Constructing the future does not poll it or contact any service.
+        assert_send(lookup("Artist".into(), "Song".into(), 180_000, None, None));
+    }
+
+    #[test]
+    fn genius_candidates_own_metadata_and_reject_unrelated_results() {
+        let candidates = {
+            let hit = |id, title, artist, url| {
+                serde_json::json!({"result": {
+                    "id":id,"title":title,"primary_artist":{"name":artist},
+                    "url":url,"lyrics_state":"complete","instrumental":false,
+                }})
+            };
+            let data = serde_json::json!({"response":{"sections":[
+                {"type":"artist","hits":[hit(1,"Song","Artist","https://genius.com/artist")]},
+                {"type":"song","hits":[
+                    hit(2,"Song","Artist","https://genius.com/artist-song-lyrics"),
+                    hit(3,"Song","Another artist","https://genius.com/another-song-lyrics"),
+                    hit(4,"Song (Remix)","Artist","https://genius.com/remix-lyrics"),
+                    hit(5,"Song","Artist","https://example.com/lyrics")
+                ]}
+            ]}});
+            genius_candidates(&data, "Artist", "Song")
+        };
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].id, 2);
+        assert_eq!(candidates[0].title, "Song");
+        assert_eq!(candidates[0].artist, "Artist");
+        assert_eq!(
+            candidates[0].url.as_str(),
+            "https://genius.com/artist-song-lyrics"
+        );
+    }
     fn record(title: &str, artist: &str, seconds: f64) -> LyricsRecord {
         LyricsRecord {
             id: 1,
