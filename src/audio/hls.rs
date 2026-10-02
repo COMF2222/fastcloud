@@ -1,6 +1,25 @@
 #![allow(dead_code)]
 
 use anyhow::{Context, Result};
+use std::sync::Arc;
+
+const MAX_SEGMENT_BYTES: usize = 8 * 1024 * 1024;
+const PREFETCH_SEGMENTS: usize = 2;
+
+type SegmentQueue = Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<Result<Vec<u8>>>>>;
+
+/// A small ordered queue of compressed audio, filled independently of decoding.
+/// Dropping the owner cancels its network task even if a receiver is awaiting it.
+pub struct SegmentPrefetch {
+    pub queue: SegmentQueue,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for SegmentPrefetch {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
 
 /// A minimal M3U8 (HLS) playlist parser: media segments + optional init segment.
 #[derive(Debug, Clone, Default)]
@@ -121,6 +140,46 @@ pub struct HlsDownloader {
 }
 
 impl HlsDownloader {
+    pub fn prefetch(
+        self: &Arc<Self>,
+        urn: String,
+        urls: Vec<String>,
+        runtime: &tokio::runtime::Handle,
+    ) -> SegmentPrefetch {
+        let (sender, receiver) = tokio::sync::mpsc::channel(PREFETCH_SEGMENTS);
+        let downloader = self.clone();
+        let task = runtime.spawn(async move {
+            for url in urls {
+                // Reserve before downloading: queued plus in-flight segments
+                // never exceed two, including while playback is paused.
+                let Ok(permit) = sender.reserve().await else {
+                    return;
+                };
+                let mut attempts = 0;
+                let result = loop {
+                    let result = downloader.segment(&urn, &url).await;
+                    if let Err(error) = &result
+                        && attempts < 2
+                        && retry_segment(error)
+                    {
+                        attempts += 1;
+                        tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+                        continue;
+                    }
+                    break result;
+                };
+                let failed = result.is_err();
+                permit.send(result);
+                if failed {
+                    return;
+                }
+            }
+        });
+        SegmentPrefetch {
+            queue: Arc::new(tokio::sync::Mutex::new(receiver)),
+            task,
+        }
+    }
     pub fn new(http: reqwest::Client, cache: std::sync::Arc<super::cache::AudioCache>) -> Self {
         Self {
             http,
@@ -182,7 +241,7 @@ impl HlsDownloader {
         if !status.is_success() {
             anyhow::bail!("segment fetch {status}: {url}");
         }
-        let bytes = resp.bytes().await?.to_vec();
+        let bytes = read_segment(resp).await?;
         self.cache_segment(track_urn, url, &bytes).await;
         Ok(bytes)
     }
@@ -204,7 +263,7 @@ impl HlsDownloader {
             return Ok(hit);
         }
         let resp = self.request(url).send().await?.error_for_status()?;
-        let bytes = resp.bytes().await?.to_vec();
+        let bytes = read_segment(resp).await?;
         self.cache_segment(track_urn, url, &bytes).await;
         Ok(bytes)
     }
@@ -217,6 +276,26 @@ impl HlsDownloader {
         let _ =
             tokio::task::spawn_blocking(move || cache.put_segment(&track_urn, &url, &bytes)).await;
     }
+}
+
+async fn read_segment(mut response: reqwest::Response) -> Result<Vec<u8>> {
+    anyhow::ensure!(
+        response.content_length().is_none_or(|size| size <= MAX_SEGMENT_BYTES as u64),
+        "Audio segment exceeds the size limit"
+    );
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        anyhow::ensure!(chunk.len() <= MAX_SEGMENT_BYTES.saturating_sub(bytes.len()), "Audio segment exceeds the size limit");
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+fn retry_segment(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<reqwest::Error>().is_some_and(|error| {
+        error.is_timeout() || error.is_connect() || error.is_body()
+            || error.status().is_some_and(|status| status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS)
+    })
 }
 
 fn local_file(url: &str) -> Option<std::path::PathBuf> {
@@ -242,6 +321,98 @@ fn needs_oauth(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn prefetch_delivers_first_segment_before_slow_next_one_and_bounds_lookahead() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let (seen, mut requests) = tokio::sync::mpsc::unbounded_channel();
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let worker_gate = gate.clone();
+        let server = tokio::spawn(async move {
+            for index in 0..4 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0; 4096];
+                socket.read(&mut request).await.unwrap();
+                seen.send(index).unwrap();
+                if index > 0 { worker_gate.acquire().await.unwrap().forget(); }
+                let body = format!("segment-{index}");
+                let response = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let downloader = Arc::new(HlsDownloader::new(reqwest::Client::new(), Arc::new(super::super::cache::AudioCache::disabled())));
+        let prefetch = downloader.prefetch("track".into(), (0..4).map(|index| format!("{base}/{index}")).collect(), &tokio::runtime::Handle::current());
+        assert_eq!(requests.recv().await, Some(0));
+        // A blocked second download must not hold back the completed first one.
+        let first = tokio::time::timeout(std::time::Duration::from_secs(2), async { prefetch.queue.lock().await.recv().await.unwrap().unwrap() }).await.unwrap();
+        assert_eq!(first, b"segment-0");
+        assert_eq!(requests.recv().await, Some(1));
+        gate.add_permits(1);
+        // The next request starts while the consumer is still playing its
+        // first audio; the decoder never has to initiate that cold request.
+        assert_eq!(requests.recv().await, Some(2));
+        assert!(requests.try_recv().is_err());
+        gate.add_permits(1);
+        // Reserve-before-fetch bounds both ready and in-flight data to two.
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(80), requests.recv()).await.is_err());
+        assert_eq!(prefetch.queue.lock().await.recv().await.unwrap().unwrap(), b"segment-1");
+        assert_eq!(requests.recv().await, Some(3));
+        gate.add_permits(1);
+        assert_eq!(prefetch.queue.lock().await.recv().await.unwrap().unwrap(), b"segment-2");
+        assert_eq!(prefetch.queue.lock().await.recv().await.unwrap().unwrap(), b"segment-3");
+        assert!(prefetch.queue.lock().await.recv().await.is_none());
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn replacing_prefetch_cancels_an_inflight_request_and_wakes_the_old_receiver() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let (began, waiting) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            socket.read(&mut request).await.unwrap();
+            // The body stays stalled until the aborted download closes TCP.
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n").await.unwrap();
+            began.send(()).unwrap();
+            assert_eq!(socket.read(&mut request).await.unwrap(), 0);
+        });
+        let downloader = Arc::new(HlsDownloader::new(reqwest::Client::new(), Arc::new(super::super::cache::AudioCache::disabled())));
+        let prefetch = downloader.prefetch("old-track".into(), vec![format!("{base}/segment")], &tokio::runtime::Handle::current());
+        let queue = prefetch.queue.clone();
+        waiting.await.unwrap();
+        assert!(matches!(queue.lock().await.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
+        drop(prefetch);
+        assert!(tokio::time::timeout(std::time::Duration::from_secs(2), async { queue.lock().await.recv().await }).await.unwrap().is_none());
+        tokio::time::timeout(std::time::Duration::from_secs(2), server).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn prefetch_retries_transient_failures_but_never_retries_owner_denial() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for status in ["503 Service Unavailable", "200 OK", "403 Forbidden"] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0; 4096];
+                socket.read(&mut request).await.unwrap();
+                let response = format!("HTTP/1.1 {status}\r\nContent-Length: 5\r\nConnection: close\r\n\r\naudio");
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let downloader = Arc::new(HlsDownloader::new(reqwest::Client::new(), Arc::new(super::super::cache::AudioCache::disabled())));
+        let prefetch = downloader.prefetch("track".into(), vec![format!("{base}/first"), format!("{base}/denied")], &tokio::runtime::Handle::current());
+        assert_eq!(prefetch.queue.lock().await.recv().await.unwrap().unwrap(), b"audio");
+        let failure = prefetch.queue.lock().await.recv().await.unwrap().unwrap_err();
+        assert_eq!(failure.downcast_ref::<reqwest::Error>().unwrap().status(), Some(reqwest::StatusCode::FORBIDDEN));
+        assert!(prefetch.queue.lock().await.recv().await.is_none());
+        server.await.unwrap();
+    }
 
     const PL: &str = "#EXTM3U\n\
         #EXT-X-TARGETDURATION:10\n\

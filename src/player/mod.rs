@@ -4,7 +4,7 @@ use crate::api::endpoints::StreamUrls;
 use crate::api::models::Track;
 use crate::audio::cache::AudioCache;
 use crate::audio::decode::SegmentDecoder;
-use crate::audio::hls::HlsDownloader;
+use crate::audio::hls::{HlsDownloader, SegmentPrefetch};
 use crate::audio::output::AudioOutput;
 use crate::config::Settings;
 use anyhow::{Context as _, Result};
@@ -158,7 +158,7 @@ pub struct Player {
     pub output: Arc<AudioOutput>,
     client: Arc<crate::api::ApiClient>,
     rt: tokio::runtime::Handle,
-    hls: HlsDownloader,
+    hls: Arc<HlsDownloader>,
     http: reqwest::Client,
     settings_path: std::path::PathBuf,
     decoder: Mutex<DecoderSlot>,
@@ -179,6 +179,7 @@ struct DecoderSlot {
     urn: String,
     segments_fetched: usize,
     playlist: Option<crate::audio::hls::MediaPlaylist>,
+    prefetch: Option<SegmentPrefetch>,
     stream_url: Option<String>,
     is_preview: bool,
     /// The decoder has no more data and nothing has arrived since.
@@ -201,6 +202,7 @@ impl DecoderSlot {
             urn: String::new(),
             segments_fetched: 0,
             playlist: None,
+            prefetch: None,
             stream_url: None,
             is_preview: false,
             // Nothing to decode yet: a pull before the first append is not an
@@ -220,6 +222,7 @@ impl DecoderSlot {
     /// Point the slot at a new stream. Also resets `exhausted`, because the old
     /// decoder's emptiness says nothing about the new one.
     fn reset_decoder(&mut self, mime: Option<String>) {
+        self.prefetch.take();
         self.inner = SegmentDecoder::new(mime);
         self.segments_fetched = 0;
         self.exhausted = true;
@@ -240,7 +243,7 @@ impl Player {
             output,
             client,
             rt,
-            hls: HlsDownloader::new(reqwest::Client::new(), cache),
+            hls: Arc::new(HlsDownloader::new(reqwest::Client::new(), cache)),
             http: reqwest::Client::new(),
             settings_path,
             decoder: Mutex::new(DecoderSlot::new()),
@@ -539,6 +542,7 @@ impl Player {
 
     pub fn stop(&self) {
         self.load_generation.fetch_add(1, Ordering::AcqRel);
+        *self.decoder.lock() = DecoderSlot::new();
         let mut st = self.state.lock();
         st.is_playing = false;
         st.current = None;
@@ -864,6 +868,7 @@ impl Player {
 
     fn load_track(&self, track: Track, start_ms: u64) {
         let generation = self.load_generation.fetch_add(1, Ordering::AcqRel) + 1;
+        self.decoder.lock().prefetch.take();
         {
             let mut st = self.state.lock();
             st.loading = true;
@@ -907,6 +912,14 @@ impl Player {
             if let Err(e) = me.load_track_async(track, start_ms, generation).await
                 && me.load_is_current(generation)
             {
+                let mut slot = me.decoder.lock();
+                if !me.load_is_current(generation) {
+                    return;
+                }
+                slot.prefetch.take();
+                slot.failed = true;
+                slot.exhausted = true;
+                drop(slot);
                 let mut st = me.state.lock();
                 st.error = Some(playback_error_message(&e));
                 st.loading = false;
@@ -947,6 +960,9 @@ impl Player {
 
         {
             let mut slot = self.decoder.lock();
+            if !self.load_is_current(generation) {
+                return Ok(());
+            }
             *slot = DecoderSlot::new();
             slot.urn = urn.clone();
         }
@@ -978,6 +994,9 @@ impl Player {
                 decode_skip_ms = output_start_ms.saturating_sub(segment_start_ms);
                 {
                     let mut slot = self.decoder.lock();
+                    if !self.load_is_current(generation) {
+                        return Ok(());
+                    }
                     slot.playlist = Some(pl);
                     slot.stream_url = Some(url);
                     // fMP4 segments are unplayable without the init header;
@@ -988,6 +1007,10 @@ impl Player {
                         "audio/mpeg".into()
                     }));
                     slot.segments_fetched = first_segment;
+                    let urls = slot.playlist.as_ref()
+                        .map(|playlist| playlist.segments[first_segment..].to_vec())
+                        .unwrap_or_default();
+                    slot.prefetch = Some(self.hls.prefetch(urn.clone(), urls, &self.rt));
                 }
                 // Init header first (cached), then media segments.
                 let init_url = {
@@ -1006,7 +1029,11 @@ impl Player {
                     if !self.load_is_current(generation) {
                         return Ok(());
                     }
-                    self.decoder.lock().inner.set_init_segment(init_bytes);
+                    let mut slot = self.decoder.lock();
+                    if !self.load_is_current(generation) {
+                        return Ok(());
+                    }
+                    slot.inner.set_init_segment(init_bytes);
                 }
                 let mut out = Vec::new();
                 let target_ms = initial_decode_target_ms(decode_skip_ms);
@@ -1015,12 +1042,15 @@ impl Player {
                     // decoding made manual track changes wait unnecessarily;
                     // subsequent passes fetch only when the initial 3 s target
                     // still is not satisfied.
-                    self.fetch_and_append(1, generation).await?;
+                    self.fetch_and_append(generation, true).await?;
                     if !self.load_is_current(generation) {
                         return Ok(());
                     }
                     let needs_more = {
                         let mut slot = self.decoder.lock();
+                        if !self.load_is_current(generation) {
+                            return Ok(());
+                        }
                         loop {
                             if !slot.inner.next_packet(&mut out)? {
                                 break slot
@@ -1107,39 +1137,44 @@ impl Player {
         Ok(())
     }
 
-    async fn fetch_and_append(&self, count: usize, generation: u64) -> Result<()> {
+    async fn fetch_and_append(&self, generation: u64, wait: bool) -> Result<()> {
         if !self.load_is_current(generation) {
             return Ok(());
         }
-        // Collect the next segment URLs without holding the lock across await.
-        let work: Vec<(String, String)> = {
+        let queue = {
             let slot = self.decoder.lock();
-            let Some(pl) = slot.playlist.as_ref() else {
+            let Some(prefetch) = slot.prefetch.as_ref() else {
                 return Ok(());
             };
-            let start = slot.segments_fetched;
-            let end = (start + count).min(pl.segments.len());
-            pl.segments[start..end]
-                .iter()
-                .map(|s| (slot.urn.clone(), s.clone()))
-                .collect()
+            prefetch.queue.clone()
         };
-        let mut segs: Vec<(String, Vec<u8>)> = Vec::with_capacity(work.len());
-        for (urn, url) in work {
-            let bytes = self.hls.segment(&urn, &url).await?;
-            if !self.load_is_current(generation) {
-                return Ok(());
+        let mut receiver = queue.lock().await;
+        let fetched = if wait {
+            receiver.recv().await
+        } else {
+            match receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => None,
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                    let mut slot = self.decoder.lock();
+                    if self.load_is_current(generation) {
+                        slot.inner.wait_for_append();
+                    }
+                    return Ok(());
+                }
             }
-            segs.push((url, bytes));
+        };
+        drop(receiver);
+        if !self.load_is_current(generation) {
+            return Ok(());
         }
+        let bytes = fetched.context("Audio download ended before the track completed")??;
         let mut slot = self.decoder.lock();
-        for (url, bytes) in segs {
-            if let Some(pl) = slot.playlist.as_ref()
-                && pl.segments.iter().any(|s| s == &url)
-            {
-                slot.feed(&bytes);
-                slot.segments_fetched += 1;
-            }
+        if self.load_is_current(generation) {
+            // Make each ready segment decodable immediately; a slow following
+            // segment must not hold back audio that has already arrived.
+            slot.feed(&bytes);
+            slot.segments_fetched += 1;
         }
         Ok(())
     }
@@ -1148,8 +1183,6 @@ impl Player {
     /// segments as needed, advance the queue on track end (gapless).
     pub async fn run(self: Arc<Self>) {
         let mut last_checkpoint = Instant::now();
-        let mut segment_failures = 0u8;
-        let mut failure_generation = 0u64;
         loop {
             if *self.stop.lock() {
                 return;
@@ -1243,26 +1276,18 @@ impl Player {
                         self.output.append_samples(&out, rate);
                     }
                     DecodeAction::FetchMore => {
-                        if failure_generation != cycle_generation {
-                            failure_generation = cycle_generation;
-                            segment_failures = 0;
-                        }
-                        match self.fetch_and_append(2, cycle_generation).await {
-                            Ok(()) => segment_failures = 0,
+                        match self.fetch_and_append(cycle_generation, false).await {
+                            Ok(()) => {},
                             Err(e) if self.load_is_current(cycle_generation) => {
-                                segment_failures = segment_failures.saturating_add(1);
-                                log::warn!("segment fetch (attempt {segment_failures}): {e}");
-                                if segment_failures >= 3 {
-                                    let mut slot = self.decoder.lock();
-                                    slot.failed = true;
-                                    slot.exhausted = true;
-                                    drop(slot);
-                                    self.pause();
-                                    self.state.lock().error = Some(format!("Audio stream interrupted: {e}"));
-                                } else {
-                                    self.decoder.lock().inner.wait_for_append();
-                                    tokio::time::sleep(Duration::from_millis(350)).await;
-                                }
+                                // The download task has already retried transient
+                                // failures; preserve the original terminal error.
+                                let mut slot = self.decoder.lock();
+                                slot.failed = true;
+                                slot.exhausted = true;
+                                slot.prefetch.take();
+                                drop(slot);
+                                self.pause();
+                                self.state.lock().error = Some(format!("Audio stream interrupted: {e}"));
                             }
                             Err(_) => {}
                         }
@@ -1473,6 +1498,7 @@ impl Player {
 
     pub fn shutdown(&self) {
         *self.stop.lock() = true;
+        self.decoder.lock().prefetch.take();
         self.save_session();
     }
 }
@@ -1542,6 +1568,42 @@ fn url_encode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn delayed_audio_download_does_not_block_the_player_loop() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/segment", listener.local_addr().unwrap());
+        let (began, waiting) = tokio::sync::oneshot::channel();
+        let (release, gate) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            socket.read(&mut request).await.unwrap();
+            began.send(()).unwrap();
+            gate.await.unwrap();
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\naudio").await.unwrap();
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let player = Player::new(
+            Arc::new(AudioOutput::silent([0.0; 10], 0.8)),
+            Arc::new(crate::api::ApiClient::demo()),
+            Arc::new(AudioCache::disabled()),
+            dir.path().join("settings.json"),
+            tokio::runtime::Handle::current(),
+        );
+        player.load_generation.store(1, Ordering::Release);
+        player.decoder.lock().prefetch = Some(player.hls.prefetch("track".into(), vec![url], &player.rt));
+        tokio::time::timeout(Duration::from_secs(2), waiting).await.unwrap().unwrap();
+        // The 100 ms loop must remain available for position updates and
+        // controls even when a segment's network response has not arrived.
+        tokio::time::timeout(Duration::from_millis(80), player.fetch_and_append(1, false)).await.unwrap().unwrap();
+        assert_eq!(player.decoder.lock().segments_fetched, 0);
+        release.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), player.fetch_and_append(1, true)).await.unwrap().unwrap();
+        assert_eq!(player.decoder.lock().segments_fetched, 1);
+        server.await.unwrap();
+    }
 
     #[test]
     fn order_shuffle_preserves_all_indices() {
