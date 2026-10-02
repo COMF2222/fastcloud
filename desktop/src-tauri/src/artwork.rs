@@ -26,7 +26,7 @@ impl ArtworkCache {
         })
     }
 
-    pub async fn data_url(&self, raw: String) -> Result<String, String> {
+    pub async fn data_url(&self, raw: String, relay: Option<(String, String)>) -> Result<String, String> {
         let url = url::Url::parse(&raw).map_err(|_| "Invalid image URL")?;
         let host = url.host_str().ok_or("Image host is missing")?;
         if url.scheme() != "https" || (host != "sndcdn.com" && !host.ends_with(".sndcdn.com")) {
@@ -47,7 +47,12 @@ impl ArtworkCache {
         // Limit simultaneous downloads after checking the disk cache. This also
         // bounds the number of partially buffered responses during a fast scroll.
         let _permit = self.download_slots.acquire().await.map_err(|error| error.to_string())?;
-        let mut response = self.http.get(url).send().await.map_err(|error| error.to_string())?
+        let request = if let Some((server, token)) = relay {
+            self.http.post(format!("{server}/v1/soundcloud/artwork"))
+                .header(reqwest::header::AUTHORIZATION, format!("OAuth {token}"))
+                .json(&serde_json::json!({"url": url.as_str()}))
+        } else { self.http.get(url) };
+        let mut response = request.send().await.map_err(|error| error.to_string())?
             .error_for_status().map_err(|error| error.to_string())?;
         if response.content_length().is_some_and(|size| size > MAX_IMAGE_BYTES as u64) {
             return Err("Image is too large".into());

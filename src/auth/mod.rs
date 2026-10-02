@@ -433,6 +433,15 @@ pub struct Session {
 }
 
 impl Session {
+    #[cfg(test)]
+    pub(crate) async fn with_test_user(creds: AppCredentials, client: Arc<crate::api::ApiClient>) -> Arc<Self> {
+        let session = Self::new(creds, client);
+        *session.tokens.lock().await = Some(Tokens {
+            access_token: "test-user-token".into(), refresh_token: String::new(),
+            expires_at: Some(chrono::Utc::now().timestamp() + 3600), scope: None, grant: Grant::User,
+        });
+        session
+    }
     pub fn media_server_url(&self) -> Option<String> {
         self.creds.server_url.clone().or_else(|| {
             read_secret(ADMIN_SERVER_ENTRY).and_then(|value| checked_server_url(&value).ok())

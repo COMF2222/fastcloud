@@ -730,7 +730,8 @@ fn clear_offline_tracks() -> Result<(), String> {
 /// bridge to the artwork CDN so it cannot fetch arbitrary local addresses.
 #[tauri::command]
 async fn image_data(state: tauri::State<'_, AppState>, url: String) -> Result<String, String> {
-    state.image_cache.data_url(url).await
+    let relay = state.client.relay_credentials().await.map_err(|error| error.to_string())?;
+    state.image_cache.data_url(url, relay).await
 }
 
 #[derive(Serialize)]

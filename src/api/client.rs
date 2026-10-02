@@ -161,6 +161,19 @@ impl ApiClient {
         self.oauth.read().clone()
     }
 
+    /// Route SoundCloud resources through the configured broker. A broker
+    /// failure stays visible rather than silently using a blocked local route.
+    pub async fn relay_credentials(&self) -> Result<Option<(String, String)>> {
+        let session = self.session.read().upgrade();
+        if let Some(session) = session
+            && let Some(server) = session.media_server_url()
+        {
+            let token = session.access_token().await.map_err(ApiError::Other)?;
+            return Ok(Some((server, token)));
+        }
+        Ok(None)
+    }
+
     /// Shared audio when a broker is configured, including the owner's account.
     /// Older brokers retain direct playback; an owner denial never falls back.
     pub async fn playback_streams(&self, urn: &str) -> Result<super::endpoints::StreamUrls> {
@@ -200,7 +213,15 @@ impl ApiClient {
             }
         }
         let enc = crate::auth::form_encode(urn);
-        self.get(&format!("/tracks/{enc}/streams"), &[]).await
+        let mut streams: super::endpoints::StreamUrls = self.get(&format!("/tracks/{enc}/streams"), &[]).await?;
+        if let Some((server, _)) = self.relay_credentials().await? {
+            for value in [&mut streams.hls_aac_160, &mut streams.hls_mp3_128, &mut streams.preview_mp3_128] {
+                if let Some(path) = value {
+                    *path = relay_asset_url(&server, path)?;
+                }
+            }
+        }
+        Ok(streams)
     }
 
     pub fn clear_oauth(&self) {
@@ -294,7 +315,12 @@ impl ApiClient {
 
     /// Perform a raw GET and return bytes (used for cover art).
     pub async fn raw_get(&self, url: &str) -> Result<bytes::Bytes> {
-        let resp = self.http.get(url).send().await.map_err(ApiError::from)?;
+        let request = if let Some((server, token)) = self.relay_credentials().await? {
+            self.http.post(format!("{server}/v1/soundcloud/artwork"))
+                .header(reqwest::header::AUTHORIZATION, format!("OAuth {token}"))
+                .json(&serde_json::json!({"url": url}))
+        } else { self.http.get(url) };
+        let resp = request.send().await.map_err(ApiError::from)?;
         let status = resp.status();
         if !status.is_success() {
             return Err(ApiError::Http {
@@ -345,9 +371,13 @@ impl ApiClient {
                 .file(file_field.to_owned(), file_path)
                 .await
                 .map_err(anyhow::Error::from)?;
+            let routed = if let Some((server, _)) = self.relay_credentials().await? {
+                relay_api_url(&server, url)?
+            } else { url.to_owned() };
             let mut request = self
                 .http
-                .post(url)
+                .post(routed)
+                .timeout(Duration::from_secs(3600))
                 .header(reqwest::header::ACCEPT, "application/json; charset=utf-8")
                 .multipart(form);
             if let Some(token) = self.oauth.read().as_ref() {
@@ -514,7 +544,10 @@ impl ApiClient {
         if let Some(session) = session {
             session.access_token().await.map_err(ApiError::Other)?;
         }
-        let mut req = self.http.request(method, url);
+        let routed = if let Some((server, _)) = self.relay_credentials().await? {
+            relay_api_url(&server, url)?
+        } else { url.to_owned() };
+        let mut req = self.http.request(method, routed);
         req = req.header(reqwest::header::ACCEPT, "application/json; charset=utf-8");
         if !query.is_empty() {
             req = req.query(query);
@@ -529,6 +562,26 @@ impl ApiClient {
         }
         req.send().await.map_err(ApiError::from)
     }
+}
+
+fn relay_api_url(server: &str, raw: &str) -> Result<String> {
+    let url = url::Url::parse(raw).map_err(anyhow::Error::from)?;
+    if url.scheme() != "https" || url.host_str() != Some("api.soundcloud.com")
+        || url.port().is_some_and(|port| port != 443)
+        || !url.username().is_empty() || url.password().is_some() || url.fragment().is_some()
+    {
+        return Err(ApiError::Other(anyhow::anyhow!("Only official SoundCloud API URLs can use the server relay.")));
+    }
+    let query = url.query().map(|query| format!("?{query}")).unwrap_or_default();
+    Ok(format!("{server}/v1/soundcloud/api{}{query}", url.path()))
+}
+
+fn relay_asset_url(server: &str, path: &str) -> Result<String> {
+    let ticket = path.strip_prefix("/v1/soundcloud/asset/");
+    if ticket.is_none_or(|ticket| ticket.len() != 43 || !ticket.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))) {
+        return Err(ApiError::Other(anyhow::anyhow!("Server returned an invalid SoundCloud audio link.")));
+    }
+    Ok(format!("{server}{path}"))
 }
 
 fn retry_read(method: &reqwest::Method, attempt: u32, error: &ApiError) -> bool {
@@ -564,6 +617,81 @@ pub fn from_settings(settings: &Settings, demo: bool) -> SharedClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relay_preserves_encoded_urns_and_pagination_and_rejects_external_urls() {
+        let server = "https://broker.example";
+        assert_eq!(relay_api_url(server, "https://api.soundcloud.com/tracks/soundcloud%3Atracks%3A42?cursor=a%2Bb").unwrap(),
+            "https://broker.example/v1/soundcloud/api/tracks/soundcloud%3Atracks%3A42?cursor=a%2Bb");
+        for raw in ["http://api.soundcloud.com/me", "https://evil.example/me", "https://api.soundcloud.com:444/me", "https://user@api.soundcloud.com/me", "https://api.soundcloud.com/me#fragment"] {
+            assert!(relay_api_url(server, raw).is_err());
+        }
+        for raw in ["https://evil.example/audio", "/v1/soundcloud/asset/../me", "/v1/soundcloud/asset/short"] {
+            assert!(relay_asset_url(server, raw).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn server_session_routes_profile_paginated_library_and_mutations_without_local_soundcloud() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let broker = format!("http://{}", listener.local_addr().unwrap());
+        let client = Arc::new(ApiClient::new(None, false));
+        let _session = crate::auth::Session::with_test_user(crate::auth::AppCredentials {
+            client_id: "test-client".into(), client_secret: String::new(),
+            redirect_uri: "http://127.0.0.1:41317/callback".into(), server_url: Some(broker),
+        }, client.clone()).await;
+        let task = tokio::spawn(async move {
+            for expected in ["GET /v1/soundcloud/api/me ", "GET /v1/soundcloud/api/me/likes/tracks?cursor=a%2Bb ", "PUT /v1/soundcloud/api/playlists/soundcloud%3Aplaylists%3A42 ", "DELETE /v1/soundcloud/api/likes/tracks/soundcloud%3Atracks%3A42 "] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = vec![0; 8192];
+                let size = socket.read(&mut bytes).await.unwrap();
+                let request = String::from_utf8_lossy(&bytes[..size]);
+                assert!(request.starts_with(expected), "{request}");
+                assert!(request.to_lowercase().contains("authorization: oauth test-user-token"));
+                socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").await.unwrap();
+            }
+        });
+        client.get::<serde_json::Value>("/me", &[]).await.unwrap();
+        client.get_url::<serde_json::Value>("https://api.soundcloud.com/me/likes/tracks?cursor=a%2Bb", &[]).await.unwrap();
+        client.put::<serde_json::Value>("/playlists/soundcloud%3Aplaylists%3A42", &[], Some(serde_json::json!({"playlist":{"title":"mine"}}))).await.unwrap();
+        client.delete("/likes/tracks/soundcloud%3Atracks%3A42", &[]).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), task).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn non_cacheable_audio_and_artwork_use_the_broker_too() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let broker = format!("http://{}", listener.local_addr().unwrap());
+        let client = Arc::new(ApiClient::new(None, false));
+        let _session = crate::auth::Session::with_test_user(crate::auth::AppCredentials {
+            client_id: "test-client".into(), client_secret: String::new(),
+            redirect_uri: "http://127.0.0.1:41317/callback".into(), server_url: Some(broker.clone()),
+        }, client.clone()).await;
+        let ticket = "a".repeat(43);
+        let body = format!(r#"{{"hls_aac_160_url":"/v1/soundcloud/asset/{ticket}"}}"#);
+        let task = tokio::spawn(async move {
+            for (expected, status, body) in [
+                ("POST /v1/media/resolve ", "422 Unprocessable Entity", "{}"),
+                ("GET /v1/soundcloud/api/tracks/soundcloud%3Atracks%3A42/streams ", "200 OK", body.as_str()),
+                ("POST /v1/soundcloud/artwork ", "200 OK", "image"),
+            ] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = vec![0; 8192];
+                let size = socket.read(&mut bytes).await.unwrap();
+                let request = String::from_utf8_lossy(&bytes[..size]);
+                assert!(request.starts_with(expected), "{request}");
+                assert!(request.to_lowercase().contains("authorization: oauth test-user-token"));
+                let response = format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let streams = client.playback_streams("soundcloud:tracks:42").await.unwrap();
+        assert_eq!(streams.hls_aac_160, Some(format!("{broker}/v1/soundcloud/asset/{}", "a".repeat(43))));
+        assert_eq!(client.raw_get("https://i1.sndcdn.com/cover.jpg").await.unwrap().as_ref(), b"image");
+        tokio::time::timeout(Duration::from_secs(5), task).await.unwrap().unwrap();
+    }
 
     #[test]
     fn shared_stream_stays_on_the_configured_broker_and_preserves_bitrate() {

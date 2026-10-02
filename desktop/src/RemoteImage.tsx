@@ -61,7 +61,7 @@ export function RemoteImage({ src, previewSrc, fallback, pixels, alt = '', ...pr
     queryFn: () => api.imageData(preview!),
   })
   const candidates = proxied
-    ? [image.data, thumbnail.data, image.isError ? secure(fallback || src) : null]
+    ? [image.data, thumbnail.data]
     : [primary]
   const visible = candidates.find(value => !!value && value !== broken)
   return <img {...props} ref={element} src={visible || undefined} alt={alt} onError={() => visible && setBroken(visible)} />

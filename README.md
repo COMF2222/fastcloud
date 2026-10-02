@@ -144,8 +144,11 @@ The desktop build receives its HTTPS approval-server URL through
 into the client and is visible to users of the installed app. Users authorize
 their own SoundCloud account. The server keeps the
 owner's API client secret and a small list of approved SoundCloud account IDs;
-playback, cache, interface, library actions and SoundCloud API requests remain
-local. The owner can open **Access requests** from the same screen while signed
+SoundCloud API requests, artwork and playback pass through the server, so the
+client does not need direct connectivity to SoundCloud after browser sign-in.
+The interface, audio decoding, equalizer and offline downloads remain local.
+Private API responses use each listener's own token and are never shared.
+The owner can manage **Users and access** from the same screen while signed
 in with the SoundCloud account that owns the API app. A pending connection waits
 for approval for up to 15 minutes. The backend is maintained as a separate `fastcloud-backend`
 repository with its own Docker deployment instructions.
