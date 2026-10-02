@@ -2169,6 +2169,21 @@ fn set_setting(
         "accent_rgb" => {
             settings.accent_rgb = serde_json::from_value(value).map_err(|e| e.to_string())?
         }
+        "panel_rgb" => settings.panel_rgb = serde_json::from_value(value).map_err(|e| e.to_string())?,
+        "text_rgb" => settings.text_rgb = serde_json::from_value(value).map_err(|e| e.to_string())?,
+        "muted_text_rgb" => settings.muted_text_rgb = serde_json::from_value(value).map_err(|e| e.to_string())?,
+        "panel_opacity" => {
+            settings.panel_opacity = (value.as_f64().ok_or("Expected a number")? as f32).clamp(0.0, 1.0)
+        }
+        "panel_blur" => settings.panel_blur = value.as_u64().ok_or("Expected a number")?.min(40) as u8,
+        "interface_text_scale" => {
+            settings.interface_text_scale = (value.as_f64().ok_or("Expected a number")? as f32)
+                .clamp(config::INTERFACE_TEXT_SCALE_MIN, config::INTERFACE_TEXT_SCALE_MAX)
+        }
+        "interface_scale" => {
+            settings.interface_scale = (value.as_f64().ok_or("Expected a number")? as f32)
+                .clamp(config::INTERFACE_SCALE_MIN, config::INTERFACE_SCALE_MAX)
+        }
         "background_image" => {
             settings.background_image = serde_json::from_value(value).map_err(|e| e.to_string())?
         }

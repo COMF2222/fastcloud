@@ -23,6 +23,7 @@ import { favouriteGenres, searchRecommendations } from './searchRecommendations'
 import { RemoteImage } from './RemoteImage'
 import { shuffleTracks } from './shuffle'
 import { useVirtualRows } from './useVirtualRows'
+import { applyThemeCustomization, interfaceLayoutScale, interfaceRowHeight } from './theme'
 import { useSeekSlider } from './useSeekSlider'
 import { UpdateNotice, UpdateSettingsCard, UpdateSidebarButton } from './Updater'
 import { LoginGate } from './LoginGate'
@@ -180,7 +181,8 @@ export function TrackRows({ tracks, compact = false, activeIndex, onPlay }: { tr
     selectionAnchor.current = index
   }
   const pickedTracks = useMemo(() => tracks.filter(track => selected.has(track.id)), [tracks, selected])
-  const virtual = useVirtualRows(tracks.length, 68, tracks.length > 200, Number(pickedTracks.length > 0))
+  const rowHeight = interfaceRowHeight(settings)
+  const virtual = useVirtualRows(tracks.length, rowHeight, tracks.length > 200, Number(pickedTracks.length > 0))
   useLayoutEffect(() => {
     if (activeIndex === undefined || activeIndex < 0 || activeIndex >= tracks.length) return
     const list = virtual.ref.current
@@ -191,10 +193,10 @@ export function TrackRows({ tracks, compact = false, activeIndex, onPlay }: { tr
       return
     }
     const listTop = list.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop
-    const top = listTop + 1 + activeIndex * 68
+    const top = listTop + 1 + activeIndex * rowHeight
     if (top < scroller.scrollTop) scroller.scrollTop = top
-    else if (top + 68 > scroller.scrollTop + scroller.clientHeight) scroller.scrollTop = top + 68 - scroller.clientHeight
-  }, [activeIndex, tracks.length, virtual.ref])
+    else if (top + rowHeight > scroller.scrollTop + scroller.clientHeight) scroller.scrollTop = top + rowHeight - scroller.clientHeight
+  }, [activeIndex, tracks.length, virtual.ref, rowHeight])
   const bulk = async (action: 'play' | 'next' | 'queue' | 'like' | 'unlike' | 'playlist', targetId?: number) => {
     if (!pickedTracks.length) return
     setBulkBusy(true); setError('')
@@ -215,7 +217,7 @@ export function TrackRows({ tracks, compact = false, activeIndex, onPlay }: { tr
   }
   if (!tracks.length) return <Empty message={t('Здесь пока пусто', 'Nothing here yet')} detail={t('Попробуйте другой раздел или поисковый запрос.', 'Try another section or search term.')} />
   return <>{error && <p className="list-error error-text" role="alert">{error}</p>}{pickedTracks.length > 0 && <div className="selection-toolbar"><strong>{t('Выбрано', 'Selected')}: {pickedTracks.length}</strong><button disabled={bulkBusy} onClick={() => void bulk('play')}>{t('Слушать', 'Play')}</button><button disabled={bulkBusy} onClick={() => void bulk('next')}>{t('Следующими', 'Play next')}</button><button disabled={bulkBusy} onClick={() => void bulk('queue')}>{t('В очередь', 'Add to queue')}</button><button disabled={bulkBusy} onClick={() => void bulk(pickedTracks.every(track => isLiked(track.id)) ? 'unlike' : 'like')}>{pickedTracks.every(track => isLiked(track.id)) ? t('Убрать лайки', 'Unlike') : t('Лайкнуть', 'Like')}</button><button disabled={bulkBusy} onClick={() => setBulkPlaylistOpen(!bulkPlaylistOpen)}>{t('В плейлист', 'Add to playlist')}</button><button disabled={bulkBusy} onClick={() => setSelected(new Set())}>{t('Снять выбор', 'Clear selection')}</button>{bulkPlaylistOpen && <div className="selection-playlists">{ownPlaylists?.status === 'ready' ? ownPlaylists.data.filter(list => !(list.is_album || list.playlist_type === 'album' || list.set_type === 'album')).map(list => <button key={list.id} disabled={bulkBusy} onClick={() => void bulk('playlist', list.id)}>{list.title}</button>) : <span>{t('Загружаем плейлисты…', 'Loading playlists…')}</span>}</div>}</div>}<div ref={virtual.ref} className={`track-list ${compact ? 'compact' : ''} ${tracks.length > 200 ? 'virtual-track-list' : ''}`}>
-    {virtual.start > 0 && <div className="virtual-spacer" style={{ height: virtual.start * 68 }} aria-hidden="true" />}
+    {virtual.start > 0 && <div className="virtual-spacer" style={{ height: virtual.start * rowHeight }} aria-hidden="true" />}
     {tracks.slice(virtual.start, virtual.end).map((track, offset) => { const index = virtual.start + offset; const current = playback?.id === track.id; return <div aria-current={current ? 'true' : undefined} className={`track-row ${current ? 'is-current' : ''} ${editablePlaylistId ? 'editable' : ''} ${selected.has(track.id) ? 'selected' : ''} ${activeIndex === index ? 'keyboard-active' : ''}`} key={track.id} onClick={event => { if ((event.target as HTMLElement).closest('button, a, input, select, textarea, [role="button"]')) return; if (event.ctrlKey || event.metaKey || event.shiftKey) pick(index, event.shiftKey); else void play(index) }}>
       <div className="track-main">
         <button className="track-cover-button" onClick={event => { if (event.ctrlKey || event.metaKey || event.shiftKey) pick(index, event.shiftKey); else void play(index) }} aria-label={`${current ? playback?.playing ? t('Пауза', 'Pause') : t('Продолжить', 'Resume') : t('Воспроизвести', 'Play')} ${track.title}`}>{current ? <span className={`track-playback-mark ${playback?.playing ? 'is-playing' : ''}`} title={playback?.playing ? t('Сейчас играет', 'Now playing') : t('На паузе', 'Paused')}>{playback?.loading ? <LoaderCircle size={14} className="spin" /> : playback?.playing ? <><i /><i /><i /></> : <Pause size={14} />}</span> : settings?.show_track_numbers !== false && <span className="track-num">{String(index + 1).padStart(2, '0')}</span>}{!compact && <Artwork item={track} />}</button>
@@ -230,7 +232,7 @@ export function TrackRows({ tracks, compact = false, activeIndex, onPlay }: { tr
         {menu === track.id && <div className="row-menu"><button onClick={() => { useApp.getState().openTrack(track.id, track.title); setMenu(null) }}><Music2 size={15} /> {t('Открыть трек', 'Open track')}</button><button onClick={() => { void api.enqueue(track); setMenu(null); void queryClient.invalidateQueries({ queryKey: ['player'] }) }}><Plus size={15} /> {t('В конец очереди', 'Add to queue')}</button><button onClick={() => { void api.enqueue(track, true); setMenu(null); void queryClient.invalidateQueries({ queryKey: ['player'] }) }}><ListMusic size={15} /> {t('Следующим', 'Play next')}</button><button onClick={() => void toggleRepost(track)} disabled={repostedTracks?.status !== 'ready'}><Repeat2 size={15} /> {repostedTracks?.status === 'ready' && repostedTracks.data.some(item => item.id === track.id) ? t('Убрать репост', 'Remove repost') : t('Репост', 'Repost')}</button><button onClick={() => setPlaylistMenu(playlistMenu === track.id ? null : track.id)}><Plus size={15} /> {t('Добавить в плейлист', 'Add to playlist')}</button>{playlistMenu === track.id && <div className="menu-subsection">{ownPlaylists?.status === 'ready' && ownPlaylists.data.map(list => <button key={list.id} onClick={() => void addToPlaylist(track, list.id)}>{list.title}</button>)}<form onSubmit={event => { event.preventDefault(); if (newPlaylist.trim()) void addToPlaylist(track) }}><input aria-label={t('Новый плейлист', 'New playlist')} placeholder={t('Новый плейлист', 'New playlist')} value={newPlaylist} onChange={event => setNewPlaylist(event.target.value)} /><button type="submit" disabled={!newPlaylist.trim()}>{t('Создать', 'Create')}</button></form></div>}{editablePlaylistId && <button onClick={() => void removeFromPlaylist(track)}><X size={15} /> {t('Удалить из плейлиста', 'Remove from playlist')}</button>}</div>}
       </div>
     </div> })}
-    {virtual.end < tracks.length && <div className="virtual-spacer" style={{ height: (tracks.length - virtual.end) * 68 }} aria-hidden="true" />}
+    {virtual.end < tracks.length && <div className="virtual-spacer" style={{ height: (tracks.length - virtual.end) * rowHeight }} aria-hidden="true" />}
   </div></>
 }
 
@@ -287,11 +289,14 @@ export function LibraryTracks({ tracks, filter, view }: { tracks: Track[]; filte
 }
 
 function VirtualPlaylistList({ playlists, english }: { playlists: Playlist[]; english: boolean }) {
-  const virtual = useVirtualRows(playlists.length, 65, true)
+  const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.settings })
+  const rowHeight = 60 * interfaceLayoutScale(settings)
+  const step = rowHeight + 5
+  const virtual = useVirtualRows(playlists.length, step, true)
   return <div ref={virtual.ref} className="library-playlist-list virtual-library-playlist-list">
-    {virtual.start > 0 && <div className="virtual-spacer" style={{ height: virtual.start * 65 - 5 }} aria-hidden="true" />}
+    {virtual.start > 0 && <div className="virtual-spacer" style={{ height: virtual.start * step - 5 }} aria-hidden="true" />}
     {playlists.slice(virtual.start, virtual.end).map(list => <button key={list.id} onClick={() => useApp.getState().openPlaylist(list.id, list.title)}><Artwork item={list} /><span><strong>{list.title}</strong><small>{list.user?.username || ''} · {list.track_count || 0} {english ? 'tracks' : 'треков'}</small></span><ChevronRight size={16} /></button>)}
-    {virtual.end < playlists.length && <div className="virtual-spacer" style={{ height: (playlists.length - virtual.end) * 65 - 5 }} aria-hidden="true" />}
+    {virtual.end < playlists.length && <div className="virtual-spacer" style={{ height: (playlists.length - virtual.end) * step - 5 }} aria-hidden="true" />}
   </div>
 }
 
@@ -720,6 +725,8 @@ function SettingsPage() {
     { id: 'general', label: 'Закрывать в трей', en: 'Close to tray', heading: 'Общее' },
     { id: 'general', label: 'Компактный список треков', en: 'Compact track list', heading: 'Общее' },
     { id: 'appearance', label: 'Тема и акцент', en: 'Theme and accent', heading: 'Тема' },
+    { id: 'appearance', label: 'Текст и размеры интерфейса', en: 'Interface text and size', heading: 'Текст и размеры интерфейса', terms: 'шрифт цвет масштаб размер кнопки font scale size colour color' },
+    { id: 'appearance', label: 'Подложки', en: 'Surfaces', heading: 'Подложки', terms: 'прозрачность цвет размытие панели сайдбар opacity blur panels sidebar' },
     { id: 'appearance', label: 'Текст песен', en: 'Lyrics', heading: 'Текст песен' },
     { id: 'appearance', label: 'Фоновое изображение', en: 'Background image', heading: 'Фоновое изображение', terms: 'фон wallpaper' },
     { id: 'appearance', label: 'Видимость фона', en: 'Wallpaper visibility', heading: 'Видимость фона', terms: 'подложка затемнение прозрачность overlay dimming' },
@@ -1012,6 +1019,7 @@ export default function App() {
     if (!settings) return
     const root = document.documentElement
     root.dataset.theme = settings.theme === 'System' ? (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark') : settings.theme.toLowerCase()
+    applyThemeCustomization(settings)
     root.dataset.reducedMotion = String(settings.reduced_motion)
     root.dataset.quality = settings.memory_profile.toLowerCase()
     root.style.setProperty('--accent', `rgb(${settings.accent_rgb.join(',')})`)
@@ -1186,7 +1194,7 @@ export default function App() {
 
   if (!api.preview && connection?.status !== 'signed_in') return <LoginGate connection={connection} connectionError={connectionError ? String(connectionError) : undefined} english={english} />
 
-  return <MemoryProfile.Provider value={settings?.memory_profile || 'Balanced'}><div className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${sidebarHidden ? 'sidebar-hidden' : ''} ${lyricsOpen && !settings?.winamp_window ? 'lyrics-open' : ''} ${wallpaperUrl ? 'has-wallpaper' : ''} ${settings?.background_overlay === 0 ? 'wallpaper-clear' : ''} ${animatedWallpaper ? 'animated-wallpaper' : ''} ${settings?.winamp_window ? 'mini-player' : ''}`} style={wallpaperUrl && settings ? { '--wallpaper-image': `url("${wallpaperUrl.replaceAll('"', '%22')}")`, '--wallpaper-dim': settings.background_dim, '--wallpaper-opacity': settings.background_opacity, '--wallpaper-blur': `${settings.background_blur}px`, '--wallpaper-overlay': settings.background_overlay, '--wallpaper-panel-opacity': Math.min(.97, .18 + settings.background_overlay * .98) } as React.CSSProperties : undefined}><aside className="sidebar"><div className="sidebar-toolbar"><button className="icon-button" aria-label={english ? 'Hide sidebar' : 'Скрыть сайдбар'} title={english ? 'Hide sidebar' : 'Скрыть сайдбар'} onClick={() => { setSidebarHidden(true); localStorage.setItem('fastcloud:sidebar-hidden', 'true') }}><PanelLeftClose size={19} /></button></div>
+  return <MemoryProfile.Provider value={settings?.memory_profile || 'Balanced'}><div className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${sidebarHidden ? 'sidebar-hidden' : ''} ${lyricsOpen && !settings?.winamp_window ? 'lyrics-open' : ''} ${wallpaperUrl ? 'has-wallpaper' : ''} ${animatedWallpaper ? 'animated-wallpaper' : ''} ${settings?.winamp_window ? 'mini-player' : ''}`} style={wallpaperUrl && settings ? { '--wallpaper-image': `url("${wallpaperUrl.replaceAll('"', '%22')}")`, '--wallpaper-dim': settings.background_dim, '--wallpaper-opacity': settings.background_opacity, '--wallpaper-blur': `${settings.background_blur}px`, '--wallpaper-overlay': settings.background_overlay, '--wallpaper-panel-opacity': Math.min(.97, .18 + settings.background_overlay * .98) } as React.CSSProperties : undefined}><aside className="sidebar"><div className="sidebar-toolbar"><button className="icon-button" aria-label={english ? 'Hide sidebar' : 'Скрыть сайдбар'} title={english ? 'Hide sidebar' : 'Скрыть сайдбар'} onClick={() => { setSidebarHidden(true); localStorage.setItem('fastcloud:sidebar-hidden', 'true') }}><PanelLeftClose size={19} /></button></div>
     <div className="sidebar-navigation-scroll"><nav aria-label={english ? 'Navigation' : 'Навигация'}>{sidebar.map(item => <button key={item.page} title={settings?.language === 'English' ? item.english : item.label} className={`nav-item ${page === item.page ? 'active' : ''}`} onClick={() => setPage(item.page)}><item.icon size={19} strokeWidth={1.9} /><span>{settings?.language === 'English' ? item.english : item.label}</span>{page === item.page && <span className="nav-marker" />}</button>)}</nav>
     <div className="library-navigation"><button className={`nav-item library-navigation-toggle ${page === 'library' ? 'active' : ''}`} title={english ? 'Your Library' : 'Твоя библиотека'} aria-expanded={libraryOpen} onClick={() => {
       if (sidebarCollapsed) { openLibraryTab('tracks'); return }

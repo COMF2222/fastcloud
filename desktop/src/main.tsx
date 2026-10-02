@@ -6,6 +6,7 @@ import { UpdateProvider } from './Updater'
 import { onLibraryUpdate } from './libraryCache'
 import './style.css'
 import './features.css'
+import './theme.css'
 
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: 1, staleTime: 800, refetchOnWindowFocus: false } } })
 onLibraryUpdate((key, value, accountChanged) => {

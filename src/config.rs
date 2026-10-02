@@ -7,6 +7,10 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 pub const APP_ID: &str = "fastcloud";
+pub const INTERFACE_TEXT_SCALE_MIN: f32 = 0.9;
+pub const INTERFACE_TEXT_SCALE_MAX: f32 = 1.25;
+pub const INTERFACE_SCALE_MIN: f32 = 0.9;
+pub const INTERFACE_SCALE_MAX: f32 = 1.15;
 
 static SETTINGS_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -66,6 +70,14 @@ pub struct Settings {
     /// User-selected semantic accent. Kept as RGB so it stays renderer-agnostic.
     #[serde(default = "default_accent_rgb")]
     pub accent_rgb: [u8; 3],
+    /// None follows the selected theme; custom colours also work without wallpaper.
+    pub panel_rgb: Option<[u8; 3]>,
+    pub panel_opacity: f32,
+    pub panel_blur: u8,
+    pub text_rgb: Option<[u8; 3]>,
+    pub muted_text_rgb: Option<[u8; 3]>,
+    pub interface_text_scale: f32,
+    pub interface_scale: f32,
     /// HTTP(S) or file URI painted behind the main content area.
     #[serde(default)]
     pub background_image: Option<String>,
@@ -223,6 +235,13 @@ impl Default for Settings {
             main_window_bounds: None,
             close_to_tray: true,
             accent_rgb: default_accent_rgb(),
+            panel_rgb: None,
+            panel_opacity: 0.85,
+            panel_blur: 12,
+            text_rgb: None,
+            muted_text_rgb: None,
+            interface_text_scale: 1.0,
+            interface_scale: 1.0,
             background_image: None,
             background_opacity: default_background_opacity(),
             background_dim: default_background_dim(),
@@ -505,6 +524,10 @@ impl Settings {
         let value: serde_json::Value = serde_json::from_str(raw)?;
         let legacy_wallpaper = value.get("background_style_version").is_none();
         let mut settings: Self = serde_json::from_value(value)?;
+        settings.interface_text_scale = settings.interface_text_scale
+            .clamp(INTERFACE_TEXT_SCALE_MIN, INTERFACE_TEXT_SCALE_MAX);
+        settings.interface_scale = settings.interface_scale
+            .clamp(INTERFACE_SCALE_MIN, INTERFACE_SCALE_MAX);
         if legacy_wallpaper || settings.background_style_version == 0 {
             settings.background_opacity = default_background_opacity();
             settings.background_dim = default_background_dim();
@@ -611,6 +634,66 @@ pub fn settings_path() -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn saved_interface_sizes_are_limited_without_resetting_other_preferences() {
+        let settings = Settings::decode(
+            r#"{"interface_text_scale":1.6,"interface_scale":1.3,"lyrics_scale":1.5,"liked_ids":[42]}"#,
+        ).unwrap();
+        assert_eq!(settings.interface_text_scale, INTERFACE_TEXT_SCALE_MAX);
+        assert_eq!(settings.interface_scale, INTERFACE_SCALE_MAX);
+        assert_eq!(settings.lyrics_scale, 1.5);
+        assert_eq!(settings.liked_ids, vec![42]);
+        let small = Settings::decode(
+            r#"{"interface_text_scale":0.1,"interface_scale":-1}"#,
+        ).unwrap();
+        assert_eq!(small.interface_text_scale, INTERFACE_TEXT_SCALE_MIN);
+        assert_eq!(small.interface_scale, INTERFACE_SCALE_MIN);
+    }
+    #[test]
+    fn custom_appearance_survives_disk_reload_without_changing_library_or_lyrics() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let settings = Settings {
+            panel_rgb: Some([41, 62, 83]),
+            panel_opacity: 0.35,
+            panel_blur: 24,
+            text_rgb: Some([240, 224, 207]),
+            muted_text_rgb: Some([181, 165, 151]),
+            interface_text_scale: 1.25,
+            interface_scale: 1.15,
+            lyrics_scale: 0.9,
+            liked_ids: vec![42, 73],
+            ..Settings::default()
+        };
+        write_settings(&path, &settings).unwrap();
+        let restored = Settings::load_from(&path).unwrap();
+        assert_eq!(restored.panel_rgb, settings.panel_rgb);
+        assert_eq!(restored.panel_opacity, settings.panel_opacity);
+        assert_eq!(restored.panel_blur, settings.panel_blur);
+        assert_eq!(restored.text_rgb, settings.text_rgb);
+        assert_eq!(restored.muted_text_rgb, settings.muted_text_rgb);
+        assert_eq!(restored.interface_text_scale, 1.25);
+        assert_eq!(restored.interface_scale, 1.15);
+        assert_eq!(restored.lyrics_scale, 0.9);
+        assert_eq!(restored.liked_ids, vec![42, 73]);
+    }
+
+    #[test]
+    fn older_settings_keep_their_theme_and_gain_neutral_customization_defaults() {
+        let settings: Settings = serde_json::from_str(
+            r#"{"theme":"Light","lyrics_scale":1.5,"liked_ids":[42]}"#,
+        ).unwrap();
+        assert_eq!(settings.theme, ThemeMode::Light);
+        assert_eq!(settings.lyrics_scale, 1.5);
+        assert_eq!(settings.liked_ids, vec![42]);
+        assert!(settings.panel_rgb.is_none());
+        assert!(settings.text_rgb.is_none());
+        assert!(settings.muted_text_rgb.is_none());
+        assert_eq!(settings.interface_text_scale, 1.0);
+        assert_eq!(settings.interface_scale, 1.0);
+        assert_eq!(settings.panel_opacity, 0.85);
+        assert_eq!(settings.panel_blur, 12);
+    }
     use super::*;
 
     #[test]
