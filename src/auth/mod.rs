@@ -433,6 +433,12 @@ pub struct Session {
 }
 
 impl Session {
+    pub fn media_server_url(&self) -> Option<String> {
+        self.creds.server_url.clone().or_else(|| {
+            read_secret(ADMIN_SERVER_ENTRY).and_then(|value| checked_server_url(&value).ok())
+        })
+    }
+
     pub fn is_remote(&self) -> bool {
         self.creds.server_url.is_some()
     }
@@ -872,7 +878,7 @@ fn query_params(target: &str) -> std::collections::HashMap<String, String> {
 }
 
 /// Percent-encode for a query value (`application/x-www-form-urlencoded`).
-fn form_encode(value: &str) -> String {
+pub(crate) fn form_encode(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for byte in value.bytes() {
         match byte {

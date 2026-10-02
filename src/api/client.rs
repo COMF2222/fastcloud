@@ -12,6 +12,28 @@ use std::time::{Duration, Instant};
 
 pub const API_ROOT: &str = "https://api.soundcloud.com";
 
+#[derive(serde::Deserialize)]
+struct CachedStream {
+    playlist_path: String,
+    bitrate_kbps: u32,
+}
+
+impl CachedStream {
+    fn streams(self, server: &str) -> Option<super::endpoints::StreamUrls> {
+        let ticket = self.playlist_path.strip_prefix("/v1/media/")?.strip_suffix("/index.m3u8")?;
+        if ticket.len() != 43 || !ticket.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')) {
+            return None;
+        }
+        let url = format!("{server}{}", self.playlist_path);
+        let (aac, mp3) = match self.bitrate_kbps {
+            160 => (Some(url), None),
+            128 => (None, Some(url)),
+            _ => return None,
+        };
+        Some(super::endpoints::StreamUrls { hls_aac_160: aac, hls_mp3_128: mp3, preview_mp3_128: None })
+    }
+}
+
 /// In-flight requests and rate-limit state, shown in the top bar.
 ///
 /// The counter spans a whole logical attempt, retries and back-off waits
@@ -98,6 +120,7 @@ pub struct ApiClient {
     /// that points at it.
     demo: std::sync::atomic::AtomicBool,
     activity: Arc<NetActivity>,
+    media_unavailable_until: RwLock<Option<Instant>>,
 }
 
 impl ApiClient {
@@ -117,6 +140,7 @@ impl ApiClient {
             session: RwLock::new(std::sync::Weak::new()),
             demo: std::sync::atomic::AtomicBool::new(demo),
             activity: NetActivity::new(),
+            media_unavailable_until: RwLock::new(None),
         }
     }
 
@@ -135,6 +159,48 @@ impl ApiClient {
 
     pub fn oauth_token(&self) -> Option<String> {
         self.oauth.read().clone()
+    }
+
+    /// Shared audio when a broker is configured, including the owner's account.
+    /// Older brokers retain direct playback; an owner denial never falls back.
+    pub async fn playback_streams(&self, urn: &str) -> Result<super::endpoints::StreamUrls> {
+        let session = self.session.read().upgrade();
+        let available = self.media_unavailable_until.read().is_none_or(|until| until <= Instant::now());
+        if available && !self.is_demo()
+            && let Some(session) = session
+            && let Some(server) = session.media_server_url()
+        {
+            let token = session.access_token().await.map_err(ApiError::Other)?;
+            let response = self.http.post(format!("{server}/v1/media/resolve"))
+                .header(reqwest::header::AUTHORIZATION, format!("OAuth {token}"))
+                .timeout(Duration::from_secs(8))
+                .json(&serde_json::json!({ "urn": urn }))
+                .send().await;
+            match response {
+                Ok(response) if response.status().is_success() => {
+                    if let Ok(body) = response.json::<CachedStream>().await
+                        && let Some(streams) = body.streams(&server)
+                    {
+                        return Ok(streams);
+                    }
+                    *self.media_unavailable_until.write() = Some(Instant::now() + Duration::from_secs(30));
+                }
+                Ok(response) if response.status() == reqwest::StatusCode::FORBIDDEN => {
+                    return Err(ApiError::Other(anyhow::anyhow!("Access to Fastcloud was disabled by the owner.")));
+                }
+                Ok(response) if response.status() == reqwest::StatusCode::UNAUTHORIZED => {
+                    return Err(ApiError::Unauthorized);
+                }
+                Ok(response) if response.status() == reqwest::StatusCode::UNPROCESSABLE_ENTITY => {}
+                _ => {
+                    // Avoid an eight-second pause on every song while a broker
+                    // is offline or has not received the media update yet.
+                    *self.media_unavailable_until.write() = Some(Instant::now() + Duration::from_secs(30));
+                }
+            }
+        }
+        let enc = crate::auth::form_encode(urn);
+        self.get(&format!("/tracks/{enc}/streams"), &[]).await
     }
 
     pub fn clear_oauth(&self) {
@@ -498,6 +564,16 @@ pub fn from_settings(settings: &Settings, demo: bool) -> SharedClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_stream_stays_on_the_configured_broker_and_preserves_bitrate() {
+        let body = CachedStream { playlist_path: format!("/v1/media/{}/index.m3u8", "a".repeat(43)), bitrate_kbps: 160 };
+        let streams = body.streams("https://broker.example").unwrap();
+        assert_eq!(streams.best_full_with_bitrate(), Some((format!("https://broker.example/v1/media/{}/index.m3u8", "a".repeat(43)).as_str(), 160)));
+        for path in ["https://elsewhere.example/track", "/v1/media/../../index.m3u8", "/v1/media/test/index.m3u8?token=x"] {
+            assert!(CachedStream { playlist_path: path.into(), bitrate_kbps: 160 }.streams("https://broker.example").is_none());
+        }
+    }
 
     #[test]
     fn an_empty_success_is_valid_for_writes_but_not_for_tracks() {

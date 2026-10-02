@@ -699,11 +699,31 @@ function SettingsPage() {
     enabled: (section === 'account' || section === 'integrations') && connection?.status === 'signed_in' && account?.status === 'ready' && !!FASTCLOUD_SERVER_URL && !api.preview,
     retry: false,
     staleTime: 30_000,
+    refetchInterval: section === 'account' ? 30_000 : false,
   })
   const setApproval = async (id: number, status: 'approved' | 'denied' | 'pending') => {
     setAccountBusy(true); setError('')
     try { await api.approvalSetUser(FASTCLOUD_SERVER_URL, id, status); await refreshApprovals() }
     catch (cause) { setError(String(cause)) }
+    finally { setAccountBusy(false) }
+  }
+  const ownerId = account?.status === 'ready' ? account.data.id : null
+  const adminEnabled = section === 'account' && connection?.status === 'signed_in' && approvalUsers !== undefined && ownerId !== null
+  const { data: accessSettings, refetch: refreshAccessSettings } = useQuery({
+    queryKey: ['approval-settings', ownerId], queryFn: () => api.approvalSettings(FASTCLOUD_SERVER_URL),
+    enabled: adminEnabled, retry: false, staleTime: 30_000,
+  })
+  const { data: mediaStats, refetch: refreshMedia } = useQuery({
+    queryKey: ['approval-media', ownerId], queryFn: () => api.approvalMedia(FASTCLOUD_SERVER_URL),
+    enabled: adminEnabled, retry: false, refetchInterval: adminEnabled ? 30_000 : false,
+  })
+  const setApprovalMode = async (required: boolean) => {
+    setAccountBusy(true); setError('')
+    try {
+      const next = await api.approvalSettings(FASTCLOUD_SERVER_URL, required)
+      queryClient.setQueryData(['approval-settings', ownerId], next)
+      await refreshApprovals()
+    } catch (cause) { setError(String(cause)) }
     finally { setAccountBusy(false) }
   }
   const update = async (key: string, value: unknown) => {
@@ -739,7 +759,7 @@ function SettingsPage() {
     { id: 'integrations', label: 'Импорт из Яндекс Музыки', en: 'Yandex Music import', heading: 'Импорт из Яндекс Музыки', terms: 'oauth токен token' },
     { id: 'storage', label: 'Хранилище и кэш', en: 'Storage and cache', heading: 'Хранилище' },
     { id: 'account', label: 'Аккаунт SoundCloud', en: 'SoundCloud account', heading: 'Аккаунт SoundCloud' },
-    { id: 'account', label: 'Заявки на доступ', en: 'Access requests', heading: 'Заявки на доступ' },
+    ...(approvalUsers !== undefined ? [{ id: 'account' as const, label: 'Пользователи и доступ', en: 'Users and access', heading: 'Пользователи и доступ', terms: 'заявки одобрение администратор сервер кеш users approval administrator server cache' }] : []),
     { id: 'general', label: 'Обновления', en: 'Updates', heading: 'Обновления приложения' },
   ]
   const matchingSettings = settingsSearch.trim() ? settingItems.filter(item => `${item.label} ${item.en} ${item.terms || ''}`.toLocaleLowerCase().includes(settingsSearch.trim().toLocaleLowerCase())) : []
@@ -747,7 +767,7 @@ function SettingsPage() {
     setSection(item.id)
     setSettingsSearch('')
     requestAnimationFrame(() => requestAnimationFrame(() => {
-      const englishHeadings: Record<string, string> = { 'Общее': 'General', 'Тема': 'Theme', 'Текст песен': 'Lyrics', 'Фоновое изображение': 'Background image', 'Видимость фона': 'Wallpaper visibility', 'Производительность': 'Performance', 'Шрифт': 'Font', 'Воспроизведение': 'Playback', 'Эквалайзер': 'Equalizer', 'Мини-плеер': 'Mini player', 'Импорт из Яндекс Музыки': 'Import from Yandex Music', 'Хранилище': 'Storage', 'Аккаунт SoundCloud': 'SoundCloud account', 'Заявки на доступ': 'Access requests', 'Обновления приложения': 'Application updates' }
+      const englishHeadings: Record<string, string> = { 'Общее': 'General', 'Тема': 'Theme', 'Текст песен': 'Lyrics', 'Фоновое изображение': 'Background image', 'Видимость фона': 'Wallpaper visibility', 'Производительность': 'Performance', 'Шрифт': 'Font', 'Воспроизведение': 'Playback', 'Эквалайзер': 'Equalizer', 'Мини-плеер': 'Mini player', 'Импорт из Яндекс Музыки': 'Import from Yandex Music', 'Хранилище': 'Storage', 'Аккаунт SoundCloud': 'SoundCloud account', 'Пользователи и доступ': 'Users and access', 'Обновления приложения': 'Application updates' }
       const name = english ? englishHeadings[item.heading] || item.heading : item.heading
       const heading = [...document.querySelectorAll<HTMLElement>('.settings-body h3')].find(node => node.textContent?.toLocaleLowerCase().includes(name.toLocaleLowerCase()))
       heading?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -758,10 +778,11 @@ function SettingsPage() {
       {account?.status === 'ready' && <div className="account-details">{account.data.avatar_url ? <RemoteImage src={account.data.avatar_url} pixels={160} alt="" /> : <span className="account-avatar"><Music2 size={22} /></span>}<div><strong>{account.data.username}</strong><span>SoundCloud ID {account.data.id}{account.data.followers_count != null ? ` · ${account.data.followers_count} ${english ? 'followers' : 'подписчиков'}` : ''}</span></div></div>}
       {connection?.status === 'signed_in' && <button className="secondary-button" disabled={accountBusy} onClick={() => void accountAction(api.signOut)}>{english ? 'Sign out' : 'Выйти из аккаунта'}</button>}
     </div>}
-    {section === 'account' && connection?.status === 'signed_in' && approvalUsers && <div className="settings-card"><h3>{english ? 'Access requests' : 'Заявки на доступ'}</h3>
-      <p>{english ? 'The owner of the Fastcloud SoundCloud app can review access requests here.' : 'Владелец SoundCloud-приложения Fastcloud может просматривать здесь заявки на доступ.'}</p>
-      <button className="secondary-button" disabled={accountBusy} onClick={() => void refreshApprovals()}>{english ? 'Refresh requests' : 'Обновить заявки'}</button>
-      <div className="approval-users">{approvalUsers.length === 0 ? <p>{english ? 'No access requests yet.' : 'Заявок пока нет.'}</p> : approvalUsers.map(user => <div className="setting-row" key={user.id}><span><strong>{user.username}</strong><small>SoundCloud ID {user.id} · {user.status}</small></span><div className="approval-actions"><button className="secondary-button" disabled={accountBusy || user.status === 'approved'} onClick={() => void setApproval(user.id, 'approved')}>{english ? 'Approve' : 'Одобрить'}</button><button className="secondary-button" disabled={accountBusy || user.status === 'denied'} onClick={() => void setApproval(user.id, 'denied')}>{english ? 'Deny' : 'Отклонить'}</button></div></div>)}</div>
+    {adminEnabled && approvalUsers && <div className="settings-card"><h3>{english ? 'Users and access' : 'Пользователи и доступ'}</h3>
+      {accessSettings && <label className="setting-row"><span>{english ? 'Approve new users manually' : 'Одобрять новых пользователей вручную'}<small>{english ? 'Existing approved users keep access. Blocked users cannot sign in in either mode.' : 'Уже допущенные пользователи сохранят доступ. Заблокированные не смогут войти в любом режиме.'}</small></span><input type="checkbox" checked={accessSettings.approval_required} disabled={accountBusy} onChange={event => void setApprovalMode(event.target.checked)} /></label>}
+      <button className="secondary-button" disabled={accountBusy} onClick={() => { void refreshApprovals(); void refreshAccessSettings(); void refreshMedia() }}>{english ? 'Refresh' : 'Обновить'}</button>
+      <div className="approval-users">{approvalUsers.length === 0 ? <p>{english ? 'No users yet.' : 'Пользователей пока нет.'}</p> : approvalUsers.map(user => <div className="setting-row" key={user.id}><span><strong>{user.username}{user.id === ownerId ? english ? ' · administrator' : ' · администратор' : ''}</strong><small>{user.status === 'approved' ? english ? 'Access allowed' : 'Доступ разрешён' : user.status === 'denied' ? english ? 'Blocked' : 'Заблокирован' : english ? 'Awaiting approval' : 'Ожидает одобрения'}{user.last_seen > 0 ? ` · ${english ? 'Last sign-in' : 'Последний вход'}: ${new Date(user.last_seen * 1000).toLocaleString(english ? 'en-GB' : 'ru-RU')}` : ''}</small></span>{user.id !== ownerId && <div className="approval-actions"><button className="secondary-button" disabled={accountBusy || user.status === 'approved'} onClick={() => void setApproval(user.id, 'approved')}>{english ? 'Allow access' : 'Разрешить доступ'}</button><button className="secondary-button" disabled={accountBusy || user.status === 'denied'} onClick={() => void setApproval(user.id, 'denied')}>{english ? 'Block' : 'Заблокировать'}</button></div>}</div>)}</div>
+      {mediaStats && <div className="server-media-stats"><h3>{english ? 'Server audio cache' : 'Серверный кеш музыки'}</h3><p>{english ? 'Cache' : 'Кеш'}: {(mediaStats.cache_bytes / 1024 ** 3).toFixed(2)} / {(mediaStats.cache_limit_bytes / 1024 ** 3).toFixed(0)} GiB · {english ? 'Active downloads' : 'Загружается'}: {mediaStats.active_downloads}</p><p>{english ? 'Audio delivered this month' : 'Отдано аудио за месяц'} ({mediaStats.traffic_month}): {(mediaStats.month_served_bytes / 1024 ** 3).toFixed(2)} GiB</p></div>}
     </div>}
     {section === 'general' && <UpdateSettingsCard english={english} />}
     {data && <SettingsSections section={section} settings={data} update={update} showDeveloperSettings={connection?.status === 'signed_in' && account?.status === 'ready' && approvalUsers !== undefined} />}
@@ -1005,6 +1026,8 @@ export default function App() {
     if (!api.preview && status !== 'signed_in') {
       queryClient.removeQueries({ queryKey: ['my-profile'] })
       queryClient.removeQueries({ queryKey: ['approval-users'] })
+      queryClient.removeQueries({ queryKey: ['approval-settings'] })
+      queryClient.removeQueries({ queryKey: ['approval-media'] })
     }
     if (previous && previous !== status && ['demo', 'public', 'signed_in'].includes(status)) {
       if (status === 'signed_in') void queryClient.invalidateQueries({ predicate: query => query.queryKey[0] !== 'connection' })

@@ -301,7 +301,13 @@ export const api = {
   approvalUsers: (serverUrl: string) => preview ? Promise.resolve<ApprovalUser[]>([]) : invoke<ApprovalUser[]>('approval_users', { serverUrl }),
   approvalSetUser: (serverUrl: string, userId: number, status: 'approved' | 'denied' | 'pending') =>
     preview ? Promise.resolve() : invoke<void>('approval_set_user', { serverUrl, userId, status }),
+  approvalSettings: (serverUrl: string, required: boolean | null = null) =>
+    preview ? Promise.resolve<ApprovalSettings>({ approval_required: false }) : invoke<ApprovalSettings>('approval_settings', { serverUrl, required }),
+  approvalMedia: (serverUrl: string) =>
+    preview ? Promise.resolve<MediaStats | null>(null) : invoke<MediaStats>('approval_media', { serverUrl }),
   preview,
 }
 
-export type ApprovalUser = { id: number; username: string; status: 'pending' | 'approved' | 'denied'; updated_at: number }
+export type ApprovalUser = { id: number; username: string; status: 'pending' | 'approved' | 'denied'; updated_at: number; last_seen: number }
+export type ApprovalSettings = { approval_required: boolean }
+export type MediaStats = { cache_bytes: number; cache_limit_bytes: number; cache_hits: number; cache_misses: number; active_downloads: number; peak_downloads: number; month_served_bytes: number; traffic_month: string }

@@ -736,8 +736,7 @@ impl StreamUrls {
 }
 
 pub async fn track_streams(client: &Arc<ApiClient>, urn: &str) -> Result<StreamUrls> {
-    let enc = urlencoding_encode(urn);
-    client.get(&format!("/tracks/{enc}/streams"), &[]).await
+    client.playback_streams(urn).await
 }
 
 fn urlencoding_encode(s: &str) -> String {

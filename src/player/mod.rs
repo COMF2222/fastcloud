@@ -924,7 +924,7 @@ impl Player {
         let streams: Option<StreamUrls> = if offline_url.is_none() {
             Some(
                 self.client
-                    .get(&format!("/tracks/{}/streams", url_encode(&urn)), &[])
+                    .playback_streams(&urn)
                     .await
                     .context("fetch streams")?,
             )

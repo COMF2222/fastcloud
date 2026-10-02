@@ -296,6 +296,21 @@ fn _assert_send_sync(registry: &CodecRegistry) {
 mod tests {
     use super::*;
 
+    /// Live deployment smoke test; samples are supplied locally, never committed.
+    #[test]
+    #[ignore = "requires FASTCLOUD_TEST_MEDIA_DIR with a server-fetched audio sample"]
+    fn shared_media_sample_decodes() {
+        let root = std::path::PathBuf::from(std::env::var_os("FASTCLOUD_TEST_MEDIA_DIR").expect("sample directory"));
+        let mut bytes = std::fs::read(root.join("init.bin")).unwrap();
+        bytes.extend(std::fs::read(root.join("segment.bin")).unwrap());
+        let (samples, rate, channels) = decode_all(bytes, Some("audio/mp4")).unwrap();
+        assert!(samples.len() > rate as usize * 2, "at least one second of decoded stereo audio");
+        assert!(samples.iter().all(|value| value.is_finite()));
+        assert!(samples.iter().any(|value| value.abs() > 0.001), "audio is not silent");
+        assert!((8_000..=192_000).contains(&rate));
+        assert!((1..=2).contains(&channels));
+    }
+
     #[test]
     fn decode_all_garbage_errors() {
         assert!(decode_all(vec![1, 2, 3, 4], None).is_err());

@@ -226,6 +226,8 @@ struct ApprovalUser {
     username: String,
     status: String,
     updated_at: i64,
+    #[serde(default)]
+    last_seen: i64,
 }
 
 #[derive(serde::Deserialize)]
@@ -2866,6 +2868,33 @@ async fn approval_set_user(state: tauri::State<'_, AppState>, server_url: String
     Ok(())
 }
 
+#[tauri::command]
+async fn approval_settings(state: tauri::State<'_, AppState>, server_url: String, required: Option<bool>) -> Result<serde_json::Value, String> {
+    let url = auth::save_server_url(&server_url).map_err(|error| error.to_string())?;
+    let token = approval_admin_token(&state).await?;
+    let http = reqwest::Client::new();
+    let request = if let Some(required) = required {
+        http.post(format!("{url}/v1/admin/settings")).json(&serde_json::json!({ "approval_required": required }))
+    } else {
+        http.get(format!("{url}/v1/admin/settings"))
+    };
+    let response = request.header(reqwest::header::AUTHORIZATION, format!("OAuth {token}"))
+        .timeout(std::time::Duration::from_secs(15)).send().await.map_err(|error| error.to_string())?;
+    if !response.status().is_success() { return Err(approval_response_error(response).await); }
+    response.json().await.map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn approval_media(state: tauri::State<'_, AppState>, server_url: String) -> Result<serde_json::Value, String> {
+    let url = auth::save_server_url(&server_url).map_err(|error| error.to_string())?;
+    let token = approval_admin_token(&state).await?;
+    let response = reqwest::Client::new().get(format!("{url}/v1/admin/media"))
+        .header(reqwest::header::AUTHORIZATION, format!("OAuth {token}"))
+        .timeout(std::time::Duration::from_secs(15)).send().await.map_err(|error| error.to_string())?;
+    if !response.status().is_success() { return Err(approval_response_error(response).await); }
+    response.json().await.map_err(|error| error.to_string())
+}
+
 fn record_main_window_bounds(
     window: &tauri::WebviewWindow,
     settings: &mut config::Settings,
@@ -3228,6 +3257,8 @@ pub fn run() {
             connect_server,
             approval_users,
             approval_set_user,
+            approval_settings,
+            approval_media,
             update_events::subscribe_updates
         ])
         .run(tauri::generate_context!())
