@@ -32,6 +32,7 @@ mod vis;
 mod artwork;
 mod clap;
 mod lyrics;
+mod update_events;
 
 // Legacy settings keep these enum/constant names. They are data compatibility
 // shims; no egui code is compiled into the Tauri application.
@@ -2976,6 +2977,7 @@ pub fn run() {
                 clap::configure(&resource_dir);
             }
             app.manage(AppState::new()?);
+            app.manage(update_events::Subscription::default());
             let (mini, saved_bounds) = {
                 let state = app.state::<AppState>();
                 let settings = state.settings.lock();
@@ -3211,7 +3213,8 @@ pub fn run() {
             approval_server_url,
             connect_server,
             approval_users,
-            approval_set_user
+            approval_set_user,
+            update_events::subscribe_updates
         ])
         .run(tauri::generate_context!())
         .expect("Fastcloud failed to start");

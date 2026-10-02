@@ -11,5 +11,7 @@
 /desktop/.env.*
 !/desktop/.env.example
 *.log
+__pycache__/
+*.pyc
 **/tests/snapshots/**/*.diff.png
 **/tests/snapshots/**/*.new.png

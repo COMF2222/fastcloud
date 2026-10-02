@@ -4,6 +4,7 @@ import hashlib
 import json
 import shutil
 from pathlib import Path
+from check_release_version import release_tag
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG = ROOT / "desktop/src-tauri/tauri.conf.json"
@@ -14,6 +15,7 @@ RELEASE_BASE = "https://github.com/COMF2222/fastcloud/releases"
 
 def main() -> None:
     version = json.loads(CONFIG.read_text(encoding="utf-8"))["version"]
+    tag = release_tag(version)
     installers = list(INSTALLERS.glob(f"Fastcloud_{version}_x64-setup.exe"))
     if len(installers) != 1:
         raise SystemExit(f"Expected one NSIS installer for {version}; found {len(installers)}")
@@ -30,7 +32,7 @@ def main() -> None:
         "platforms": {
             "windows-x86_64": {
                 "signature": signature,
-                "url": f"{RELEASE_BASE}/download/v{version}/{installer.name}",
+                "url": f"{RELEASE_BASE}/download/{tag}/{installer.name}",
             }
         },
     }
@@ -43,7 +45,7 @@ def main() -> None:
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
             lines.append(f"{digest}  {path.name}")
     (DIST / "checksums.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"Prepared {installer.name}, signature, and latest.json for v{version}")
+    print(f"Prepared {installer.name}, signature, and latest.json for {tag}")
 
 
 if __name__ == "__main__":

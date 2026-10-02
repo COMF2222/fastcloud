@@ -131,7 +131,7 @@ html[data-motion="reduced"] .track-playback-mark i, html[data-quality="eco"] .tr
 .lyrics-panel-track strong { color: var(--text, #fff); font-size: calc(12px * var(--interface-text-scale, 1)); }
 .lyrics-panel-track small, .lyrics-panel-source { margin-top: 4px; color: var(--text-muted, #9295a1); font-size: calc(10px * var(--interface-text-scale, 1)); }
 .lyrics-panel-source { flex: none; padding: 10px 20px; border-top: 1px solid var(--line); }
-.lyrics-panel-scroll { flex: 1; min-height: 0; overflow-y: hidden; padding: 20px; }
+.lyrics-panel-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; padding: 20px; }
 .lyrics-panel-lines { display: grid; gap: 25px; padding-top: 110px; padding-bottom: 55vh; }
 .lyrics-panel-lines button { color: color-mix(in srgb, var(--text, #fff) 52%, transparent); font-size: calc(21px * var(--lyrics-scale, 1)); font-weight: 700; line-height: 1.38; text-align: left; transition: color .2s, opacity .2s, filter .2s, transform .2s; }
 .lyrics-panel-lines button.active { color: var(--text, #fff); transform: translateX(4px); text-shadow: 0 0 22px color-mix(in srgb, var(--accent) 36%, transparent); }

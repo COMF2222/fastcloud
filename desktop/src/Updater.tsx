@@ -1,8 +1,13 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { getVersion } from '@tauri-apps/api/app'
+import { getCurrentWindow } from '@tauri-apps/api/window'
+import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import { relaunch } from '@tauri-apps/plugin-process'
 import { check, type Update } from '@tauri-apps/plugin-updater'
 import { api } from './api'
+import { displayReleaseVersion, releaseIsNewer, startUpdatePolling } from './updatePolling'
+import { FASTCLOUD_SERVER_URL } from './server'
 
 type UpdateState = {
   version: string
@@ -30,35 +35,63 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   const [checked, setChecked] = useState(false)
   const [dismissedVersion, setDismissedVersion] = useState('')
   const busy = useRef(false)
-  const lastCheckedAt = useRef(0)
+  const availableRef = useRef<Update | null>(null)
+  const mounted = useRef(false)
+  const pendingCheck = useRef(false)
+  const installedVersion = useRef('')
+  const announcedVersion = useRef('')
+  const retryAttempts = useRef(0)
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const checkNow = async () => {
-    if (api.preview || busy.current) return
+    if (api.preview) return
+    if (busy.current) { pendingCheck.current = true; return }
+    if (retryTimer.current) clearTimeout(retryTimer.current)
+    retryTimer.current = null
     busy.current = true
-    lastCheckedAt.current = Date.now()
     setChecking(true)
     setError('')
     try {
-      setVersion(await getVersion())
-      setAvailable(await check())
+      installedVersion.current = await getVersion()
+      setVersion(installedVersion.current)
+      const next = await check({ timeout: 15_000, headers: { 'Cache-Control': 'no-cache' } })
+      if (!mounted.current) {
+        if (next) void next.close().catch(() => {})
+        return
+      }
+      const previous = availableRef.current
+      availableRef.current = next
+      setAvailable(next)
+      if (previous) void previous.close().catch(() => {})
       setChecked(true)
     } catch (cause) {
       setError(String(cause))
     } finally {
       setChecking(false)
       busy.current = false
+      if (mounted.current && pendingCheck.current) {
+        pendingCheck.current = false
+        void checkNow()
+      } else if (mounted.current && retryAttempts.current > 0
+        && releaseIsNewer(announcedVersion.current, installedVersion.current)
+        && releaseIsNewer(announcedVersion.current, availableRef.current?.version || installedVersion.current)) {
+        // Release assets can take a moment to reach GitHub's download endpoint.
+        retryAttempts.current--
+        retryTimer.current = setTimeout(() => void checkNow(), 10_000)
+      }
     }
   }
 
   const install = async () => {
-    if (!available || busy.current) return
+    const update = availableRef.current
+    if (!update || busy.current) return
     busy.current = true
     setInstalling(true)
     setError('')
     let downloaded = 0
     let total = 0
     try {
-      await available.downloadAndInstall(event => {
+      await update.downloadAndInstall(event => {
         if (event.event === 'Started') {
           total = event.data.contentLength ?? 0
           setProgress(0)
@@ -79,17 +112,41 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (api.preview) return
-    void checkNow()
-    const timer = window.setInterval(() => void checkNow(), 30 * 60 * 1000)
-    const checkWhenActive = () => {
-      if (document.visibilityState === 'visible' && Date.now() - lastCheckedAt.current >= 10 * 60 * 1000) void checkNow()
+    mounted.current = true
+    const polling = startUpdatePolling(() => void checkNow())
+    let disposed = false
+    let unlisten: (() => void) | undefined
+    let unlistenRelease: (() => void) | undefined
+    if (FASTCLOUD_SERVER_URL) {
+      void listen<string>('release-published', ({ payload }) => {
+        if (disposed || (installedVersion.current && !releaseIsNewer(payload, installedVersion.current))) return
+        if (announcedVersion.current && !releaseIsNewer(payload, announcedVersion.current)) return
+        announcedVersion.current = payload
+        retryAttempts.current = 6
+        polling.published()
+      }).then(stop => {
+        if (disposed) { stop(); return }
+        unlistenRelease = stop
+        return invoke<void>('subscribe_updates', { serverUrl: FASTCLOUD_SERVER_URL })
+      }).catch(() => {})
     }
-    window.addEventListener('focus', checkWhenActive)
-    document.addEventListener('visibilitychange', checkWhenActive)
+    void getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (!disposed && focused) polling.resume()
+    }).then(stop => {
+      if (disposed) stop()
+      else unlisten = stop
+    }).catch(() => {})
     return () => {
-      window.clearInterval(timer)
-      window.removeEventListener('focus', checkWhenActive)
-      document.removeEventListener('visibilitychange', checkWhenActive)
+      mounted.current = false
+      disposed = true
+      polling.stop()
+      unlisten?.()
+      unlistenRelease?.()
+      if (retryTimer.current) clearTimeout(retryTimer.current)
+      pendingCheck.current = false
+      const previous = availableRef.current
+      availableRef.current = null
+      if (previous) void previous.close().catch(() => {})
     }
   }, [])
 
@@ -105,16 +162,18 @@ function useUpdater() {
 export function UpdateSidebarButton({ english, openSettings }: { english: boolean; openSettings: () => void }) {
   const { available } = useUpdater()
   if (!available) return null
-  return <button className="nav-item update-sidebar-button" onClick={openSettings} title={english ? `Update to ${available.version}` : `Обновить до ${available.version}`}>
-    <span aria-hidden="true">↑</span><span>{english ? `Update available: ${available.version}` : `Доступно обновление ${available.version}`}</span>
+  const label = displayReleaseVersion(available.version)
+  return <button className="nav-item update-sidebar-button" onClick={openSettings} title={english ? `Update to ${label}` : `Обновить до ${label}`}>
+    <span aria-hidden="true">↑</span><span>{english ? `Update available: ${label}` : `Доступно обновление ${label}`}</span>
   </button>
 }
 
 export function UpdateNotice({ english }: { english: boolean }) {
   const { available, dismissedVersion, installing, progress, error, install, dismiss } = useUpdater()
   if (!available || dismissedVersion === available.version) return null
+  const label = displayReleaseVersion(available.version)
   return <div className="update-notice" role="status">
-    <div><strong>{english ? `Fastcloud ${available.version} is available` : `Доступна новая версия Fastcloud ${available.version}`}</strong><span>{english ? 'You can install it now.' : 'Её можно установить прямо сейчас.'}</span>{error && <small role="alert">{error}</small>}</div>
+    <div><strong>{english ? `Fastcloud ${label} is available` : `Доступна новая версия Fastcloud ${label}`}</strong><span>{english ? 'You can install it now.' : 'Её можно установить прямо сейчас.'}</span>{error && <small role="alert">{error}</small>}</div>
     <button className="primary-button" disabled={installing} onClick={() => void install()}>{installing ? english ? `Installing… ${progress == null ? '' : `${progress}%`}` : `Устанавливаем… ${progress == null ? '' : `${progress}%`}` : english ? 'Update now' : 'Обновить'}</button>
     <button className="icon-button" disabled={installing} aria-label={english ? 'Remind me next launch' : 'Напомнить при следующем запуске'} title={english ? 'Remind me next launch' : 'Напомнить при следующем запуске'} onClick={dismiss}>×</button>
   </div>
@@ -124,9 +183,9 @@ export function UpdateSettingsCard({ english }: { english: boolean }) {
   const { version, available, checking, installing, progress, error, checked, checkNow, install } = useUpdater()
   return <div className="settings-card update-settings-card">
     <h3>{english ? 'App updates' : 'Обновления приложения'}</h3>
-    <p>{english ? 'Installed version' : 'Установленная версия'}: {version || '…'}</p>
+    <p>{english ? 'Installed version' : 'Установленная версия'}: {displayReleaseVersion(version) || '…'}</p>
     {available ? <>
-      <p role="status">{english ? `Version ${available.version} is available.` : `Доступна версия ${available.version}.`}</p>
+      <p role="status">{english ? `Version ${displayReleaseVersion(available.version)} is available.` : `Доступна версия ${displayReleaseVersion(available.version)}.`}</p>
       <button className="secondary-button" disabled={installing} onClick={() => void install()}>
         {installing ? english ? `Installing… ${progress == null ? '' : `${progress}%`}` : `Устанавливаем… ${progress == null ? '' : `${progress}%`}` : english ? 'Update now' : 'Обновить сейчас'}
       </button>
