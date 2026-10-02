@@ -71,6 +71,22 @@ class NotificationTest(unittest.TestCase):
         self.assertNotIn('private-server.example', str(failure.exception))
         self.assertNotIn('test-notification-secret', str(failure.exception))
 
+    def test_http_errors_report_the_cause_without_exposing_response_details(self):
+        for status, hint in ((403, 'secret'), (404, 'Deploy'), (503, 'token configured')):
+            with self.subTest(status=status), patch.dict(os.environ, {
+                'VITE_FASTCLOUD_SERVER_URL': 'https://private-server.example',
+                'FASTCLOUD_RELEASE_NOTIFY_TOKEN': 'test-notification-secret',
+            }), patch.object(notify_release.urllib.request, 'urlopen', side_effect=urllib.error.HTTPError(
+                'https://private-server.example', status, 'test-notification-secret', {}, None)), \
+                    patch.object(notify_release.time, 'sleep'):
+                with self.assertRaises(SystemExit) as failure:
+                    notify_release.main()
+                message = str(failure.exception)
+                self.assertIn(f'HTTP {status}', message)
+                self.assertIn(hint, message)
+                self.assertNotIn('private-server.example', message)
+                self.assertNotIn('test-notification-secret', message)
+
 
 class ReleaseNamingTest(unittest.TestCase):
     def test_lettered_tag_points_at_the_actual_github_release(self):
