@@ -428,7 +428,7 @@ impl Tokens {
 /// out for no reason.
 pub struct Session {
     creds: AppCredentials,
-    tokens: tokio::sync::Mutex<Option<Tokens>>,
+    tokens: Arc<tokio::sync::Mutex<Option<Tokens>>>,
     client: Arc<crate::api::ApiClient>,
 }
 
@@ -455,8 +455,18 @@ impl Session {
     pub fn new(creds: AppCredentials, client: Arc<crate::api::ApiClient>) -> Arc<Self> {
         let session = Arc::new(Self {
             creds,
-            tokens: tokio::sync::Mutex::new(None),
+            tokens: Arc::new(tokio::sync::Mutex::new(None)),
             client: client.clone(),
+        });
+        client.attach_session(&session);
+        session
+    }
+
+    /// Bind a background operation to its own API client while sharing the
+    /// single refresh lock. It cannot replace the foreground client's OAuth.
+    pub fn for_client(&self, client: Arc<crate::api::ApiClient>) -> Arc<Self> {
+        let session = Arc::new(Self {
+            creds: self.creds.clone(), tokens: self.tokens.clone(), client: client.clone(),
         });
         client.attach_session(&session);
         session
@@ -989,6 +999,21 @@ mod tests {
         let (a, b) = tokio::join!(session.access_token(), session.access_token());
         assert_eq!(a.unwrap(), b.unwrap());
         assert_eq!(session.grant().await, Some(Grant::User));
+    }
+
+    #[tokio::test]
+    async fn background_client_shares_refresh_lock_without_replacing_foreground_oauth() {
+        let foreground = Arc::new(crate::api::ApiClient::demo());
+        foreground.set_oauth("foreground-token".into());
+        let session = Session::with_test_user(AppCredentials::new("test".into(), "test".into(), None), foreground.clone()).await;
+        let background = Arc::new(crate::api::ApiClient::demo());
+        let isolated = session.for_client(background.clone());
+        assert_eq!(isolated.access_token().await.unwrap(), "test-user-token");
+        assert_eq!(foreground.oauth_token().as_deref(), Some("foreground-token"));
+        assert_eq!(background.oauth_token().as_deref(), Some("test-user-token"));
+        assert!(Arc::ptr_eq(&session.tokens, &isolated.tokens));
+        session.tokens.lock().await.take();
+        assert!(isolated.tokens.lock().await.is_none());
     }
 
     fn creds() -> AppCredentials {

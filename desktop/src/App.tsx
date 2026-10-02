@@ -7,7 +7,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import {
   ArrowLeft, ArrowRight, AudioLines, Check, ChevronDown, ChevronRight, Clock3, Compass, Disc3,
-  Heart, Home, Library, ListMusic, LoaderCircle, MoreHorizontal, Music2, Pause,
+  Heart, Home, Image, Library, ListMusic, LoaderCircle, MoreHorizontal, Music2, Pause,
   Play, Plus, Repeat2, Search, Settings2, Shuffle, SkipBack, SkipForward, Volume1, Volume2, VolumeX, X, Minimize2, Maximize2, ArrowUp, ArrowDown, Pin, Download, Languages, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, ThumbsDown,
 } from 'lucide-react'
 import { api } from './api'
@@ -756,6 +756,7 @@ function SettingsPage() {
     { id: 'sound', label: 'Эквалайзер', en: 'Equalizer', heading: 'Эквалайзер', terms: 'eq' },
     { id: 'sound', label: 'Мини-плеер', en: 'Mini player', heading: 'Мини-плеер' },
     { id: 'integrations', label: 'Discord', en: 'Discord', heading: 'Discord Rich Presence' },
+    { id: 'integrations', label: 'Импорт из Spotify', en: 'Spotify import', heading: 'Импорт из Spotify', terms: 'спотифай лайки плейлисты csv json zip exportify импорт' },
     { id: 'integrations', label: 'Импорт из Яндекс Музыки', en: 'Yandex Music import', heading: 'Импорт из Яндекс Музыки', terms: 'oauth токен token' },
     { id: 'storage', label: 'Хранилище и кэш', en: 'Storage and cache', heading: 'Хранилище' },
     { id: 'account', label: 'Аккаунт SoundCloud', en: 'SoundCloud account', heading: 'Аккаунт SoundCloud' },
@@ -767,7 +768,7 @@ function SettingsPage() {
     setSection(item.id)
     setSettingsSearch('')
     requestAnimationFrame(() => requestAnimationFrame(() => {
-      const englishHeadings: Record<string, string> = { 'Общее': 'General', 'Тема': 'Theme', 'Текст песен': 'Lyrics', 'Фоновое изображение': 'Background image', 'Видимость фона': 'Wallpaper visibility', 'Производительность': 'Performance', 'Шрифт': 'Font', 'Воспроизведение': 'Playback', 'Эквалайзер': 'Equalizer', 'Мини-плеер': 'Mini player', 'Импорт из Яндекс Музыки': 'Import from Yandex Music', 'Хранилище': 'Storage', 'Аккаунт SoundCloud': 'SoundCloud account', 'Пользователи и доступ': 'Users and access', 'Обновления приложения': 'Application updates' }
+      const englishHeadings: Record<string, string> = { 'Общее': 'General', 'Тема': 'Theme', 'Текст песен': 'Lyrics', 'Фоновое изображение': 'Background image', 'Видимость фона': 'Wallpaper visibility', 'Производительность': 'Performance', 'Шрифт': 'Font', 'Воспроизведение': 'Playback', 'Эквалайзер': 'Equalizer', 'Мини-плеер': 'Mini player', 'Импорт из Spotify': 'Import from Spotify', 'Импорт из Яндекс Музыки': 'Import from Yandex Music', 'Хранилище': 'Storage', 'Аккаунт SoundCloud': 'SoundCloud account', 'Пользователи и доступ': 'Users and access', 'Обновления приложения': 'Application updates' }
       const name = english ? englishHeadings[item.heading] || item.heading : item.heading
       const heading = [...document.querySelectorAll<HTMLElement>('.settings-body h3')].find(node => node.textContent?.toLocaleLowerCase().includes(name.toLocaleLowerCase()))
       heading?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -962,6 +963,9 @@ export default function App() {
   const searchRef = useRef<HTMLInputElement>(null)
   const [linkError, setLinkError] = useState('')
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  const [wallpaperOnly, setWallpaperOnly] = useState(false)
+  const wallpaperButton = useRef<HTMLButtonElement>(null)
+  const wallpaperRestore = useRef<HTMLButtonElement>(null)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('fastcloud:sidebar-collapsed') === 'true')
   const [sidebarHidden, setSidebarHidden] = useState(() => localStorage.getItem('fastcloud:sidebar-hidden') === 'true')
   const [libraryOpen, setLibraryOpen] = useState(() => localStorage.getItem('fastcloud:library-open') !== 'false')
@@ -978,6 +982,24 @@ export default function App() {
   const { data: profile } = useQuery({ queryKey: ['my-profile'], queryFn: api.myProfile, enabled: connection?.status === 'signed_in' || api.preview, refetchInterval: result => dataRefreshInterval(result.state.data) })
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.settings })
   const english = settings?.language === 'English'
+  useEffect(() => {
+    if (!wallpaperOnly) return
+    if (!api.preview && connection?.status !== 'signed_in') { setWallpaperOnly(false); return }
+    document.body.classList.add('wallpaper-only')
+    wallpaperRestore.current?.focus()
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      setWallpaperOnly(false)
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => {
+      document.body.classList.remove('wallpaper-only')
+      window.removeEventListener('keydown', onKey, true)
+      wallpaperButton.current?.focus()
+    }
+  }, [wallpaperOnly, connection?.status])
   const [fontRevision, setFontRevision] = useState(0)
   const [backgroundRevision, setBackgroundRevision] = useState(0)
   const previousConnection = useRef<string | null>(null)
@@ -1186,6 +1208,7 @@ export default function App() {
   useEffect(() => {
     if (!api.preview && connection?.status !== 'signed_in') return
     const onKey = (event: KeyboardEvent) => {
+      if (wallpaperOnly) return
       const target = event.target as HTMLElement | null
       const typing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target?.isContentEditable
       if ((event.ctrlKey || event.metaKey) && ['f', 'k'].includes(event.key.toLowerCase())) { event.preventDefault(); searchRef.current?.focus() }
@@ -1213,11 +1236,11 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [settings, queryClient, connection?.status])
+  }, [settings, queryClient, connection?.status, wallpaperOnly])
 
   if (!api.preview && connection?.status !== 'signed_in') return <LoginGate connection={connection} connectionError={connectionError ? String(connectionError) : undefined} english={english} />
 
-  return <MemoryProfile.Provider value={settings?.memory_profile || 'Balanced'}><div className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${sidebarHidden ? 'sidebar-hidden' : ''} ${lyricsOpen && !settings?.winamp_window ? 'lyrics-open' : ''} ${wallpaperUrl ? 'has-wallpaper' : ''} ${animatedWallpaper ? 'animated-wallpaper' : ''} ${settings?.winamp_window ? 'mini-player' : ''}`} style={wallpaperUrl && settings ? { '--wallpaper-image': `url("${wallpaperUrl.replaceAll('"', '%22')}")`, '--wallpaper-dim': settings.background_dim, '--wallpaper-opacity': settings.background_opacity, '--wallpaper-blur': `${settings.background_blur}px`, '--wallpaper-overlay': settings.background_overlay, '--wallpaper-panel-opacity': Math.min(.97, .18 + settings.background_overlay * .98) } as React.CSSProperties : undefined}><aside className="sidebar"><div className="sidebar-toolbar"><button className="icon-button" aria-label={english ? 'Hide sidebar' : 'Скрыть сайдбар'} title={english ? 'Hide sidebar' : 'Скрыть сайдбар'} onClick={() => { setSidebarHidden(true); localStorage.setItem('fastcloud:sidebar-hidden', 'true') }}><PanelLeftClose size={19} /></button></div>
+  return <MemoryProfile.Provider value={settings?.memory_profile || 'Balanced'}><div className={`app-shell ${wallpaperOnly ? 'wallpaper-only' : ''} ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${sidebarHidden ? 'sidebar-hidden' : ''} ${lyricsOpen && !settings?.winamp_window ? 'lyrics-open' : ''} ${wallpaperUrl ? 'has-wallpaper' : ''} ${animatedWallpaper ? 'animated-wallpaper' : ''} ${settings?.winamp_window ? 'mini-player' : ''}`} style={wallpaperUrl && settings ? { '--wallpaper-image': `url("${wallpaperUrl.replaceAll('"', '%22')}")`, '--wallpaper-dim': settings.background_dim, '--wallpaper-opacity': settings.background_opacity, '--wallpaper-blur': `${settings.background_blur}px`, '--wallpaper-overlay': settings.background_overlay, '--wallpaper-panel-opacity': Math.min(.97, .18 + settings.background_overlay * .98) } as React.CSSProperties : undefined}><button ref={wallpaperRestore} className="wallpaper-restore" hidden={!wallpaperOnly} aria-label={english ? 'Show interface' : 'Вернуть интерфейс'} onClick={() => setWallpaperOnly(false)} /><aside className="sidebar"><div className="sidebar-toolbar"><button className="icon-button" aria-label={english ? 'Hide sidebar' : 'Скрыть сайдбар'} title={english ? 'Hide sidebar' : 'Скрыть сайдбар'} onClick={() => { setSidebarHidden(true); localStorage.setItem('fastcloud:sidebar-hidden', 'true') }}><PanelLeftClose size={19} /></button></div>
     <div className="sidebar-navigation-scroll"><nav aria-label={english ? 'Navigation' : 'Навигация'}>{sidebar.map(item => <button key={item.page} title={settings?.language === 'English' ? item.english : item.label} className={`nav-item ${page === item.page ? 'active' : ''}`} onClick={() => setPage(item.page)}><item.icon size={19} strokeWidth={1.9} /><span>{settings?.language === 'English' ? item.english : item.label}</span>{page === item.page && <span className="nav-marker" />}</button>)}</nav>
     <div className="library-navigation"><button className={`nav-item library-navigation-toggle ${page === 'library' ? 'active' : ''}`} title={english ? 'Your Library' : 'Твоя библиотека'} aria-expanded={libraryOpen} onClick={() => {
       if (sidebarCollapsed) { openLibraryTab('tracks'); return }
@@ -1231,7 +1254,7 @@ export default function App() {
       reorder={reorderShortcut} sort={saveShortcuts} />}
     </div>
     <div className="sidebar-bottom"><div className="sidebar-rule" /><UpdateSidebarButton english={english} openSettings={() => setPage('settings')} /><button className="nav-item sidebar-compact-toggle" title={sidebarCollapsed ? english ? 'Expand sidebar' : 'Развернуть сайдбар' : english ? 'Compact sidebar' : 'Сайдбар только с иконками'} aria-label={sidebarCollapsed ? english ? 'Expand sidebar' : 'Развернуть сайдбар' : english ? 'Compact sidebar' : 'Сайдбар только с иконками'} onClick={() => setSidebarCollapsed(value => { localStorage.setItem('fastcloud:sidebar-collapsed', String(!value)); return !value })}>{sidebarCollapsed ? <Maximize2 size={17} /> : <Minimize2 size={17} />}<span>{sidebarCollapsed ? english ? 'Expand sidebar' : 'Развернуть сайдбар' : english ? 'Icons only' : 'Только иконки'}</span></button><button className="nav-item" title={english ? 'Choose language' : 'Выбрать язык'} onClick={() => void api.setSetting('language', english ? 'Russian' : 'English').then(() => queryClient.invalidateQueries({ queryKey: ['settings'] }))}><Languages size={19} /><span>{english ? 'English · Русский' : 'Русский · English'}</span></button><button className={`nav-item ${page === 'settings' ? 'active' : ''}`} title={english ? 'Settings' : 'Настройки'} onClick={() => setPage('settings')}><Settings2 size={19} /><span>{english ? 'Settings' : 'Настройки'}</span></button><button className="account-card" onClick={() => profile?.status === 'ready' ? useApp.getState().openArtist(profile.data.id, profile.data.username) : setPage('settings')} aria-label={profile?.status === 'ready' ? `${english ? 'Open profile' : 'Открыть профиль'} ${profile.data.username}` : english ? 'Open account settings' : 'Открыть настройки аккаунта'}><span className="account-avatar">{profile?.status === 'ready' && profile.data.avatar_url ? <RemoteImage src={profile.data.avatar_url} pixels={100} alt="" /> : <Music2 size={19} />}</span><span><strong>{profile?.status === 'ready' ? profile.data.username : connection?.status === 'signed_in' ? 'SoundCloud' : connection?.status === 'public' ? english ? 'Public catalog' : 'Публичный каталог' : connection?.status === 'demo' ? english ? 'Demo mode' : 'Демо-режим' : english ? 'Connecting to SoundCloud…' : 'Подключаем SoundCloud…'}</strong><small>{api.preview ? english ? 'Interface preview' : 'Предпросмотр интерфейса' : connection?.status === 'signed_in' ? english ? 'My profile' : 'Мой профиль' : connection?.status === 'connecting' ? english ? 'Restoring sign-in' : 'Восстанавливаем вход' : english ? 'Connect account' : 'Подключить аккаунт'}</small></span><ChevronRight size={16} /></button></div></aside>
-     <main className="main"><header className="topbar">{sidebarHidden && <button className="icon-button sidebar-visibility-toggle" aria-label={sidebarHidden ? english ? 'Show sidebar' : 'Показать сайдбар' : english ? 'Hide sidebar' : 'Скрыть сайдбар'} title={sidebarHidden ? english ? 'Show sidebar' : 'Показать сайдбар' : english ? 'Hide sidebar' : 'Скрыть сайдбар'} aria-expanded={!sidebarHidden} onClick={() => setSidebarHidden(value => { localStorage.setItem('fastcloud:sidebar-hidden', String(!value)); return !value })}>{sidebarHidden ? <PanelLeftOpen size={19} /> : <PanelLeftClose size={19} />}</button>}<div className="history-buttons"><button className="icon-button" aria-label={english ? 'Back' : 'Назад'} disabled={historyIndex <= 0} onClick={goBack}><ArrowLeft size={19} /></button><button className="icon-button" aria-label={english ? 'Forward' : 'Вперёд'} disabled={historyIndex >= history.length - 1} onClick={goForward}><ArrowRight size={19} /></button></div><label className="search-box"><Search size={19} /><input ref={searchRef} value={search} onChange={e => setSearch(e.target.value)} onKeyDown={event => { if (event.key === 'Enter' && (/^(https?:\/\/|soundcloud:|fastcloud:|(?:on\.)?soundcloud\.com\/|\d+$)/i.test(search.trim()))) { event.preventDefault(); void openLink(search.trim()) } }} placeholder={english ? 'Search or paste a SoundCloud link…' : 'Поиск или ссылка SoundCloud…'} aria-label={english ? 'Search' : 'Поиск'} />{search && <button aria-label={english ? 'Clear search' : 'Очистить поиск'} onClick={() => setSearch('')}><X size={16} /></button>}</label><span className="topbar-pill"><span /> {connection?.status === 'demo' ? english ? 'Offline demo' : 'Офлайн-демо' : connection?.status === 'signed_in' ? english ? 'Connected' : 'На связи' : 'Fastcloud'}</span></header><UpdateNotice english={english} />{linkError && <div className="link-error error-text" role="alert">{linkError}</div>}
+     <main className="main"><header className="topbar">{sidebarHidden && <button className="icon-button sidebar-visibility-toggle" aria-label={sidebarHidden ? english ? 'Show sidebar' : 'Показать сайдбар' : english ? 'Hide sidebar' : 'Скрыть сайдбар'} title={sidebarHidden ? english ? 'Show sidebar' : 'Показать сайдбар' : english ? 'Hide sidebar' : 'Скрыть сайдбар'} aria-expanded={!sidebarHidden} onClick={() => setSidebarHidden(value => { localStorage.setItem('fastcloud:sidebar-hidden', String(!value)); return !value })}>{sidebarHidden ? <PanelLeftOpen size={19} /> : <PanelLeftClose size={19} />}</button>}<div className="history-buttons"><button className="icon-button" aria-label={english ? 'Back' : 'Назад'} disabled={historyIndex <= 0} onClick={goBack}><ArrowLeft size={19} /></button><button className="icon-button" aria-label={english ? 'Forward' : 'Вперёд'} disabled={historyIndex >= history.length - 1} onClick={goForward}><ArrowRight size={19} /></button></div><label className="search-box"><Search size={19} /><input ref={searchRef} value={search} onChange={e => setSearch(e.target.value)} onKeyDown={event => { if (event.key === 'Enter' && (/^(https?:\/\/|soundcloud:|fastcloud:|(?:on\.)?soundcloud\.com\/|\d+$)/i.test(search.trim()))) { event.preventDefault(); void openLink(search.trim()) } }} placeholder={english ? 'Search or paste a SoundCloud link…' : 'Поиск или ссылка SoundCloud…'} aria-label={english ? 'Search' : 'Поиск'} />{search && <button aria-label={english ? 'Clear search' : 'Очистить поиск'} onClick={() => setSearch('')}><X size={16} /></button>}</label><button ref={wallpaperButton} className="icon-button wallpaper-toggle" aria-label={english ? 'Wallpaper only' : 'Только фон'} title={english ? 'Wallpaper only · click or Esc to return' : 'Только фон · клик или Esc, чтобы вернуться'} onClick={() => setWallpaperOnly(true)}><Image size={19} /></button><span className="topbar-pill"><span /> {connection?.status === 'demo' ? english ? 'Offline demo' : 'Офлайн-демо' : connection?.status === 'signed_in' ? english ? 'Connected' : 'На связи' : 'Fastcloud'}</span></header><UpdateNotice english={english} />{linkError && <div className="link-error error-text" role="alert">{linkError}</div>}
       <div className="scroll-area" key={page}>
          {page === 'home' && <HomePage />}
           {page === 'feed' && <FeedPage />}

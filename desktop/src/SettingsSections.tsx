@@ -4,6 +4,7 @@ import { api } from './api'
 import type { Settings } from './types'
 import { ThemeSettings } from './ThemeSettings'
 import { ColorPicker } from './ColorPicker'
+import { SpotifyImport } from './SpotifyImport'
 
 const sizeLabel = (bytes: number) => bytes >= 1073741824 ? `${(bytes / 1073741824).toFixed(2)} GiB` : `${(bytes / 1048576).toFixed(1)} MiB`
 
@@ -83,6 +84,7 @@ export function SettingsSections({ section, settings, update, showDeveloperSetti
   </>
 
   if (section === 'integrations') return <>
+    <SpotifyImport english={settings.language === 'English'} />
     <div className="settings-card">
       <h3>Discord Rich Presence</h3>
       <p className="muted">{t('Показывай текущий трек в Discord на этом компьютере.', 'Show the current track in Discord on this computer.')}</p>

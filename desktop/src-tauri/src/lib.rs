@@ -33,6 +33,7 @@ mod artwork;
 mod clap;
 mod lyrics;
 mod update_events;
+mod spotify;
 
 // Legacy settings keep these enum/constant names. They are data compatibility
 // shims; no egui code is compiled into the Tauri application.
@@ -80,6 +81,7 @@ struct AppState {
     connection: Arc<Mutex<Connection>>,
     presence: discord::Presence,
     import: Arc<Mutex<ImportStatus>>,
+    spotify: Arc<spotify::Import>,
     pending_link: Mutex<Option<String>>,
     demo_reposted_tracks: Mutex<std::collections::HashSet<u64>>,
     demo_reposted_playlists: Mutex<std::collections::HashSet<u64>>,
@@ -444,6 +446,7 @@ impl AppState {
             })),
             presence,
             import: Arc::new(Mutex::new(ImportStatus::default())),
+            spotify: Arc::new(spotify::Import::default()),
             pending_link: Mutex::new(
                 std::env::args()
                     .skip(1)
@@ -2731,6 +2734,7 @@ fn connect_account(state: tauri::State<'_, AppState>) -> Result<(), String> {
 
 #[tauri::command]
 async fn sign_in(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let _spotify_connection = state.spotify.cancel_and_wait().await;
     let session = state
         .session
         .lock()
@@ -2745,6 +2749,7 @@ async fn sign_in(state: tauri::State<'_, AppState>) -> Result<(), String> {
 
 #[tauri::command]
 async fn sign_out(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let _spotify_connection = state.spotify.cancel_and_wait().await;
     let session = state
         .session
         .lock()
@@ -2784,6 +2789,7 @@ fn approval_server_url() -> Option<String> {
 
 #[tauri::command]
 async fn connect_server(state: tauri::State<'_, AppState>, server_url: String) -> Result<(), String> {
+    let _spotify_connection = state.spotify.cancel_and_wait().await;
     let previous = state.connection.lock().clone();
     *state.connection.lock() = Connection::Connecting;
     let result = async {
@@ -3247,6 +3253,11 @@ pub fn run() {
             import_status,
             check_yandex_token,
             start_yandex_import,
+            spotify::spotify_import_status,
+            spotify::preview_spotify_import,
+            spotify::start_spotify_import,
+            spotify::cancel_spotify_import,
+            spotify::open_spotify_export,
             upload_track,
             edit_track,
             delete_track,

@@ -29,6 +29,9 @@ pub struct Pager<T> {
 }
 
 impl<T: DeserializeOwned + Send + 'static> Pager<T> {
+    /// An empty page can still have a continuation after deleted/filtered rows.
+    pub fn is_exhausted(&self) -> bool { self.next.is_none() }
+
     pub fn new(client: Arc<ApiClient>, path: &str, query: Vec<(String, String)>) -> Self {
         Self {
             client,

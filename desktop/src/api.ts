@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import type { Comment, Connection, Data, LyricsRecord, Me, OfflineEntry, PlayerState, Playlist, QuickAccessShortcut, Settings, StorageReport, Track, User, VisualiserFrame, WaveformSamples, WebProfile } from './types'
 import { cachedLibraryData, clearLibraryCache, forgetLibraryEntry, setCacheConnection } from './libraryCache'
+import { emptySpotifyImport, type SpotifyImportSelection, type SpotifyImportView } from './spotifyImportTypes'
 
 const preview = !('__TAURI_INTERNALS__' in window)
 type BridgePlayerState = Omit<PlayerState, 'queue'> & { queue: Track[] | null; queueRevision: number }
@@ -282,6 +283,12 @@ export const api = {
   audioCache: (clear = false) => preview ? Promise.resolve(0) : invoke<number>('audio_cache', { clear }),
   eqPreset: (clear = false) => preview ? Promise.resolve() : invoke<void>('eq_preset', { clear }),
   importStatus: () => preview ? Promise.resolve({ running: false, current: 0, total: 0, matched: 0, title: '', message: '' }) : invoke<{ running: boolean; current: number; total: number; matched: number; title: string; message: string }>('import_status'),
+  spotifyImportStatus: () => preview ? Promise.resolve(emptySpotifyImport) : invoke<SpotifyImportView>('spotify_import_status'),
+  pickSpotifyExport: () => preview ? Promise.resolve<string[] | null>(null) : open({ multiple: true, directory: false, filters: [{ name: 'Spotify export', extensions: ['csv', 'json', 'zip'] }] }),
+  previewSpotifyImport: (paths: string[]) => invoke<SpotifyImportView>('preview_spotify_import', { paths }),
+  startSpotifyImport: (selections: SpotifyImportSelection[]) => invoke<void>('start_spotify_import', { selections }),
+  cancelSpotifyImport: () => invoke<void>('cancel_spotify_import'),
+  openSpotifyExport: () => preview ? (window.open('https://exportify.net/', '_blank', 'noopener,noreferrer'), Promise.resolve()) : invoke<void>('open_spotify_export'),
   checkYandexToken: (token: string) => preview ? Promise.reject<number>(new Error(previewText('Проверка доступна в приложении', 'Verification is available in the desktop app'))) : invoke<number>('check_yandex_token', { token }),
   startYandexImport: (token: string) => preview ? Promise.reject(new Error(previewText('Импорт доступен после подключения SoundCloud', 'Import is available after connecting SoundCloud'))) : invoke<void>('start_yandex_import', { token }),
   uploadTrack: (input: { path: string; title: string; artist: string; description: string; genre: string; tags: string; public: boolean }) => preview ? Promise.reject<Track>(new Error(previewText('Загрузка доступна после входа в SoundCloud', 'Upload is available after signing in to SoundCloud'))) : afterChange(invoke<Track>('upload_track', input), 'tracks:uploads'),
