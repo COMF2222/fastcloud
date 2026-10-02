@@ -608,7 +608,11 @@ fn player_state(
         wave_active: false,
         is_playing: current.is_playing,
         loading: current.loading,
-        position_ms: current.position_ms,
+        // Read the audio cursor directly; the saved state is published at 10 Hz.
+        position_ms: if current.is_playing && !current.loading {
+            let position = player.output.position_ms();
+            if current.duration_ms > 0 { position.min(current.duration_ms) } else { position }
+        } else { current.position_ms },
         duration_ms: current.duration_ms,
         preview_fallback: current.preview_fallback,
         volume: current.volume,
@@ -1200,13 +1204,22 @@ fn comments(state: tauri::State<'_, AppState>, id: u64) -> Data<Vec<Comment>> {
 }
 
 #[tauri::command]
-async fn track_lyrics(artist: String, title: String, duration_ms: u64) -> Result<Option<lyrics::LyricsRecord>, String> {
-    lyrics::lookup(artist, title, duration_ms).await
+async fn track_lyrics(artist: String, title: String, duration_ms: u64, album_name: Option<String>, isrc: Option<String>) -> Result<Option<lyrics::LyricsRecord>, String> {
+    lyrics::lookup(artist, title, duration_ms, album_name, isrc).await
 }
 
 #[tauri::command]
 async fn search_lyrics(query: String) -> Result<Vec<lyrics::LyricsRecord>, String> {
     lyrics::search(query).await
+}
+
+#[tauri::command]
+fn open_lyrics_source(raw: String) -> Result<(), String> {
+    let url = url::Url::parse(&raw).map_err(|error| error.to_string())?;
+    if url.scheme() != "https" || !matches!(url.host_str(), Some("genius.com" | "lrclib.net" | "lyrics.ovh")) {
+        return Err("Only supported lyrics sources can be opened here".into());
+    }
+    webbrowser::open(url.as_str()).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -3165,6 +3178,7 @@ pub fn run() {
             comments,
             track_lyrics,
             search_lyrics,
+            open_lyrics_source,
             user_profiles,
             related_users,
             open_link,

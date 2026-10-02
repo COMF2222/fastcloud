@@ -396,7 +396,9 @@ html[data-theme="light"] { --surface-base: #eff0f4; --surface-nav: #f9f9fb; --su
 .my-wave-copy h2 { margin: 8px 0 6px; font-size: calc(25px * var(--interface-text-scale, 1)); letter-spacing: -.5px; }
 .my-wave-copy p { margin: 0; color: var(--text-muted); font-size: calc(12px * var(--interface-text-scale, 1)); line-height: 1.5; }
 .my-wave-copy small { display: block; margin-top: 10px; color: var(--accent); font-size: calc(11px * var(--interface-text-scale, 1)); }
-.my-wave .primary-button { flex: none; }
+.my-wave .primary-button { flex: none; line-height: 1.25; text-align: center; }
+.my-wave .primary-button > span { display: block; }
+.my-wave .primary-button > svg { display: block; flex: none; }
 .my-wave .primary-button:disabled { opacity: .55; cursor: default; transform: none; }
 @media (max-width: 720px) { .my-wave { align-items: stretch; flex-direction: column; padding: 20px; }.my-wave .primary-button { align-self: flex-start; } }
 .pinned-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 9px; margin: 16px 0 26px; }

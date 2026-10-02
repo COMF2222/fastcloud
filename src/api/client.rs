@@ -364,7 +364,15 @@ impl ApiClient {
         let mut attempt = 0u32;
         loop {
             self.await_cooldown().await;
-            let resp = self.send(method.clone(), url, query, body.clone()).await?;
+            let resp = match self.send(method.clone(), url, query, body.clone()).await {
+                Ok(response) => response,
+                Err(error) if retry_read(&method, attempt, &error) => {
+                    attempt += 1;
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             let status = resp.status();
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
                 let retry_after = resp
@@ -405,8 +413,18 @@ impl ApiClient {
                     body: resp.text().await.unwrap_or_default(),
                 });
             }
-            let bytes = resp.bytes().await?;
-            return decode_response(&bytes);
+            let result = match resp.bytes().await {
+                Ok(bytes) => decode_response(&bytes),
+                Err(error) => Err(ApiError::Network(error)),
+            };
+            if let Err(error) = &result {
+                if retry_read(&method, attempt, error) {
+                    attempt += 1;
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    continue;
+                }
+            }
+            return result;
         }
     }
 
@@ -447,6 +465,18 @@ impl ApiClient {
     }
 }
 
+fn retry_read(method: &reqwest::Method, attempt: u32, error: &ApiError) -> bool {
+    method == reqwest::Method::GET
+        && attempt == 0
+        && match error {
+            ApiError::Network(error) => {
+                error.is_connect() || error.is_timeout() || error.is_request() || error.is_body()
+            }
+            ApiError::Json(error) => error.is_eof(),
+            _ => false,
+        }
+}
+
 fn decode_response<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
     // Reposts and follows can succeed with 201/204 and no JSON body.
     // Only types accepting null (Value, (), Option) accept this success;
@@ -477,6 +507,53 @@ mod tests {
         );
         assert!(decode_response::<crate::api::models::Track>(b"").is_err());
         assert!(decode_response::<serde_json::Value>(b"{").is_err());
+    }
+
+    #[test]
+    fn retry_only_incomplete_reads_and_never_mutations_or_invalid_data() {
+        let incomplete =
+            ApiError::Json(serde_json::from_str::<serde_json::Value>("{").unwrap_err());
+        let malformed =
+            ApiError::Json(serde_json::from_str::<serde_json::Value>("{bad}").unwrap_err());
+        assert!(retry_read(&reqwest::Method::GET, 0, &incomplete));
+        assert!(!retry_read(&reqwest::Method::GET, 1, &incomplete));
+        assert!(!retry_read(&reqwest::Method::POST, 0, &incomplete));
+        assert!(!retry_read(&reqwest::Method::GET, 0, &malformed));
+        assert!(!retry_read(
+            &reqwest::Method::GET,
+            0,
+            &ApiError::Unauthorized
+        ));
+    }
+
+    #[tokio::test]
+    async fn truncated_get_is_retried_and_activity_is_balanced() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for body in ["{", r#"{"ok":true}"#] {
+                let (mut connection, _) = listener.accept().await.unwrap();
+                let mut request = [0; 4096];
+                connection.read(&mut request).await.unwrap();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                connection.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = ApiClient::new(None, false);
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            client.get_url::<serde_json::Value>(&format!("http://{address}/streams"), &[]),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(result["ok"], true);
+        assert_eq!(client.activity.in_flight(), 0);
+        server.await.unwrap();
     }
 
     #[test]

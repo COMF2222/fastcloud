@@ -190,6 +190,9 @@ pub struct PublisherMetadata {
     pub artist: Option<String>,
     #[serde(default)]
     pub album_title: Option<String>,
+    /// Stable recording identifier, when supplied by the rights holder.
+    #[serde(default)]
+    pub isrc: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -370,18 +373,96 @@ mod track_and_playlist_tests {
         )
         .unwrap();
         assert_eq!(collection.collection.len(), 2);
-        assert!(collection.collection.iter().all(|item| item.tracks.is_empty()));
+        assert!(
+            collection
+                .collection
+                .iter()
+                .all(|item| item.tracks.is_empty())
+        );
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Comment {
     pub id: u64,
     pub body: String,
     pub created_at: Option<String>,
     pub user: Option<UserLite>,
-    #[serde(default, alias = "timestamp")]
     pub timestamp_ms: Option<u64>,
+}
+
+fn comment_id<E: serde::de::Error>(
+    id: Option<u64>,
+    urn: Option<&str>,
+    kind: &str,
+) -> Result<u64, E> {
+    if let Some(id) = id {
+        return Ok(id);
+    }
+    let prefix = format!("soundcloud:{kind}:");
+    urn.and_then(|urn| urn.strip_prefix(prefix.as_str()))
+        .and_then(|id| id.parse().ok())
+        .ok_or_else(|| E::custom("SoundCloud identifier is missing or invalid"))
+}
+
+fn comment_timestamp<E: serde::de::Error>(value: serde_json::Value) -> Result<Option<u64>, E> {
+    use serde_json::Value;
+    let number = match value {
+        Value::Null => return Ok(None),
+        Value::String(value) if value.trim().is_empty() => return Ok(None),
+        Value::String(value) => value.trim().parse::<f64>().ok(),
+        Value::Number(value) => value.as_f64(),
+        _ => None,
+    }
+    .ok_or_else(|| E::custom("Invalid comment timestamp"))?;
+    if !number.is_finite() || number >= u64::MAX as f64 {
+        return Err(E::custom("Invalid comment timestamp"));
+    }
+    // Untimed comments may carry a negative sentinel; it is not a seek target.
+    Ok((number >= 0.0).then(|| number.round() as u64))
+}
+
+impl<'de> Deserialize<'de> for Comment {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Author {
+            id: Option<u64>,
+            urn: Option<String>,
+            username: Option<String>,
+            permalink: Option<String>,
+            avatar_url: Option<String>,
+        }
+        #[derive(Deserialize)]
+        struct Wire {
+            id: Option<u64>,
+            urn: Option<String>,
+            body: String,
+            created_at: Option<String>,
+            user: Option<Author>,
+            #[serde(default, alias = "timestamp")]
+            timestamp_ms: serde_json::Value,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        let user = wire
+            .user
+            .filter(|author| author.id.is_some() || author.urn.is_some())
+            .map(|author| {
+                Ok::<_, D::Error>(UserLite {
+                    id: comment_id(author.id, author.urn.as_deref(), "users")?,
+                    username: author.username.unwrap_or_else(|| "SoundCloud user".into()),
+                    permalink: author.permalink,
+                    avatar_url: author.avatar_url,
+                })
+            })
+            .transpose()?;
+        Ok(Self {
+            id: comment_id(wire.id, wire.urn.as_deref(), "comments")?,
+            body: wire.body,
+            created_at: wire.created_at,
+            user,
+            timestamp_ms: comment_timestamp(wire.timestamp_ms)?,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -510,6 +591,31 @@ mod tests {
             serde_json::from_str(r#"{"id":1,"body":"Nice","timestamp":1200}"#).unwrap();
         assert_eq!(list.duration_ms, Some(90000));
         assert_eq!(comment.timestamp_ms, Some(1200));
+    }
+
+    #[test]
+    fn comments_accept_current_urn_and_string_timestamp_schema() {
+        let page: Collection<Comment> = serde_json::from_str(
+            r#"{"collection":[
+            {"urn":"soundcloud:comments:42","body":"Nice","timestamp":"1200.5",
+             "user":{"urn":"soundcloud:users:7","username":"Listener"}},
+            {"id":43,"body":"Untimed","timestamp":-1,"user":null},
+            {"id":44,"body":"Untimed too","timestamp":null,"user":{}}
+        ],"next_href":null}"#,
+        )
+        .unwrap();
+        assert_eq!(page.collection.len(), 3);
+        assert_eq!(page.collection[0].id, 42);
+        assert_eq!(page.collection[0].timestamp_ms, Some(1201));
+        assert_eq!(page.collection[0].user.as_ref().unwrap().id, 7);
+        assert!(page.collection[1].timestamp_ms.is_none());
+        assert!(page.collection[2].user.is_none());
+        for input in [
+            r#"{"body":"missing identifier"}"#,
+            r#"{"id":1,"body":"Bad time","timestamp":"bad"}"#,
+        ] {
+            assert!(serde_json::from_str::<Comment>(input).is_err());
+        }
     }
 
     const TRACK_JSON: &str = r#"{

@@ -35,6 +35,17 @@ jobs:
       - run: cargo check --manifest-path desktop/src-tauri/Cargo.toml --locked
       - name: Test update notifications
         run: node --experimental-strip-types --test desktop/tests/updatePolling.test.ts
+      - name: Test lyrics timing
+        run: node --experimental-strip-types --test desktop/tests/lyricsTiming.test.ts
+      - name: Test lyrics matching and SoundCloud response compatibility
+        shell: pwsh
+        run: |
+          cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --lib lyrics::tests
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --lib api::
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --lib stream_errors_show_actionable_cause
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Test release notification and download URLs
         run: python -m unittest discover -s tools -p "test_notify_release.py"
 

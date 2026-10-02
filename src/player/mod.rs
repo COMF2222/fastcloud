@@ -48,6 +48,13 @@ fn visible_position_ms(position_ms: u64, duration_ms: u64) -> u64 {
     }
 }
 
+fn playback_error_message(error: &anyhow::Error) -> String {
+    if let Some(error) = error.downcast_ref::<crate::api::error::ApiError>() {
+        return error.user_message();
+    }
+    error.to_string()
+}
+
 fn should_decode_more(buffered_ms: u64, loading: bool) -> bool {
     !loading && buffered_ms < TARGET_BUFFER_MS
 }
@@ -901,7 +908,7 @@ impl Player {
                 && me.load_is_current(generation)
             {
                 let mut st = me.state.lock();
-                st.error = Some(e.to_string());
+                st.error = Some(playback_error_message(&e));
                 st.loading = false;
             }
         });
@@ -1656,6 +1663,17 @@ mod tests {
     fn visible_position_never_runs_past_the_track_duration() {
         assert_eq!(visible_position_ms(144_000, 91_847), 91_847);
         assert_eq!(visible_position_ms(12_000, 0), 12_000);
+    }
+
+    #[test]
+    fn stream_errors_show_actionable_cause_instead_of_context_label() {
+        let error = anyhow::Error::new(crate::api::error::ApiError::Http {
+            status: 403, body: "private response content".into(),
+        }).context("fetch streams");
+        let message = playback_error_message(&error);
+        assert!(message.contains("does not allow access"));
+        assert!(!message.contains("private response"));
+        assert!(!message.contains("fetch streams"));
     }
 
     #[test]

@@ -8,7 +8,7 @@ export type Track = {
   artwork?: { '150x150'?: string | null; '500x500'?: string | null } | null
   user?: { id: number; username: string; avatar_url?: string | null } | null
   metadata_artist?: string | null
-  publisher_metadata?: { artist?: string | null } | null
+  publisher_metadata?: { artist?: string | null; album_title?: string | null; isrc?: string | null } | null
   genre?: string | null
   tag_list?: string | null
   playback_count?: number | null
@@ -46,7 +46,7 @@ export type Playlist = {
 export type User = { id: number; username: string; avatar_url?: string | null; full_name?: string | null; description?: string | null; city?: string | null; country_code?: string | null; permalink_url?: string | null; followers_count: number; followings_count?: number; track_count?: number; public_playlists_count?: number | null }
 export type Me = { id: number; username: string; avatar_url?: string | null; followers_count?: number | null }
 export type Comment = { id: number; body: string; created_at?: string | null; timestamp_ms?: number | null; user?: { id: number; username: string; avatar_url?: string | null } | null }
-export type LyricsRecord = { id: number; trackName: string; artistName: string; albumName?: string | null; duration?: number | null; plainLyrics?: string | null; syncedLyrics?: string | null; instrumental: boolean; source?: string }
+export type LyricsRecord = { id: number; trackName: string; artistName: string; albumName?: string | null; duration?: number | null; plainLyrics?: string | null; syncedLyrics?: string | null; instrumental: boolean; source?: string; sourceUrl?: string | null }
 export type WebProfile = { title?: string | null; url: string; service?: string | null }
 export type QuickAccessShortcut =
   | { track: { id: number; title: string; artist: string; artwork_url: string | null } }

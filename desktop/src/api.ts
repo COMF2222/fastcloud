@@ -121,10 +121,11 @@ export const api = {
   user: (id: number) => preview ? Promise.resolve<Data<User>>(previewUsers.find(user => user.id === id) ? { status: 'ready', data: { ...previewUsers.find(user => user.id === id)!, description: previewText('Здесь можно посмотреть, как будут выглядеть треки, альбомы и плейлисты твоего профиля.', 'Preview how tracks, albums and playlists will look on your profile.') } } : { status: 'failed', data: previewText('Автор не найден', 'Artist not found') }) : invoke<Data<User>>('user_detail', { id }),
   playlist: (id: number) => preview ? Promise.resolve<Data<Playlist>>(previewPlaylists.find(list => list.id === id) ? { status: 'ready', data: previewPlaylists.find(list => list.id === id)! } : { status: 'failed', data: previewText('Плейлист не найден', 'Playlist not found') }) : invoke<Data<Playlist>>('playlist_detail', { id }),
   comments: (id: number) => preview ? Promise.resolve<Data<Comment[]>>({ status: 'ready', data: previewComments.filter(comment => comment.id === id) }) : invoke<Data<Comment[]>>('comments', { id }),
-  trackLyrics: (artist: string, title: string, durationMs: number) => preview ? Promise.resolve<LyricsRecord>({
+  trackLyrics: (artist: string, title: string, durationMs: number, albumName?: string | null, isrc?: string | null) => preview ? Promise.resolve<LyricsRecord>({
     id: 0, trackName: title, artistName: artist, source: 'Fastcloud Demo', instrumental: false,
     syncedLyrics: '[00:00.00]Огни за окном\n[00:08.00]Город дышит тишиной\n[00:16.00]Музыка рядом\n[00:24.00]И дорога ведёт домой\n[00:32.00]Новый день впереди\n[00:40.00]Мы оставим свет за собой\n[00:48.00]Слушай этот момент\n[00:56.00]Он останется с тобой',
-  }) : invoke<LyricsRecord | null>('track_lyrics', { artist, title, durationMs }),
+  }) : invoke<LyricsRecord | null>('track_lyrics', { artist, title, durationMs, albumName: albumName || null, isrc: isrc || null }),
+  openLyricsSource: (raw: string) => preview ? Promise.resolve(void window.open(raw, '_blank', 'noopener,noreferrer')) : invoke<void>('open_lyrics_source', { raw }),
   searchLyrics: (query: string) => preview ? Promise.resolve<LyricsRecord[]>([]) : invoke<LyricsRecord[]>('search_lyrics', { query }),
   postComment: (id: number, body: string, timestampMs?: number) => preview ? Promise.resolve(void previewComments.push({ id, body, timestamp_ms: timestampMs, user: { id: 1, username: previewText('Вы', 'You') } })) : invoke<void>('post_comment', { id, body, timestampMs }),
   userProfiles: (id: number) => preview ? Promise.resolve<Data<WebProfile[]>>({ status: 'ready', data: [] }) : invoke<Data<WebProfile[]>>('user_profiles', { id }),
