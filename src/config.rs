@@ -74,6 +74,9 @@ pub struct Settings {
     pub panel_rgb: Option<[u8; 3]>,
     pub panel_opacity: f32,
     pub panel_blur: u8,
+    /// None follows the theme's page headings; zero removes their surfaces.
+    #[serde(default)]
+    pub heading_opacity: Option<f32>,
     pub text_rgb: Option<[u8; 3]>,
     pub muted_text_rgb: Option<[u8; 3]>,
     pub interface_text_scale: f32,
@@ -238,6 +241,7 @@ impl Default for Settings {
             panel_rgb: None,
             panel_opacity: 0.85,
             panel_blur: 12,
+            heading_opacity: None,
             text_rgb: None,
             muted_text_rgb: None,
             interface_text_scale: 1.0,
@@ -657,6 +661,7 @@ mod tests {
             panel_rgb: Some([41, 62, 83]),
             panel_opacity: 0.35,
             panel_blur: 24,
+            heading_opacity: Some(0.0),
             text_rgb: Some([240, 224, 207]),
             muted_text_rgb: Some([181, 165, 151]),
             interface_text_scale: 1.25,
@@ -669,6 +674,7 @@ mod tests {
         let restored = Settings::load_from(&path).unwrap();
         assert_eq!(restored.panel_rgb, settings.panel_rgb);
         assert_eq!(restored.panel_opacity, settings.panel_opacity);
+        assert_eq!(restored.heading_opacity, Some(0.0));
         assert_eq!(restored.panel_blur, settings.panel_blur);
         assert_eq!(restored.text_rgb, settings.text_rgb);
         assert_eq!(restored.muted_text_rgb, settings.muted_text_rgb);
@@ -687,6 +693,7 @@ mod tests {
         assert_eq!(settings.lyrics_scale, 1.5);
         assert_eq!(settings.liked_ids, vec![42]);
         assert!(settings.panel_rgb.is_none());
+        assert!(settings.heading_opacity.is_none());
         assert!(settings.text_rgb.is_none());
         assert!(settings.muted_text_rgb.is_none());
         assert_eq!(settings.interface_text_scale, 1.0);

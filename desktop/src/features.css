@@ -119,7 +119,7 @@ html[data-motion="reduced"] .track-playback-mark i, html[data-quality="eco"] .tr
 
 .app-shell.lyrics-open { grid-template-columns: 236px minmax(0, 1fr) minmax(290px, 340px); }
 .app-shell.lyrics-open.sidebar-collapsed { grid-template-columns: 68px minmax(0, 1fr) minmax(290px, 340px); }
-.lyrics-panel { grid-column: 3; grid-row: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; border-left: 1px solid var(--line, #30323b); background: var(--surface-card, #15171e); }
+.lyrics-panel { position: relative; grid-column: 3; grid-row: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; border-left: 1px solid var(--line, #30323b); background: var(--surface-card, #15171e); }
 .lyrics-panel-header { display: flex; align-items: center; justify-content: space-between; min-height: 77px; padding: 0 64px 0 20px; border-bottom: 1px solid var(--line, #30323b); }
 .lyrics-panel-header > span { display: flex; align-items: center; gap: 9px; color: var(--text, #fff); font-size: calc(13px * var(--interface-text-scale, 1)); font-weight: 700; }
 .lyrics-panel-header svg { color: var(--accent-readable, #ff8a65); }
@@ -157,8 +157,11 @@ html[data-motion="reduced"] .track-playback-mark i, html[data-quality="eco"] .tr
 
 /* Content surfaces, image dimming and the vignette are independent controls.
    A transparent content surface must not disable the image effects. */
+:root { --wallpaper-content-rgb: 9 11 17; }
+html[data-theme="light"] { --wallpaper-content-rgb: 247 248 241; }
 .app-shell.has-wallpaper::after { opacity: 1; }
-.app-shell.has-wallpaper .scroll-area { background: rgb(9 11 17 / var(--wallpaper-overlay, .8)); }
+.app-shell.has-wallpaper .scroll-area { background: rgb(var(--wallpaper-content-rgb) / var(--wallpaper-overlay, .8)); }
+html[data-theme="light"] .app-shell.has-wallpaper .scroll-area { background: rgb(var(--wallpaper-content-rgb) / var(--wallpaper-overlay, .8)); }
 .app-shell.has-wallpaper .sidebar, .app-shell.has-wallpaper .topbar, .app-shell.has-wallpaper .lyrics-panel-header, .app-shell.has-wallpaper .player-bar,
 .app-shell.has-wallpaper .settings-card, .app-shell.has-wallpaper .settings-nav, .app-shell.has-wallpaper .card,
 .app-shell.has-wallpaper .artist-card, .app-shell.has-wallpaper .track-list, .app-shell.has-wallpaper .page-intro,
@@ -167,7 +170,6 @@ html[data-motion="reduced"] .track-playback-mark i, html[data-quality="eco"] .tr
 .app-shell.has-wallpaper .pinned-item, .app-shell.has-wallpaper .offline-summary > div {
   background: rgb(18 20 29 / var(--wallpaper-panel-opacity, .96));
 }
-html[data-theme="light"] .app-shell.has-wallpaper .scroll-area { background: rgb(247 248 241 / var(--wallpaper-overlay, .8)); }
 html[data-theme="light"] .app-shell.has-wallpaper .sidebar, html[data-theme="light"] .app-shell.has-wallpaper .topbar, html[data-theme="light"] .app-shell.has-wallpaper .lyrics-panel-header,
 html[data-theme="light"] .app-shell.has-wallpaper .player-bar, html[data-theme="light"] .app-shell.has-wallpaper .settings-card,
 html[data-theme="light"] .app-shell.has-wallpaper .settings-nav, html[data-theme="light"] .app-shell.has-wallpaper .card,
@@ -207,8 +209,7 @@ html[data-quality="eco"] .app-shell.animated-wallpaper .player-bar, html[data-qu
 .app-shell.has-wallpaper > .lyrics-panel { position: relative; z-index: 1; background: transparent; }
 /* The header shares the topbar surface. Keep the content veil below it so the
    header receives neither a second tint nor a sharp wallpaper underneath. */
-.app-shell.has-wallpaper > .lyrics-panel::before { content: ''; position: absolute; inset: 77px 0 0; pointer-events: none; background: rgb(9 11 17 / var(--wallpaper-overlay, .8)); }
-html[data-theme="light"] .app-shell.has-wallpaper > .lyrics-panel::before { background: rgb(247 248 241 / var(--wallpaper-overlay, .8)); }
+.app-shell.has-wallpaper > .lyrics-panel::before { content: ''; position: absolute; inset: 77px 0 0; pointer-events: none; background: rgb(var(--wallpaper-content-rgb) / var(--wallpaper-overlay, .8)); }
 .app-shell.has-wallpaper .lyrics-panel > * { position: relative; z-index: 1; }
 .app-shell.has-wallpaper .lyrics-panel-header { flex: none; height: 77px; backdrop-filter: blur(10px); border-color: #ffffff21; }
 html[data-quality="eco"] .app-shell.has-wallpaper .lyrics-panel-header { backdrop-filter: none; }

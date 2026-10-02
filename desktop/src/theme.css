@@ -2,15 +2,15 @@
 :root { --interface-text-scale: 1; --interface-scale: 1; --layout-scale: 1; --navigation-scale: 1; font-size: calc(16px * var(--interface-text-scale)); }
 :root[data-custom-text="true"], :root[data-custom-text="true"] :is(.detail-page, .search-welcome, .catalog-hero, .catalog-feature, .now-playing) { --text: var(--user-text); color: var(--text); }
 :root[data-custom-muted-text="true"], :root[data-custom-muted-text="true"] :is(.detail-page, .search-welcome, .catalog-hero, .catalog-feature, .now-playing) { --text-muted: var(--user-text-muted); }
+:root[data-custom-text="true"] :is(.page-kicker, .my-wave-copy small) { color: var(--text); }
 :root[data-custom-panels="true"] {
   --surface-nav: var(--panel-fill); --surface-card: var(--panel-fill); --surface-raised: var(--panel-fill);
-  --line: color-mix(in srgb, var(--panel-color) 65%, var(--text));
 }
 /* These are explicit user overrides. Their priority also covers older wallpaper
    and light-theme rules without changing the default appearance when disabled. */
 :root[data-custom-panels="true"] :is(
   .sidebar, .topbar, .player-bar, .settings-card, .settings-nav, .track-list,
-  .lyrics-panel, .lyrics-panel-header, .search-box, .account-card, .search-start,
+  .lyrics-panel-header, .search-box, .account-card, .search-start,
   .search-welcome, .catalog-hero, .catalog-feature, .page-intro, .section-title,
   .detail-hero, .detail-content-panel, .detail-owner, .detail-metrics > span,
   .track-liner-stats > span, .track-community-main .comments, .track-uploader-card,
@@ -20,12 +20,32 @@
   .queue-panel, .selection-playlists, .shortcuts-panel, .sound-controls-panel,
   .settings-search, .settings-search-results, .inbox-list button, .theme-preview,
   .now-playing-side, .now-playing-header, .now-playing-comment-form,
+  .storage-breakdown, .storage-paths, .storage-stats > div,
   .login-card, .color-picker-popover
 ) { background: var(--panel-fill) !important; backdrop-filter: blur(var(--panel-blur)) !important; border-color: var(--line); }
 :root[data-custom-panels="true"] :is(.track-row, .queue-item):not(:hover):not(.selected):not(.is-current):not(.playing) { background: transparent !important; }
-:root[data-custom-panels="true"] .app-shell.has-wallpaper > .lyrics-panel::before { background: transparent; }
+/* The lyrics header shares the topbar's single surface. Tint the body separately
+   so the header never composites a second copy of the user's panel colour. */
+:root[data-custom-panels="true"] .lyrics-panel { background: transparent !important; backdrop-filter: none !important; }
+:root[data-custom-panels="true"] .lyrics-panel::before { content: ''; position: absolute; inset: 77px 0 0; pointer-events: none; background: var(--panel-fill); backdrop-filter: blur(var(--panel-blur)); }
+:root[data-custom-panels="true"] .lyrics-panel > * { position: relative; z-index: 1; }
+:root[data-custom-panels="true"] .app-shell.has-wallpaper > .lyrics-panel::before { background: linear-gradient(var(--panel-fill), var(--panel-fill)), rgb(var(--wallpaper-content-rgb) / var(--wallpaper-overlay, .8)); }
 :root[data-custom-panels="true"][data-quality="eco"] * { backdrop-filter: none !important; }
-:root[data-custom-panels="true"] :is(select, option) { background-color: var(--panel-color); color: var(--text); }
+:root[data-custom-panels="true"][data-quality="eco"] .lyrics-panel::before { backdrop-filter: none; }
+/* The closed control sits on its parent's surface. Native option popups need a
+   solid theme background; using the custom RGB here discards its opacity. */
+:root[data-custom-panels="true"] select { background-color: transparent; color: var(--text); }
+:root select option { background-color: var(--surface-base); color: var(--text); }
+
+/* Headings can opt out of the shared panel opacity without fading their text. */
+:root { --heading-rgb: 18 20 29; }
+html[data-theme="light"] { --heading-rgb: 249 250 245; }
+.detail-page { --heading-rgb: 18 20 29; }
+:root[data-heading-opacity="true"] .app-shell :is(.section-title, .page-intro) { background: rgb(var(--user-heading-rgb, var(--heading-rgb)) / var(--heading-opacity)) !important; backdrop-filter: blur(calc(var(--panel-blur, 12px) * var(--heading-opacity))) !important; border-color: color-mix(in srgb, var(--line) calc(var(--heading-opacity) * 100%), transparent) !important; }
+:root[data-heading-opacity="true"][data-quality="eco"] .app-shell :is(.section-title, .page-intro) { backdrop-filter: none !important; }
+.theme-heading-opacity { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
+.theme-heading-opacity > .theme-range-control { flex: 1; min-width: 0; }
+.theme-heading-opacity > button { flex: none; }
 
 /* Size controls change geometry, not transforms: pointer coordinates, scrolling
    and virtual rows continue to use actual CSS pixels. Text can grow independently. */

@@ -376,8 +376,9 @@ html[data-theme="light"] { --surface-base: #eff0f4; --surface-nav: #f9f9fb; --su
 .storage-stats > div { display: flex; flex-direction: column; gap: 6px; padding: 13px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-raised); }
 .storage-stats strong { color: var(--text); font-size: calc(16px * var(--interface-text-scale, 1)); }
 .storage-stats span { color: var(--text-muted); font-size: calc(10px * var(--interface-text-scale, 1)); }
-.storage-breakdown { display: grid; gap: 1px; margin: 0 0 20px; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--line); }
-.storage-breakdown > div { display: flex; justify-content: space-between; gap: 16px; padding: 11px 14px; background: var(--surface-raised); font-size: calc(12px * var(--interface-text-scale, 1)); }
+.storage-breakdown { display: grid; margin: 0 0 20px; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-raised); }
+.storage-breakdown > div { display: flex; justify-content: space-between; gap: 16px; padding: 11px 14px; background: transparent; font-size: calc(12px * var(--interface-text-scale, 1)); }
+.storage-breakdown > div + div { border-top: 1px solid var(--line); }
 .storage-breakdown strong { flex: none; font-variant-numeric: tabular-nums; }
 .storage-paths { display: grid; gap: 7px; margin: 0 0 20px; padding: 13px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-raised); font-size: calc(11px * var(--interface-text-scale, 1)); }
 .storage-paths span { overflow-wrap: anywhere; color: var(--text-muted); }

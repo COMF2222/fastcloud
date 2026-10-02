@@ -2176,6 +2176,13 @@ fn set_setting(
             settings.panel_opacity = (value.as_f64().ok_or("Expected a number")? as f32).clamp(0.0, 1.0)
         }
         "panel_blur" => settings.panel_blur = value.as_u64().ok_or("Expected a number")?.min(40) as u8,
+        "heading_opacity" => {
+            settings.heading_opacity = if value.is_null() {
+                None
+            } else {
+                Some((value.as_f64().ok_or("Expected a number")? as f32).clamp(0.0, 1.0))
+            }
+        }
         "interface_text_scale" => {
             settings.interface_text_scale = (value.as_f64().ok_or("Expected a number")? as f32)
                 .clamp(config::INTERFACE_TEXT_SCALE_MIN, config::INTERFACE_TEXT_SCALE_MAX)
