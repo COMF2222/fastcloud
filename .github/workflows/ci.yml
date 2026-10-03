@@ -12,6 +12,9 @@ env:
 jobs:
   desktop:
     runs-on: windows-latest
+    concurrency:
+      group: desktop-${{ github.ref }}
+      cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -28,17 +31,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri
+          # Keep the existing desktop key; release tags can reuse main's cache.
+          shared-key: desktop
       - run: npm ci
         working-directory: desktop
       - run: npm run build
         working-directory: desktop
-      - run: cargo check --manifest-path desktop/src-tauri/Cargo.toml --locked
       - name: Test update notifications
         run: node --experimental-strip-types --test desktop/tests/updatePolling.test.ts
       - name: Test lyrics timing
         run: node --experimental-strip-types --test desktop/tests/lyricsTiming.test.ts
       - name: Test application behavior, shared audio and lyrics
-        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --lib
+        # Test compilation also checks the app binary, replacing cargo check.
+        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --all-targets
       - name: Test release notification and download URLs
         run: python -m unittest discover -s tools -p "test_notify_release.py"
       - name: Test component packaging and update manifests
@@ -92,6 +97,7 @@ jobs:
         if: steps.release.outputs.published != 'true'
         with:
           workspaces: desktop/src-tauri
+          shared-key: desktop
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         if: steps.release.outputs.published != 'true'
       - name: Verify release version
@@ -130,9 +136,10 @@ jobs:
       - name: Keep full installer for first installs and legacy clients
         if: steps.release.outputs.published != 'true'
         run: python tools/stage_release_installer.py full
-      - name: Build lightweight signed update installer
+      - name: Bundle lightweight signed update from the built app
         if: steps.release.outputs.published != 'true'
-        run: npm run tauri -- build --config src-tauri/tauri.light.conf.json --bundles nsis
+        # Only the bundled resources differ; reuse the signed app build.
+        run: npm run tauri -- bundle --config src-tauri/tauri.light.conf.json --bundles nsis --ci
         working-directory: desktop
       - name: Keep lightweight installer
         if: steps.release.outputs.published != 'true'
