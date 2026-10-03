@@ -169,23 +169,53 @@ fn version_tags(title: &str) -> Vec<String> {
 }
 
 fn candidate_pairs(artist: &str, title: &str) -> Vec<(String, String)> {
+    let artist = artist.trim();
     let title = clean_title(title);
-    let mut pairs = Vec::new();
-    for separator in [" - ", " – ", " — ", " | "] {
-        if let Some((prefix, song)) = title.split_once(separator) {
-            if !prefix.trim().is_empty() && !song.trim().is_empty() && prefix.chars().count() < 70 {
-                pairs.push((prefix.trim().to_owned(), song.trim().to_owned()));
-                break;
+    let known_artist = comparable(artist);
+    let separators = [" - ", " – ", " — ", " | "];
+    let mut candidates = Vec::new();
+    // Uploads may put the credited artist on either side of the song name.
+    // Use that credit before guessing an artist from an uploader's title.
+    if !known_artist.is_empty() {
+        for separator in separators {
+            for (index, _) in title.match_indices(separator) {
+                let prefix = title[..index].trim();
+                let suffix = title[index + separator.len()..].trim();
+                if prefix.is_empty() || suffix.is_empty() {
+                    continue;
+                }
+                if comparable(prefix) == known_artist {
+                    candidates.push((artist, suffix));
+                }
+                if comparable(suffix) == known_artist {
+                    candidates.push((artist, prefix));
+                }
             }
         }
     }
-    if !artist.trim().is_empty() && !title.is_empty() {
-        let original = (artist.trim().to_owned(), title);
-        if !pairs.iter().any(|pair| {
-            comparable(&pair.0) == comparable(&original.0)
-                && comparable(&pair.1) == comparable(&original.1)
+    if candidates.is_empty() {
+        for separator in separators {
+            if let Some((prefix, song)) = title.split_once(separator) {
+                if !prefix.trim().is_empty()
+                    && !song.trim().is_empty()
+                    && prefix.chars().count() < 70
+                {
+                    candidates.push((prefix.trim(), song.trim()));
+                    break;
+                }
+            }
+        }
+    }
+    // Also retain the complete title: a separator can be part of a song name.
+    if !artist.is_empty() && !title.is_empty() {
+        candidates.push((artist, title.as_str()));
+    }
+    let mut pairs = Vec::new();
+    for (performer, song) in candidates {
+        if !pairs.iter().any(|pair: &(String, String)| {
+            comparable(&pair.0) == comparable(performer) && comparable(&pair.1) == comparable(song)
         }) {
-            pairs.push(original);
+            pairs.push((performer.to_owned(), song.to_owned()));
         }
     }
     pairs
@@ -787,6 +817,100 @@ mod tests {
         );
     }
     #[test]
+    fn credited_artist_suffix_is_recognized_before_an_inferred_prefix() {
+        for title in [
+            "оригами - CUPSIZE",
+            "оригами – CUPSIZE",
+            "оригами — CUPSIZE",
+            "оригами | CUPSIZE",
+            "  оригами  -  Cupsize (Official Audio)  ",
+        ] {
+            assert_eq!(
+                candidate_pairs(" cupsize ", title),
+                vec![
+                    ("cupsize".into(), "оригами".into()),
+                    ("cupsize".into(), clean_title(title)),
+                ],
+                "{title}"
+            );
+        }
+    }
+    #[test]
+    fn artist_and_song_names_can_contain_other_separators() {
+        for title in [
+            "Artist - Duo - Song - Part Two",
+            "Song - Part Two - Artist - Duo",
+        ] {
+            assert_eq!(
+                candidate_pairs("Artist - Duo", title)[0],
+                ("Artist - Duo".into(), "Song - Part Two".into()),
+                "{title}"
+            );
+        }
+    }
+    #[test]
+    fn an_unknown_suffix_is_not_assumed_to_be_the_artist() {
+        let pairs = candidate_pairs("Artist", "Song - Part Two");
+        assert!(pairs.contains(&("Artist".into(), "Song - Part Two".into())));
+        assert!(!pairs.contains(&("Part Two".into(), "Song".into())));
+    }
+    #[test]
+    fn artist_suffix_keeps_recording_version_checks() {
+        let (artist, title) =
+            candidate_pairs("cupsize", "оригами (slowed + reverb) - CUPSIZE").remove(0);
+        assert_eq!(title, "оригами (slowed + reverb)");
+        assert_eq!(
+            match_score(
+                &record("оригами", "CUPSIZE", 144.0),
+                &artist,
+                &title,
+                144_000,
+                None
+            ),
+            0
+        );
+    }
+    #[test]
+    fn suffix_lookup_selects_the_matching_recording() {
+        let mut matching = record("оригами", "CUPSIZE", 144.0);
+        matching.id = 26462302;
+        let records = vec![
+            matching,
+            record("оригами", "CUPSIZE", 30.0),
+            record("оригами", "Another artist", 144.0),
+            record("оригами (Remix)", "CUPSIZE", 144.0),
+        ];
+        let found = candidate_pairs("cupsize", "оригами - CUPSIZE")
+            .iter()
+            .find_map(|(artist, title)| {
+                select_record(records.clone(), artist, title, 144_000, None)
+            })
+            .expect("the original recording should match");
+        assert_eq!(found.id, 26462302);
+        assert!(found.synced_lyrics.is_some());
+    }
+    #[tokio::test]
+    #[ignore = "contacts the public LRCLIB service"]
+    async fn artist_suffix_lookup_finds_live_lrclib_lyrics() {
+        let found = lookup(
+            "cupsize".into(),
+            "оригами - CUPSIZE".into(),
+            144_000,
+            None,
+            None,
+        )
+        .await
+        .expect("lyrics lookup should succeed")
+        .expect("LRCLIB should have this recording");
+        assert_eq!(found.source, "LRCLIB");
+        assert_eq!(comparable(&found.artist_name), "cupsize");
+        assert_eq!(comparable(&found.track_name), "оригами");
+        assert!(found
+            .synced_lyrics
+            .as_deref()
+            .is_some_and(|lyrics| !lyrics.trim().is_empty()));
+    }
+    #[test]
     fn related_titles_and_artists_are_not_the_same_song() {
         assert_eq!(
             match_score(
@@ -832,16 +956,14 @@ mod tests {
     }
     #[test]
     fn wrong_duration_is_rejected_and_other_edit_timestamps_are_removed() {
-        assert!(
-            select_record(
-                vec![record("Song", "Artist", 260.0)],
-                "Artist",
-                "Song",
-                180_000,
-                None
-            )
-            .is_none()
-        );
+        assert!(select_record(
+            vec![record("Song", "Artist", 260.0)],
+            "Artist",
+            "Song",
+            180_000,
+            None
+        )
+        .is_none());
         let found = select_record(
             vec![record("Song", "Artist", 190.0)],
             "Artist",
