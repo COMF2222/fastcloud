@@ -26,7 +26,7 @@ export function LyricsSidePanel({ settings }: { settings?: Settings }) {
     if (!container || !line) return
     const offset = line.getBoundingClientRect().top - container.getBoundingClientRect().top
     container.scrollTo({ top: Math.max(0, container.scrollTop + offset - container.clientHeight * .34), behavior: settings?.reduced_motion ? 'auto' : 'smooth' })
-  }, [currentLine, track?.id, settings?.reduced_motion, settings?.lyrics_auto_scroll])
+  }, [currentLine, track?.id, settings?.reduced_motion, settings?.lyrics_auto_scroll, settings?.lyrics_scale])
   return <aside id="lyrics-panel" className="lyrics-panel" aria-label={t('Текст песни', 'Lyrics')} style={{ '--lyrics-scale': settings?.lyrics_scale || 1 } as React.CSSProperties}>
     <header className="lyrics-panel-header"><span><AudioLines size={18} /> {t('Текст песни', 'Lyrics')}</span></header>
     {track ? <>
