@@ -1340,6 +1340,22 @@ fn open_soundcloud_url(raw: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn open_release_notes(raw: String) -> Result<(), String> {
+    let url = url::Url::parse(&raw).map_err(|error| error.to_string())?;
+    if url.scheme() != "https"
+        || url.host_str() != Some("fastcloud.comf.workers.dev")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port().is_some()
+        || url.query().is_some()
+        || !matches!(url.path(), "/changes.html" | "/en/changes.html")
+    {
+        return Err("Only the Fastcloud release history can be opened here".into());
+    }
+    webbrowser::open(url.as_str()).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn vibe_search(
     state: tauri::State<'_, AppState>,
     query: String,
@@ -3256,6 +3272,7 @@ pub fn run() {
             related_users,
             open_link,
             open_soundcloud_url,
+            open_release_notes,
             vibe_search,
             following,
             refresh_following,

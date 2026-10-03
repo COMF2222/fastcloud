@@ -1,0 +1,262 @@
+{
+  "schema": 1,
+  "releases": [
+    {
+      "version": "0.2.13",
+      "ru": {
+        "title": "Изменения перед обновлением",
+        "changes": [
+          "Рядом с кнопкой обновления в уведомлении и настройках появилась кнопка «Прочитать изменения». Она открывает описание доступной версии на сайте на языке приложения.",
+          "Релизы теперь публикуются с понятными описаниями на русском и английском. История изменений на сайте получает новые описания автоматически."
+        ]
+      },
+      "en": {
+        "title": "Read changes before updating",
+        "changes": [
+          "A Read changes button now appears beside Update in the notification and settings. It opens the available version’s release notes on the website in the app’s language.",
+          "Releases now include readable Russian and English descriptions. The website’s release history picks up new descriptions automatically."
+        ]
+      }
+    },
+    {
+      "version": "0.2.12",
+      "ru": {
+        "title": "Текст песни без обрезанных слов",
+        "changes": [
+          "Строки в боковой панели переносятся по ширине: последние слова больше не обрезаются при размере текста 150%.",
+          "Обычный текст без таймкодов тоже переносится. При изменении размера текста текущая строка снова оказывается в центре панели."
+        ]
+      },
+      "en": {
+        "title": "Lyrics without clipped words",
+        "changes": [
+          "Sidebar lyrics wrap to the panel width, keeping the last words visible at 150% text size.",
+          "Plain lyrics wrap too. Changing the text size recenters the current line in the panel."
+        ]
+      }
+    },
+    {
+      "version": "0.2.11",
+      "ru": {
+        "title": "Больше совпадений для текстов песен",
+        "changes": [
+          "Поиск распознаёт русское и английское название одной песни в Genius.",
+          "Исполнитель в начале или конце названия учитывается даже у перезалитых треков с другим именем загрузившего пользователя.",
+          "Дополнительный поиск по названию помогает найти текст, если имя пользователя мешает результатам."
+        ]
+      },
+      "en": {
+        "title": "More lyrics matches",
+        "changes": [
+          "Genius matching recognizes both Russian and English titles of the same song.",
+          "Artist credits at either end of a track title are recognized on reuploads by other users.",
+          "An extra title search helps find lyrics when the uploader name gets in the way."
+        ]
+      }
+    },
+    {
+      "version": "0.2.10",
+      "ru": {
+        "title": "Улучшенный поиск текстов",
+        "changes": [
+          "Поиск лучше обрабатывает необычные шрифты, HTML-символы, совместных исполнителей и названия перезалитых треков.",
+          "После LRCLIB проверяются Genius и lyrics.ovh. Ошибки источника можно повторить без перезапуска приложения.",
+          "Для изменённых версий трека можно показать обычный текст оригинала; неподходящие таймкоды не используются."
+        ]
+      },
+      "en": {
+        "title": "Better lyrics search",
+        "changes": [
+          "Matching handles stylized lettering, HTML entities, shared artist credits and reuploaded track titles more reliably.",
+          "Genius and lyrics.ovh are checked after LRCLIB. Provider errors can be retried without restarting the app.",
+          "Modified track versions can use the original song's plain lyrics without applying incompatible timestamps."
+        ]
+      }
+    },
+    {
+      "version": "0.2.9",
+      "ru": {
+        "title": "Исправление входа при запуске",
+        "changes": [
+          "Убрана ложная ошибка об истёкшей сессии SoundCloud при запуске.",
+          "Восстановленная очередь ждёт нажатия Play, пока сессия не готова, и не пропускает треки в фоне."
+        ]
+      },
+      "en": {
+        "title": "Startup sign-in fix",
+        "changes": [
+          "Fixed a false SoundCloud session-expired message on startup.",
+          "The restored queue waits for Play and a ready session instead of skipping tracks in the background."
+        ]
+      }
+    },
+    {
+      "version": "0.2.8",
+      "ru": {
+        "title": "Новая волна и небольшие обновления",
+        "changes": [
+          "Моя волна сохраняет историю между запусками и избегает повторения одного и того же первого трека.",
+          "Обновления клиента используют облегчённый установщик. Изменившиеся части CLAP скачиваются отдельно, а неизменившиеся используются повторно."
+        ]
+      },
+      "en": {
+        "title": "My Wave and smaller updates",
+        "changes": [
+          "My Wave remembers listening history between sessions and avoids repeating the same first track.",
+          "Client updates use a lightweight installer. Changed CLAP files download separately, while unchanged files are reused."
+        ]
+      }
+    },
+    {
+      "version": "0.2.7",
+      "ru": {
+        "title": "Исполнитель в названии трека",
+        "changes": [
+          "Поиск текстов учитывает исполнителя после разделителя в названии трека, например «оригами — CUPSIZE»."
+        ]
+      },
+      "en": {
+        "title": "Artist credits in track titles",
+        "changes": [
+          "Lyrics matching recognizes artist credits after a separator in the title, such as “оригами — CUPSIZE”."
+        ]
+      }
+    },
+    {
+      "version": "0.2.6",
+      "ru": {
+        "title": "Импорт Spotify и режим фона",
+        "changes": [
+          "Добавлен импорт Spotify с поиском соответствующих записей в SoundCloud.",
+          "Режим фона позволяет скрыть элементы интерфейса и оставить только фоновое изображение."
+        ]
+      },
+      "en": {
+        "title": "Spotify import and wallpaper mode",
+        "changes": [
+          "Added Spotify import with matching tracks in SoundCloud.",
+          "Wallpaper mode hides the interface elements to show just the background image."
+        ]
+      }
+    },
+    {
+      "version": "0.2.5",
+      "ru": {
+        "title": "Меньше пауз при прослушивании",
+        "changes": [
+          "Аудиосегменты загружаются заранее, чтобы уменьшить короткие остановки воспроизведения."
+        ]
+      },
+      "en": {
+        "title": "Fewer playback pauses",
+        "changes": [
+          "Audio segments are prefetched to reduce brief playback interruptions."
+        ]
+      }
+    },
+    {
+      "version": "0.2.4",
+      "ru": {
+        "title": "SoundCloud через сервер",
+        "changes": [
+          "Профиль, библиотека, поиск, обложки и аудио проходят через сервер Fastcloud: клиенту не нужен прямой доступ к SoundCloud."
+        ]
+      },
+      "en": {
+        "title": "SoundCloud through the server",
+        "changes": [
+          "Profiles, libraries, search, artwork and audio pass through the Fastcloud server, so the client does not need direct access to SoundCloud."
+        ]
+      }
+    },
+    {
+      "version": "0.2.3",
+      "ru": {
+        "title": "Общее аудио и управление доступом",
+        "changes": [
+          "Добавлено воспроизведение аудио через общий серверный кэш.",
+          "Администратор может управлять доступом пользователей и включать или выключать одобрение новых заявок."
+        ]
+      },
+      "en": {
+        "title": "Shared audio and access controls",
+        "changes": [
+          "Added playback through a shared server audio cache.",
+          "Administrators can manage user access and enable or disable approval for new users."
+        ]
+      }
+    },
+    {
+      "version": "0.2.2",
+      "ru": {
+        "title": "Тексты, воспроизведение и интерфейс",
+        "changes": [
+          "Улучшен поиск текстов по нескольким источникам и метаданным трека.",
+          "Исправления загрузки комментариев и аудиопотоков SoundCloud.",
+          "Ручная прокрутка текста доступна при выключенной автопрокрутке."
+        ]
+      },
+      "en": {
+        "title": "Lyrics, playback and interface",
+        "changes": [
+          "Improved lyrics matching across multiple sources and track metadata.",
+          "Fixes for loading SoundCloud comments and audio streams.",
+          "Manual lyrics scrolling is available when automatic scrolling is disabled."
+        ]
+      }
+    },
+    {
+      "version": "0.2.1-a",
+      "ru": {
+        "title": "Уведомления об обновлениях",
+        "changes": [
+          "Добавлен серверный сигнал о новом релизе для открытых приложений.",
+          "Исправлена ручная прокрутка текста при отключённой автопрокрутке."
+        ]
+      },
+      "en": {
+        "title": "Release notifications",
+        "changes": [
+          "Added a server signal announcing new releases to running apps.",
+          "Fixed manual lyrics scrolling when automatic scrolling is disabled."
+        ]
+      }
+    },
+    {
+      "version": "0.2.1",
+      "ru": {
+        "title": "Настройки оформления",
+        "changes": [
+          "Добавлена отдельная прозрачность подложек заголовков.",
+          "Исправлены элементы управления оформлением и выравнивание настроек."
+        ]
+      },
+      "en": {
+        "title": "Appearance controls",
+        "changes": [
+          "Added separate opacity for heading backgrounds.",
+          "Fixed appearance controls and alignment in settings."
+        ]
+      }
+    },
+    {
+      "version": "0.2.0",
+      "ru": {
+        "title": "Тема под себя",
+        "changes": [
+          "Настройка цвета и прозрачности подложек, цвета текста и размера интерфейса.",
+          "Встроенный выбор цвета и исправления выравнивания элементов при изменении размера текста.",
+          "Улучшения затемнения фона и оформления текстов песен."
+        ]
+      },
+      "en": {
+        "title": "Make the theme your own",
+        "changes": [
+          "Customize panel colors and opacity, text color and interface size.",
+          "An inline color picker and alignment fixes when changing text size.",
+          "Improvements to background dimming and lyrics appearance."
+        ]
+      }
+    }
+  ]
+}

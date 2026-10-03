@@ -178,8 +178,29 @@ export function UpdateNotice({ english }: { english: boolean }) {
   const label = displayReleaseVersion(available.version)
   return <div className="update-notice" role="status">
     <div><strong>{english ? `Fastcloud ${label} is available` : `Доступна новая версия Fastcloud ${label}`}</strong><span>{english ? 'You can install it now.' : 'Её можно установить прямо сейчас.'}</span>{error && <small role="alert">{error}</small>}</div>
-    <button className="primary-button" disabled={installing} onClick={() => void install()}>{installing ? english ? `Installing… ${progress == null ? '' : `${progress}%`}` : `Устанавливаем… ${progress == null ? '' : `${progress}%`}` : english ? 'Update now' : 'Обновить'}</button>
+    <div className="update-actions">
+      <button className="primary-button" disabled={installing} onClick={() => void install()}>{installing ? english ? `Installing… ${progress == null ? '' : `${progress}%`}` : `Устанавливаем… ${progress == null ? '' : `${progress}%`}` : english ? 'Update now' : 'Обновить'}</button>
+      <ReleaseNotesButton version={available.version} english={english} />
+    </div>
     <button className="icon-button" disabled={installing} aria-label={english ? 'Remind me next launch' : 'Напомнить при следующем запуске'} title={english ? 'Remind me next launch' : 'Напомнить при следующем запуске'} onClick={dismiss}>×</button>
+  </div>
+}
+
+function ReleaseNotesButton({ version, english }: { version: string; english: boolean }) {
+  const [opening, setOpening] = useState(false)
+  const [failed, setFailed] = useState(false)
+  const open = async () => {
+    setOpening(true)
+    setFailed(false)
+    try { await api.openReleaseNotes(version, english) }
+    catch { setFailed(true) }
+    finally { setOpening(false) }
+  }
+  return <div className="release-notes-action">
+    <button className="secondary-button" disabled={opening} onClick={() => void open()} title={english ? 'Open release notes in your browser' : 'Открыть описание обновления в браузере'}>
+      {english ? 'Read changes' : 'Прочитать изменения'}
+    </button>
+    {failed && <small className="error-text" role="alert">{english ? 'Could not open the browser. Try again.' : 'Не удалось открыть браузер. Попробуй ещё раз.'}</small>}
   </div>
 }
 
@@ -190,9 +211,12 @@ export function UpdateSettingsCard({ english }: { english: boolean }) {
     <p>{english ? 'Installed version' : 'Установленная версия'}: {displayReleaseVersion(version) || '…'}</p>
     {available ? <>
       <p role="status">{english ? `Version ${displayReleaseVersion(available.version)} is available.` : `Доступна версия ${displayReleaseVersion(available.version)}.`}</p>
-      <button className="secondary-button" disabled={installing} onClick={() => void install()}>
-        {installing ? english ? `Installing… ${progress == null ? '' : `${progress}%`}` : `Устанавливаем… ${progress == null ? '' : `${progress}%`}` : english ? 'Update now' : 'Обновить сейчас'}
-      </button>
+      <div className="update-actions">
+        <button className="secondary-button" disabled={installing} onClick={() => void install()}>
+          {installing ? english ? `Installing… ${progress == null ? '' : `${progress}%`}` : `Устанавливаем… ${progress == null ? '' : `${progress}%`}` : english ? 'Update now' : 'Обновить сейчас'}
+        </button>
+        <ReleaseNotesButton version={available.version} english={english} />
+      </div>
     </> : <>
       {checked && <p role="status">{english ? 'You have the latest version.' : 'У вас последняя версия.'}</p>}
       <button className="secondary-button" disabled={checking || installing} onClick={() => void checkNow()}>

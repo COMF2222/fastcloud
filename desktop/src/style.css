@@ -825,6 +825,13 @@ html[data-theme="light"] .secondary-button:hover { background: color-mix(in srgb
 .login-card .update-notice { flex-wrap: wrap; margin: -28px 0 24px; }
 @media (max-width: 650px) { .update-notice { flex-wrap: wrap; }.main > .update-notice { margin: 10px 12px 0; } }
 .update-settings-card .secondary-button { margin-top: 8px; }
+.update-actions { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 10px; }
+.update-notice > .update-actions { flex: 0 1 auto; flex-direction: row; align-items: flex-start; gap: 10px; }
+.update-actions .secondary-button { display: inline-flex; align-items: center; justify-content: center; min-height: 40px; }
+.update-settings-card .update-actions .secondary-button { margin-top: 0; }
+.update-settings-card .update-actions { margin-top: 8px; }
+.release-notes-action { display: flex; flex-direction: column; gap: 6px; }
+.release-notes-action small { max-width: 240px; }
 .now-playing { --text: #f6f7fa; --text-muted: #c2c6d2; --accent-readable: color-mix(in srgb, var(--accent) 35%, white); }
 
 .login-screen { display: grid; place-items: center; min-height: 100vh; padding: 32px 20px; overflow-y: auto; background: radial-gradient(circle at 50% 10%, #293041 0, #171a25 40%, #0d0f14 100%); color: var(--user-text, #f5f5f7); }

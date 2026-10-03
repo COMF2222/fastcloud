@@ -2,6 +2,7 @@
 /desktop/node_modules
 /desktop/dist
 /desktop/release
+/desktop/release-notes.md
 /desktop/*.tsbuildinfo
 /desktop/src-tauri/target
 /desktop/src-tauri/gen

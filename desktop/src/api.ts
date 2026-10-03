@@ -3,6 +3,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import type { Comment, Connection, Data, LyricsRecord, Me, OfflineEntry, PlayerState, Playlist, QuickAccessShortcut, Settings, StorageReport, Track, User, VisualiserFrame, WaveformSamples, WebProfile } from './types'
 import { cachedLibraryData, clearLibraryCache, forgetLibraryEntry, setCacheConnection } from './libraryCache'
 import { emptySpotifyImport, type SpotifyImportSelection, type SpotifyImportView } from './spotifyImportTypes'
+import { releaseNotesUrl } from './releaseNotes'
 
 const preview = !('__TAURI_INTERNALS__' in window)
 type BridgePlayerState = Omit<PlayerState, 'queue'> & { queue: Track[] | null; queueRevision: number }
@@ -133,6 +134,10 @@ export const api = {
   relatedUsers: (id: number) => preview ? Promise.resolve<Data<User[]>>({ status: 'ready', data: previewUsers.filter(user => user.id !== id) }) : invoke<Data<User[]>>('related_users', { id }),
   openLink: (raw: string) => preview ? Promise.reject<{ kind: string; id: number; title: string }>(new Error(previewText('Ссылки SoundCloud открываются в приложении', 'SoundCloud links open in the desktop app'))) : invoke<{ kind: 'track' | 'playlist' | 'user'; id: number; title: string }>('open_link', { raw }),
   openSoundCloud: (url: string) => preview ? Promise.reject<void>(new Error(previewText('Открой ссылку в установленном приложении', 'Open this link in the installed app'))) : invoke<void>('open_soundcloud_url', { raw: url }),
+  openReleaseNotes: (version: string, english: boolean) => {
+    const raw = releaseNotesUrl(version, english)
+    return preview ? (window.open(raw, '_blank', 'noopener,noreferrer'), Promise.resolve()) : invoke<void>('open_release_notes', { raw })
+  },
   vibeSearch: (query: string) => preview ? Promise.resolve(demo.filter(track => track.title.toLowerCase().includes(query.toLowerCase()) || track.genre?.toLowerCase().includes(query.toLowerCase()))) : invoke<Track[]>('vibe_search', { query }),
   repost: (kind: 'track' | 'playlist', id: number, active: boolean) => {
     if (!preview) return afterChange(invoke<void>('repost', { kind, id, active }), kind === 'track' ? 'tracks:reposts' : 'playlists:reposts')

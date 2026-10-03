@@ -26,6 +26,10 @@ normal latest release so the existing updater endpoint continues to work.
 1. Set the same version in `Cargo.toml`, `desktop/package.json`,
    `desktop/src-tauri/Cargo.toml`, and `desktop/src-tauri/tauri.conf.json`.
    Update both lockfiles.
+   Add that version to `docs/release-notes.json`: a short title and user-facing
+   changes in both `ru` and `en`. CI rejects a tagged release without its notes
+   before packaging. `python tools/prepare_release_notes.py --check` validates
+   every entry without building an installer.
 2. Run `npm ci` and `npm run build` from `desktop/`. Run
    `cargo fmt --manifest-path desktop/src-tauri/Cargo.toml -- --check` and
    `cargo check --manifest-path desktop/src-tauri/Cargo.toml --locked`.
@@ -49,6 +53,25 @@ over `/v1/updates/events` to running clients. A reconnect receives the last
 published version. Clients still use the signed GitHub manifest to decide
 whether an update can be installed; the signal never installs anything.
 Periodic checks every 30 minutes remain as a fallback.
+
+## Website release history
+
+CI writes `desktop/release-notes.md` from `docs/release-notes.json` and adds it
+to the GitHub release body. The first link is the full Windows installer; the
+description then contains readable Russian and English notes. A hidden
+`fastcloud-notes:v1` JSON comment carries the same description for the website.
+Do not remove that comment when editing a release body.
+
+The website reads published releases from the public GitHub API. Publishing a
+new client release updates its history without deploying the website again or
+adding a secret to the website repository. An open history page checks again
+every five minutes and when returning to the tab. English text is authored
+alongside the Russian description; it is not inferred from commit messages.
+
+The many `clap-*.gz` assets are intentional, content-addressed update files.
+Existing clients request these exact filenames. Keep them, signatures and
+manifests in every release; removing or combining them breaks component updates.
+Users only need the full `Fastcloud_*_x64-setup.exe` installer for manual setup.
 
 One-time setup:
 
