@@ -134,12 +134,7 @@ fn feature_label(value: &str) -> bool {
         })
 }
 
-fn artist_keys(value: &str) -> Vec<String> {
-    let value = metadata_text(value);
-    let mut keys = vec![comparable(&value)];
-    if let Some((start, _)) = feature_marker(&value) {
-        keys.push(comparable(&value[..start]));
-    }
+fn bilingual_alias(value: &str) -> Option<(&str, &str)> {
     if let Some((name, alias)) = value.split_once('(')
         && let Some(alias) = alias.strip_suffix(')')
     {
@@ -149,8 +144,8 @@ fn artist_keys(value: &str) -> Vec<String> {
                 part.chars().any(|ch| ch.is_ascii_alphabetic()),
             )
         };
-        // Genius uses bilingual credits such as "Джизус (Dzhizus)". Labels
-        // such as "Artist (Tribute)" are not aliases of the original artist.
+        // Accept an explicit name in another script, not a different recording
+        // or a translation/tribute annotation.
         let label = alias.to_lowercase();
         let annotation = promotional(alias)
             || !version_tags(alias).is_empty()
@@ -160,6 +155,8 @@ fn artist_keys(value: &str) -> Vec<String> {
                     "tribute"
                         | "translation"
                         | "translations"
+                        | "romanization"
+                        | "romanizations"
                         | "fan"
                         | "трибьют"
                         | "перевод"
@@ -172,8 +169,20 @@ fn artist_keys(value: &str) -> Vec<String> {
                 ((true, false), (false, true)) | ((false, true), (true, false))
             )
         {
-            keys.extend([comparable(name), comparable(alias)]);
+            return Some((name.trim(), alias.trim()));
         }
+    }
+    None
+}
+
+fn artist_keys(value: &str) -> Vec<String> {
+    let value = metadata_text(value);
+    let mut keys = vec![comparable(&value)];
+    if let Some((start, _)) = feature_marker(&value) {
+        keys.push(comparable(&value[..start]));
+    }
+    if let Some((name, alias)) = bilingual_alias(&value) {
+        keys.extend([comparable(name), comparable(alias)]);
     }
     keys.retain(|key| !key.is_empty());
     keys
@@ -788,6 +797,19 @@ struct GeniusCandidate {
     url: reqwest::Url,
 }
 
+fn genius_title_keys(value: &str) -> Vec<String> {
+    let value = clean_title(value);
+    // Genius can append an editorial * after a bilingual title. Keep this
+    // convention local to Genius; LRCLIB recording/timing checks stay exact.
+    let value = value.trim_end_matches(['*', ' ']);
+    let mut keys = vec![comparable(value)];
+    if let Some((name, alias)) = bilingual_alias(value) {
+        keys.extend([comparable(name), comparable(alias)]);
+    }
+    keys.retain(|key| !key.is_empty());
+    keys
+}
+
 fn genius_artist_matches(song: &Value, wanted: &str) -> bool {
     let primary = song
         .pointer("/primary_artist/name")
@@ -818,6 +840,36 @@ fn genius_artist_matches(song: &Value, wanted: &str) -> bool {
         }
     }
     false
+}
+
+fn genius_metadata_matches(song: &Value, artist: &str, title: &str) -> bool {
+    let found_title = song
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let found_keys = genius_title_keys(found_title);
+    let matches_title = |wanted: &str| {
+        version_tags(found_title) == version_tags(wanted)
+            && genius_title_keys(wanted)
+                .iter()
+                .any(|key| found_keys.contains(key))
+    };
+    if genius_artist_matches(song, artist) && matches_title(title) {
+        return true;
+    }
+    let Some(credit) = song.pointer("/primary_artist/name").and_then(Value::as_str) else {
+        return false;
+    };
+    // An uploader is not necessarily the performer. Accept a credit embedded
+    // at either end of the upload title only after Genius corroborates both
+    // that exact performer and the remaining song name.
+    candidate_pairs(credit, title)
+        .iter()
+        .any(|(performer, name)| {
+            comparable(name) != comparable(&clean_title(title))
+                && genius_artist_matches(song, performer)
+                && matches_title(name)
+        })
 }
 
 // Complete JSON traversal before awaiting a page request. Only owned candidates
@@ -853,9 +905,7 @@ fn genius_candidates(data: &Value, artist: &str, title: &str) -> Vec<GeniusCandi
             .pointer("/primary_artist/name")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        if comparable(&clean_title(found_title)) != comparable(&clean_title(title))
-            || !genius_artist_matches(song, artist)
-            || version_tags(found_title) != version_tags(title)
+        if !genius_metadata_matches(song, artist, title)
             || song.get("lyrics_state").and_then(Value::as_str) != Some("complete")
             || song.get("instrumental").and_then(Value::as_bool) == Some(true)
         {
@@ -887,29 +937,49 @@ fn genius_candidates(data: &Value, artist: &str, title: &str) -> Vec<GeniusCandi
     candidates
 }
 
-async fn genius(
+async fn genius_search_candidates(
     client: &reqwest::Client,
     artist: &str,
     title: &str,
-) -> Result<Option<LyricsRecord>, String> {
+    query: &str,
+) -> Result<Vec<GeniusCandidate>, String> {
     let response = client
         .get("https://genius.com/api/search/song")
         .header(reqwest::header::USER_AGENT, GENIUS_USER_AGENT)
-        .query(&[("q", format!("{artist} {title}"))])
+        .query(&[("q", query)])
         .send()
         .await
         .map_err(|_| "Genius connection failed")?;
     if !response.status().is_success() {
         return Err(format!("Genius HTTP {}", response.status()));
     }
-    let candidates = genius_candidates(
+    Ok(genius_candidates(
         &response
             .json::<Value>()
             .await
             .map_err(|_| "Invalid Genius response")?,
         artist,
         title,
-    );
+    ))
+}
+
+async fn genius(
+    client: &reqwest::Client,
+    artist: &str,
+    title: &str,
+) -> Result<Option<LyricsRecord>, String> {
+    // Compact separators such as "Song-ARTIST" confuse Genius's search.
+    // They are search punctuation; matching still validates the original name.
+    let query = metadata_text(&format!("{artist} {title}")).replace(['-', '–', '—', '|'], " ");
+    let mut candidates = genius_search_candidates(client, artist, title, &query).await?;
+    if candidates.is_empty() {
+        let title_query = metadata_text(title).replace(['-', '–', '—', '|'], " ");
+        if title_query != query {
+            // Avoid letting a reuploader's nickname hide an explicit credit.
+            // The same strict metadata matcher also validates this search.
+            candidates = genius_search_candidates(client, artist, title, &title_query).await?;
+        }
+    }
     let mut failed = false;
     for candidate in candidates.into_iter().take(3) {
         let response = client
@@ -1356,6 +1426,117 @@ mod tests {
             "https://genius.com/artist-song-lyrics"
         );
     }
+    #[test]
+    fn bilingual_genius_titles_match_both_names_and_keep_identity_checks() {
+        let hit = |id, title, artist| {
+            serde_json::json!({"type":"song","result":{
+                "id":id,"title":title,"primary_artist":{"name":artist},
+                "url":format!("https://genius.com/test-{id}-lyrics"),
+                "lyrics_state":"complete"
+            }})
+        };
+        let data = serde_json::json!({"response":{"hits":[
+            hit(10411513, "ты причина (You're The Reason)*", "CUPSIZE"),
+            hit(2, "ты причина (You're The Reason)*", "Other Artist"),
+            hit(3, "ты причина (You're The Reason Remix)*", "CUPSIZE"),
+            hit(4, "ты причина (English Translation)*", "CUPSIZE"),
+            hit(5, "ты причина (Live)*", "CUPSIZE"),
+            hit(6, "ты причина (другая песня)*", "CUPSIZE")
+        ]}});
+        for title in ["ты причина&#x20;", "You're the Reason"] {
+            let found = genius_candidates(&data, "&#x43;UPSIZE", title);
+            assert_eq!(
+                found.iter().map(|entry| entry.id).collect::<Vec<_>>(),
+                vec![10411513]
+            );
+        }
+        assert!(genius_candidates(&data, "CUPSIZE", "ты причина (Remix)").is_empty());
+        assert!(genius_candidates(&data, "CUPSIZE", "другая песня").is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "contacts the public Genius service"]
+    async fn reported_cupsize_reason_finds_live_genius_lyrics() {
+        let found = genius(&client().unwrap(), "CUPSIZE", "ты причина")
+            .await
+            .unwrap()
+            .expect("the bilingual Genius title should match the Russian title");
+        assert_eq!(found.id, 10411513);
+        assert_eq!(
+            found.source_url.as_deref(),
+            Some("https://genius.com/Cupsize-youre-the-reason-lyrics")
+        );
+        assert!(
+            found
+                .plain_lyrics
+                .as_deref()
+                .is_some_and(|text| !text.trim().is_empty())
+        );
+        assert!(found.synced_lyrics.is_none());
+    }
+
+    #[test]
+    fn genius_confirms_embedded_performer_instead_of_an_uploader_name() {
+        let song = serde_json::json!({"title":"Хотите — верьте, или нет (Believe It or Not)",
+            "primary_artist":{"name":"CUPSIZE"}});
+        for title in [
+            "ХОТИТЕ ВЕРЬТЕ ИЛИ НЕТ-CUPSIZE",
+            "CUPSIZE-ХОТИТЕ ВЕРЬТЕ ИЛИ НЕТ",
+        ] {
+            assert!(genius_metadata_matches(
+                &song,
+                "психиатрическая больница&#x20;",
+                title
+            ));
+        }
+        for title in [
+            "ХОТИТЕ ВЕРЬТЕ ИЛИ НЕТ-Other Artist",
+            "Другая песня-CUPSIZE",
+            "ХОТИТЕ ВЕРЬТЕ ИЛИ НЕТ (Remix)-CUPSIZE",
+            "ХОТИТЕ ВЕРЬТЕ ИЛИ НЕТ",
+        ] {
+            assert!(!genius_metadata_matches(
+                &song,
+                "психиатрическая больница",
+                title
+            ));
+        }
+        let unrelated = serde_json::json!({"title":"Part Two","primary_artist":{"name":"Song"}});
+        assert!(!genius_metadata_matches(
+            &unrelated,
+            "Artist",
+            "Songbook - Part Two"
+        ));
+    }
+
+    #[tokio::test]
+    #[ignore = "contacts public lyrics services"]
+    async fn reported_cupsize_believe_upload_finds_live_lyrics() {
+        let found = lookup(
+            "психиатрическая больница".into(),
+            "ХОТИТЕ ВЕРЬТЕ ИЛИ НЕТ-CUPSIZE".into(),
+            49_554,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .expect("the performer suffix should be confirmed by Genius");
+        assert_eq!(found.source, "Genius");
+        assert_eq!(found.id, 10007993);
+        assert_eq!(
+            found.source_url.as_deref(),
+            Some("https://genius.com/Cupsize-believe-it-or-not-lyrics")
+        );
+        assert!(
+            found
+                .plain_lyrics
+                .as_deref()
+                .is_some_and(|text| !text.trim().is_empty())
+        );
+        assert!(found.synced_lyrics.is_none());
+    }
+
     fn record(title: &str, artist: &str, seconds: f64) -> LyricsRecord {
         LyricsRecord {
             id: 1,
