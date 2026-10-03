@@ -1294,7 +1294,9 @@ impl Player {
                     }
                     DecodeAction::TrackEnd => {
                         let st = self.state.lock();
-                        let nextable = st.current.is_some();
+                        // A restored queue is paused with an empty decoder. It
+                        // must not fetch the next track before sign-in resumes.
+                        let nextable = st.is_playing && st.current.is_some();
                         let repeat = st.repeat;
                         drop(st);
                         if nextable {
@@ -1778,6 +1780,42 @@ mod tests {
         player.restore_session(vec![track], Some(0));
         player.publish_position();
         assert_eq!(player.state.lock().position_ms, 42_000);
+    }
+
+    #[tokio::test]
+    async fn restored_queue_does_not_fetch_or_advance_before_play() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let client = Arc::new(crate::api::ApiClient::new(None, false));
+        // Keep even a regressed request on localhost, never a real account.
+        let _session = crate::auth::Session::with_test_user(crate::auth::AppCredentials {
+            client_id: "test-client".into(), client_secret: String::new(),
+            redirect_uri: "http://127.0.0.1:41317/callback".into(),
+            server_url: Some("http://127.0.0.1:9".into()),
+        }, client.clone()).await;
+        let path = dir.path().join("settings.json");
+        crate::config::update_settings(&path, |settings| settings.last_position_ms = Some(42_000)).unwrap();
+        for repeat in [RepeatMode::Off, RepeatMode::All, RepeatMode::One] {
+            let player = Arc::new(Player::new(
+                Arc::new(AudioOutput::silent([0.0; 10], 0.8)), client.clone(),
+                Arc::new(AudioCache::disabled()), path.clone(), tokio::runtime::Handle::current(),
+            ));
+            player.attach();
+            player.set_repeat(repeat);
+            let queue = vec![
+                serde_json::from_str(r#"{"id":7,"title":"Restored","duration":120000}"#).unwrap(),
+                serde_json::from_str(r#"{"id":8,"title":"Next","duration":120000}"#).unwrap(),
+            ];
+            player.restore_session(queue, Some(0));
+            let task = tokio::spawn(player.clone().run());
+            tokio::time::sleep(Duration::from_millis(350)).await;
+            player.shutdown();
+            task.await.unwrap();
+            assert_eq!(player.load_generation.load(Ordering::Acquire), 0, "{repeat:?}");
+            let state = player.state.lock();
+            assert_eq!(state.current, Some(0), "{repeat:?}");
+            assert_eq!(state.position_ms, 42_000, "{repeat:?}");
+            assert!(!state.is_playing && !state.loading && state.error.is_none(), "{repeat:?}");
+        }
     }
 
     #[test]
