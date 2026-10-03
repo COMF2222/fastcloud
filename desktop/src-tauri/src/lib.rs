@@ -31,6 +31,7 @@ mod vibe;
 mod vis;
 mod artwork;
 mod clap;
+mod components;
 mod lyrics;
 mod update_events;
 mod spotify;
@@ -664,12 +665,19 @@ fn offline_tracks() -> Result<Vec<offline::OfflineEntry>, String> {
 }
 
 #[tauri::command]
-fn my_wave(
+async fn my_wave(
     state: tauri::State<'_, AppState>,
     liked_tracks: Vec<Track>,
     variation: u32,
 ) -> Result<Vec<Track>, String> {
-    let seed = wave::first_seed(&state.wave, &liked_tracks, variation)
+    let variation = state.wave.next_variation(variation);
+    let engine = state.wave.clone();
+    // Ranking and saving the opening history must not stall the UI thread.
+    let (liked_tracks, seed) = tokio::task::spawn_blocking(move || {
+        let seed = wave::first_seed(&engine, &liked_tracks, variation);
+        (liked_tracks, seed)
+    }).await.map_err(|error| error.to_string())?;
+    let seed = seed
         .ok_or_else(|| "No playable liked tracks are available for My Wave".to_string())?;
     let player = state.player()?.clone();
     player.play_queue(vec![seed.clone()], 0, false);
@@ -2372,6 +2380,7 @@ fn audio_cache(state: tauri::State<'_, AppState>, clear: bool) -> Result<u64, St
 struct StorageReport {
     installation_bytes: u64,
     clap_model_bytes: u64,
+    clap_runtime_bytes: u64,
     clap_preparation_bytes: u64,
     offline_bytes: u64,
     audio_cache_bytes: u64,
@@ -2401,6 +2410,21 @@ fn folder_bytes(path: &std::path::Path) -> std::io::Result<u64> {
 }
 
 #[tauri::command]
+fn component_status(resources: tauri::State<'_, Arc<components::Manager>>) -> components::Status {
+    resources.status()
+}
+
+#[tauri::command]
+async fn prepare_components(resources: tauri::State<'_, Arc<components::Manager>>) -> Result<(), String> {
+    resources.inner().clone().prepare().await.map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+async fn preserve_components(resources: tauri::State<'_, Arc<components::Manager>>) -> Result<(), String> {
+    resources.inner().clone().preserve_before_update().await.map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
 async fn storage_report(app: tauri::AppHandle) -> Result<StorageReport, String> {
     let extra = app.path().app_data_dir().map_err(|error| error.to_string())?;
     tauri::async_runtime::spawn_blocking(move || -> Result<StorageReport, String> {
@@ -2409,6 +2433,10 @@ async fn storage_report(app: tauri::AppHandle) -> Result<StorageReport, String> 
             .parent().ok_or("Installation path unavailable")?.to_path_buf();
         let offline = paths.root.join("offline");
         let data_bytes = folder_bytes(&paths.root).map_err(|error| error.to_string())?;
+        let component_root = paths.root.join("components").join("clap");
+        let component_logical_bytes = folder_bytes(&component_root).map_err(|error| error.to_string())?;
+        // The active set uses hardlinks to blobs, so count each stored file once.
+        let clap_runtime_bytes = folder_bytes(&component_root.join("blobs")).map_err(|error| error.to_string())?;
         let cache_bytes = folder_bytes(&paths.cache).map_err(|error| error.to_string())?;
         let offline_bytes = folder_bytes(&offline).map_err(|error| error.to_string())?;
         let audio_cache_bytes = folder_bytes(&paths.audio_cache).map_err(|error| error.to_string())?;
@@ -2424,12 +2452,14 @@ async fn storage_report(app: tauri::AppHandle) -> Result<StorageReport, String> 
             .map_err(|error| error.to_string())?;
         Ok(StorageReport {
             installation_bytes,
-            clap_model_bytes: folder_bytes(&installation.join("resources").join("clap")).map_err(|error| error.to_string())?,
+            clap_model_bytes: folder_bytes(&installation.join("resources").join("clap")).map_err(|error| error.to_string())?
+                .saturating_add(clap_runtime_bytes),
+            clap_runtime_bytes,
             clap_preparation_bytes,
             offline_bytes,
             audio_cache_bytes,
             artwork_cache_bytes,
-            other_data_bytes: data_bytes.saturating_sub(offline_bytes),
+            other_data_bytes: data_bytes.saturating_sub(offline_bytes).saturating_sub(component_logical_bytes),
             other_cache_bytes: cache_bytes.saturating_sub(audio_cache_bytes).saturating_sub(artwork_cache_bytes),
             extra_app_data_bytes,
             installation_path: installation.display().to_string(),
@@ -3022,9 +3052,16 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            if let Ok(resource_dir) = app.path().resource_dir() {
-                clap::configure(&resource_dir);
-            }
+            let resource_dir = app.path().resource_dir()?;
+            let resources = components::Manager::new(config::app_paths()?.root.join("components").join("clap"),
+                resource_dir.join("resources").join("clap"))?;
+            clap::configure(&resource_dir, resources.clone());
+            app.manage(resources.clone());
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = resources.prepare().await {
+                    log::warn!("CLAP component preparation: {error:#}");
+                }
+            });
             app.manage(AppState::new()?);
             app.manage(update_events::Subscription::default());
             let (mini, saved_bounds) = {
@@ -3248,6 +3285,9 @@ pub fn run() {
             eq_preset,
             audio_cache,
             storage_report,
+            component_status,
+            prepare_components,
+            preserve_components,
             clear_artwork_cache,
             clear_clap_preparation,
             import_status,

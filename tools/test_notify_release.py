@@ -94,14 +94,13 @@ class ReleaseNamingTest(unittest.TestCase):
             root = Path(directory)
             config = root / 'config.json'
             config.write_text('{"version":"0.2.1-a"}', encoding='utf-8')
-            installers = root / 'installers'
-            installers.mkdir()
-            installer = installers / 'Fastcloud_0.2.1-a_x64-setup.exe'
-            installer.write_bytes(b'test installer')
-            installer.with_suffix('.exe.sig').write_text('test signature', encoding='utf-8')
             dist = root / 'dist'
+            dist.mkdir()
+            for suffix in ('setup', 'update'):
+                installer = dist / f'Fastcloud_0.2.1-a_x64-{suffix}.exe'
+                installer.write_bytes(b'test installer')
+                installer.with_suffix('.exe.sig').write_text('test signature', encoding='utf-8')
             with patch.object(release_manifest, 'CONFIG', config), \
-                    patch.object(release_manifest, 'INSTALLERS', installers), \
                     patch.object(release_manifest, 'DIST', dist), \
                     patch.dict(os.environ, {'GITHUB_REF_NAME': 'v0.2.1a'}), \
                     contextlib.redirect_stdout(io.StringIO()):

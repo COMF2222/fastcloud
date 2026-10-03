@@ -36,10 +36,21 @@ fn performer_keys(value: &str) -> Vec<String> {
 
 pub fn track_identity(track: &Track) -> TrackIdentity {
     let raw = track.title.trim();
-    let (title_artist, raw_title) = [" - ", " – ", " — "]
+    let known = words(track.artist());
+    let anchored = [" - ", " – ", " — ", " | "].into_iter().find_map(|separator| {
+        raw.match_indices(separator).find_map(|(index, _)| {
+            let left = raw[..index].trim();
+            let right = raw[index + separator.len()..].trim();
+            if known.is_empty() || left.is_empty() || right.is_empty() { return None; }
+            if words(left) == known { Some((track.artist(), right)) }
+            else if words(right) == known { Some((track.artist(), left)) }
+            else { None }
+        })
+    });
+    let (title_artist, raw_title) = anchored.or_else(|| [" - ", " – ", " — "]
         .iter().find_map(|separator| raw.split_once(separator))
         .filter(|(artist, title)| !artist.trim().is_empty() && !title.trim().is_empty()
-            && artist.chars().count() < 80)
+            && artist.chars().count() < 80))
         .map_or((None, raw), |(artist, title)| (Some(artist.trim().to_string()), title));
     let full = words(raw_title);
     let variants = ["remix", "live", "slowed", "sped up", "nightcore", "instrumental", "acoustic", "cover", "demo"];
@@ -124,7 +135,12 @@ struct Signal {
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
-struct Profile { signals: HashMap<u64, Signal> }
+struct Profile {
+    signals: HashMap<u64, Signal>,
+    recent_starts: Vec<Track>,
+    recommendations: Vec<Track>,
+    start_counter: u32,
+}
 
 fn enriched_identity(track: &Track, profile: &Profile) -> TrackIdentity {
     let mut identity = track_identity(track);
@@ -167,6 +183,7 @@ pub struct Engine {
     inner: Mutex<Inner>,
     text_cache: Arc<Mutex<TextCache>>,
     starts: Mutex<StartState>,
+    variation: std::sync::atomic::AtomicU32,
 }
 
 fn daypart(hour: u32) -> usize {
@@ -177,15 +194,29 @@ fn current_daypart() -> usize { daypart(Local::now().hour()) }
 
 impl Engine {
     pub fn new(path: PathBuf) -> Self {
-        let profile = std::fs::read(&path).ok()
+        let mut profile = std::fs::read(&path).ok()
             .and_then(|bytes| serde_json::from_slice::<Profile>(&bytes).ok())
             .or_else(|| std::fs::read(path.with_extension("json.bak")).ok()
                 .and_then(|bytes| serde_json::from_slice::<Profile>(&bytes).ok()))
             .unwrap_or_default();
-        Self { path, text_cache: Arc::new(Mutex::new(TextCache::default())), starts: Mutex::new(StartState::default()), inner: Mutex::new(Inner {
+        if profile.recent_starts.len() > 16 {
+            profile.recent_starts.drain(..profile.recent_starts.len() - 16);
+        }
+        profile.recommendations.truncate(80);
+        let starts = StartState {
+            recent: profile.recent_starts.iter().map(track_identity).collect(),
+            recommendations: profile.recommendations.clone(),
+        };
+        let variation = rand::random::<u32>().wrapping_add(profile.start_counter);
+        Self { path, variation: std::sync::atomic::AtomicU32::new(variation),
+            text_cache: Arc::new(Mutex::new(TextCache::default())), starts: Mutex::new(starts), inner: Mutex::new(Inner {
             profile, current: None,
             embedding_in_flight: HashSet::new(), embedding_failed_at: HashMap::new(),
         }) }
+    }
+
+    pub fn next_variation(&self, requested: u32) -> u32 {
+        self.variation.fetch_add(1, std::sync::atomic::Ordering::Relaxed).wrapping_add(requested)
     }
 
     fn save(&self, profile: &Profile) {
@@ -243,6 +274,7 @@ impl Engine {
                 signal.track = Some(track);
                 signal.engaged = signal.engaged.saturating_add(1);
                 signal.engaged_dayparts[period] = signal.engaged_dayparts[period].saturating_add(1);
+                signal.last_played = chrono::Utc::now().timestamp();
                 self.save(&inner.profile);
             }
         }
@@ -312,6 +344,7 @@ fn finish(profile: &mut Profile, seen: Observation) -> bool {
     } else {
         signal.skips = signal.skips.saturating_add(1);
         signal.skip_dayparts[seen.daypart] = signal.skip_dayparts[seen.daypart].saturating_add(1);
+        signal.last_played = chrono::Utc::now().timestamp();
     }
     if profile.signals.len() > 4_000 {
         let oldest = profile.signals.iter().filter(|(_, s)| !s.disliked)
@@ -452,7 +485,14 @@ fn seed_score(track: &Track, profile: &Profile, model: &TasteModel, period: usiz
     let own = profile.signals.get(&track.id).map_or(0.0, |s|
         s.plays.min(8) as f64 * 1.4 + s.dayparts[period].min(6) as f64 * 1.8
         - s.skips.min(5) as f64 * 2.5);
-    own + model.score(track, period)
+    let last = profile.signals.get(&track.id).map_or(0, |signal| signal.last_played);
+    own + model.score(track, period) - recency_penalty(last, chrono::Utc::now().timestamp())
+}
+
+fn recency_penalty(last_played: i64, now: i64) -> f64 {
+    if last_played <= 0 { return 0.0; }
+    let elapsed = now.saturating_sub(last_played);
+    if elapsed < 6 * 3600 { 12.0 } else if elapsed < 2 * 86_400 { 5.0 } else { 0.0 }
 }
 
 fn choose_seeds(likes: &[Track], profile: &Profile, model: &TasteModel, variation: u32, period: usize, avoid: &HashSet<u64>, avoid_identities: &[TrackIdentity]) -> Vec<Track> {
@@ -572,6 +612,13 @@ pub fn first_seed(engine: &Engine, liked_tracks: &[Track], variation: u32) -> Op
             }
         }
     }
+    // Prefer an opening recording that has not opened any recent station,
+    // including after restarting. A tiny library still falls back to its songs.
+    if candidates.iter().any(|(track, _)| !starts.recent.iter().any(|previous|
+        previous.id == track.id || same_recording(previous, &track_identity(track)))) {
+        candidates.retain(|(track, _)| !starts.recent.iter().any(|previous|
+            previous.id == track.id || same_recording(previous, &track_identity(track))));
+    }
     let selected = candidates.into_iter().max_by(|(left, left_bonus), (right, right_bonus)| {
         let score = |track: &Track, bonus: f64| {
             let identity = track_identity(track);
@@ -587,6 +634,11 @@ pub fn first_seed(engine: &Engine, liked_tracks: &[Track], variation: u32) -> Op
     }).map(|(track, _)| track)?;
     starts.recent.push(track_identity(&selected));
     if starts.recent.len() > 16 { starts.recent.remove(0); }
+    let mut inner = engine.inner.lock();
+    inner.profile.recent_starts.push(selected.clone());
+    if inner.profile.recent_starts.len() > 16 { inner.profile.recent_starts.remove(0); }
+    inner.profile.start_counter = inner.profile.start_counter.wrapping_add(1);
+    engine.save(&inner.profile);
     Some(selected)
 }
 
@@ -594,7 +646,10 @@ fn remember_recommendations(engine: &Engine, tracks: &[Track], liked: &HashSet<u
     let recommendations: Vec<_> = tracks.iter().filter(|track| !liked.contains(&track.id))
         .take(80).cloned().collect();
     if !recommendations.is_empty() {
-        engine.starts.lock().recommendations = recommendations;
+        engine.starts.lock().recommendations = recommendations.clone();
+        let mut inner = engine.inner.lock();
+        inner.profile.recommendations = recommendations;
+        engine.save(&inner.profile);
     }
 }
 
@@ -627,9 +682,10 @@ fn assemble(seeds: &[Track], related: Vec<Vec<Track>>, likes: &HashSet<u64>, kno
                         model.acoustic_score(&values, period)
                     })
                 - profile.signals.get(&candidate.id).map_or(0.0, |s| {
-                    let recently_heard = chrono::Utc::now().timestamp() - s.last_played < 2 * 86_400;
-                    s.skips as f64 * 3.0 + if recently_heard { 5.0 } else { 0.0 }
-                });
+                    s.skips as f64 * 3.0 + recency_penalty(s.last_played, chrono::Utc::now().timestamp())
+                })
+                - profile.recent_starts.iter().rev().take(8)
+                    .filter(|previous| same_recording(&track_identity(previous), &identity)).count() as f64 * 12.0;
             pool.push((candidate, score));
         }
     }
@@ -1023,5 +1079,52 @@ mod tests {
         engine.starts.lock().recommendations = vec![tracks[2].clone()];
         let started = first_seed(&engine, &tracks[..2], 0).unwrap();
         assert_eq!(started.id, tracks[2].id);
+    }
+
+    #[test]
+    fn first_track_does_not_repeat_after_restarting_the_application() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("wave.json");
+        let likes = crate::demo::demo_tracks();
+        let started: Vec<_> = (0..likes.len()).map(|_| {
+            let engine = Engine::new(path.clone());
+            first_seed(&engine, &likes, 0).unwrap().id
+        }).collect();
+        assert_eq!(started.iter().collect::<HashSet<_>>().len(), likes.len());
+    }
+
+    #[test]
+    fn cached_discoveries_survive_a_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("wave.json");
+        let tracks = crate::demo::demo_tracks();
+        let engine = Engine::new(path.clone());
+        remember_recommendations(&engine, &tracks[2..3], &HashSet::new());
+        let restarted = Engine::new(path);
+        assert_eq!(first_seed(&restarted, &tracks[..2], 0).unwrap().id, tracks[2].id);
+    }
+
+    #[test]
+    fn a_tiny_library_can_still_start_when_every_song_has_been_used() {
+        let directory = tempfile::tempdir().unwrap();
+        let likes = crate::demo::demo_tracks();
+        let engine = Engine::new(directory.path().join("wave.json"));
+        assert!(first_seed(&engine, &likes[..1], 0).is_some());
+        assert!(first_seed(&engine, &likes[..1], 0).is_some());
+    }
+
+    #[test]
+    fn suffix_artist_is_the_same_recording_and_recent_penalty_fades() {
+        let mut original = crate::demo::demo_tracks().remove(0);
+        original.metadata_artist = Some("CUPSIZE".into());
+        original.title = "оригами".into();
+        let mut upload = original.clone();
+        upload.id += 1;
+        upload.title = "оригами - CUPSIZE".into();
+        assert!(same_recording(&track_identity(&original), &track_identity(&upload)));
+        assert_eq!(recency_penalty(0, 1_000_000), 0.0);
+        assert_eq!(recency_penalty(999_000, 1_000_000), 12.0);
+        assert_eq!(recency_penalty(900_000, 1_000_000), 5.0);
+        assert_eq!(recency_penalty(1, 1_000_000), 0.0);
     }
 }

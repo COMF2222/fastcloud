@@ -41,10 +41,15 @@ jobs:
         run: cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --lib
       - name: Test release notification and download URLs
         run: python -m unittest discover -s tools -p "test_notify_release.py"
+      - name: Test component packaging and update manifests
+        run: python -m unittest discover -s tools -p "test_components.py"
 
   release-windows:
     needs: desktop
     if: startsWith(github.ref, 'refs/tags/v')
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
     runs-on: windows-latest
     permissions:
       contents: write
@@ -53,46 +58,105 @@ jobs:
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
       VITE_FASTCLOUD_SERVER_URL: ${{ secrets.FASTCLOUD_SERVER_URL }}
       FASTCLOUD_DISCORD_CLIENT_ID: ${{ vars.FASTCLOUD_DISCORD_CLIENT_ID }}
+      FASTCLOUD_COMPONENT_MANIFEST: ${{ github.workspace }}/desktop/src-tauri/resources/component-manifest.json
     steps:
       - uses: actions/checkout@v7
+      - name: Keep published releases immutable on reruns
+        id: release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $taskRelease = gh release view $env:GITHUB_REF_NAME --json isDraft --jq .isDraft 2>&1
+          if ($LASTEXITCODE -eq 0) {
+            $taskPublished = ([string]$taskRelease).Trim() -eq 'false'
+            "published=$($taskPublished.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          } elseif (($taskRelease -join ' ') -match '(?i)(release not found|HTTP 404)') {
+            'published=false' >> $env:GITHUB_OUTPUT
+          } else {
+            throw 'Could not inspect the release; refusing to overwrite published assets.'
+          }
+          exit 0
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - uses: actions/setup-node@v6
+        if: steps.release.outputs.published != 'true'
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: desktop/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.release.outputs.published != 'true'
       - uses: Swatinem/rust-cache@v2
+        if: steps.release.outputs.published != 'true'
         with:
           workspaces: desktop/src-tauri
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        if: steps.release.outputs.published != 'true'
       - name: Verify release version
+        if: steps.release.outputs.published != 'true'
         run: python tools/check_release_version.py
       - name: Verify updater signing key
+        if: steps.release.outputs.published != 'true'
         shell: pwsh
         run: |
           if (-not $env:TAURI_SIGNING_PRIVATE_KEY) { throw 'TAURI_SIGNING_PRIVATE_KEY GitHub secret is missing' }
           if (-not $env:VITE_FASTCLOUD_SERVER_URL) { throw 'FASTCLOUD_SERVER_URL GitHub secret is missing' }
           if ($env:FASTCLOUD_DISCORD_CLIENT_ID -notmatch '^\d{17,20}$') { throw 'FASTCLOUD_DISCORD_CLIENT_ID repository variable must be a numeric Discord Application ID' }
       - run: npm ci
+        if: steps.release.outputs.published != 'true'
         working-directory: desktop
+      - name: Reuse unchanged CLAP worker
+        if: steps.release.outputs.published != 'true'
+        uses: actions/cache@v4
+        with:
+          path: desktop/src-tauri/resources/clap/worker-lite
+          key: clap-worker-windows-x64-${{ hashFiles('desktop/clap_worker.py', 'tools/prepare_private_clap.ps1') }}
       - name: Prepare pinned CLAP model and Windows worker
+        if: steps.release.outputs.published != 'true'
         shell: pwsh
         run: ./tools/prepare_private_clap.ps1
+      - name: Prepare reusable component files
+        if: steps.release.outputs.published != 'true'
+        run: python tools/prepare_components.py
+      - name: Verify manifest embedded in the release
+        if: steps.release.outputs.published != 'true'
+        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --lib components::tests::embedded_manifest_matches_application -- --exact
       - name: Build signed installer with CLAP
+        if: steps.release.outputs.published != 'true'
         run: npm run tauri:private -- --bundles nsis
         working-directory: desktop
+      - name: Keep full installer for first installs and legacy clients
+        if: steps.release.outputs.published != 'true'
+        run: python tools/stage_release_installer.py full
+      - name: Build lightweight signed update installer
+        if: steps.release.outputs.published != 'true'
+        run: npm run tauri -- build --config src-tauri/tauri.light.conf.json --bundles nsis
+        working-directory: desktop
+      - name: Keep lightweight installer
+        if: steps.release.outputs.published != 'true'
+        run: python tools/stage_release_installer.py light
       - name: Prepare latest.json and checksums
+        if: steps.release.outputs.published != 'true'
         run: python tools/release_manifest.py
       - uses: softprops/action-gh-release@v3
+        if: steps.release.outputs.published != 'true'
         with:
           name: Fastcloud ${{ github.ref_name }}
           prerelease: false
-          make_latest: true
+          draft: true
+          make_latest: false
           generate_release_notes: true
           files: desktop/release/*
+      - name: Publish only after every update file is uploaded
+        if: steps.release.outputs.published != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release edit $env:GITHUB_REF_NAME --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Could not publish the prepared release.' }
       - name: Notify running applications
         env:
           FASTCLOUD_RELEASE_NOTIFY_TOKEN: ${{ secrets.FASTCLOUD_RELEASE_NOTIFY_TOKEN }}

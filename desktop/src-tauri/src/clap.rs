@@ -1,5 +1,5 @@
-//! Optional, local ONNX CLAP inference. Private installers bundle the worker
-//! and weights as Tauri resources; audio samples are deleted after each request.
+//! Optional, local ONNX CLAP inference. A verified component set supplies the
+//! worker and weights; audio samples are deleted after each request.
 
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
@@ -13,9 +13,11 @@ use std::{
 
 static WORKER: OnceLock<Mutex<Option<Worker>>> = OnceLock::new();
 static BUNDLE_DIR: OnceLock<PathBuf> = OnceLock::new();
+static RESOURCES: OnceLock<std::sync::Arc<crate::components::Manager>> = OnceLock::new();
 
-pub fn configure(resource_dir: &Path) {
+pub fn configure(resource_dir: &Path, resources: std::sync::Arc<crate::components::Manager>) {
     let _ = BUNDLE_DIR.set(resource_dir.join("resources").join("clap"));
+    let _ = RESOURCES.set(resources);
 }
 
 struct Worker {
@@ -38,7 +40,11 @@ fn root() -> Result<PathBuf> {
 
 fn runtime() -> Option<(PathBuf, PathBuf)> {
     let base = std::env::var_os("FASTCLOUD_CLAP_DIR")
-        .map(PathBuf::from).or_else(|| BUNDLE_DIR.get().cloned())?;
+        .map(PathBuf::from).or_else(|| {
+            if let Some(resources) = RESOURCES.get() && resources.managed() {
+                resources.active()
+            } else { BUNDLE_DIR.get().cloned() }
+        })?;
     let worker = base.join("worker-lite").join("fastcloud-clap").join("fastcloud-clap.exe");
     let model = base.join("model");
     (worker.is_file() && model.join("onnx").join("audio_model_quantized.onnx").is_file()

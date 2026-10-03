@@ -113,7 +113,7 @@ export function SettingsSections({ section, settings, update, showDeveloperSetti
 
   if (section === 'storage') {
     const reclaimable = (storage?.offlineBytes || 0) + (storage?.audioCacheBytes || 0) + (storage?.artworkCacheBytes || 0) + (storage?.clapPreparationBytes || 0)
-    const total = storage ? storage.installationBytes + storage.offlineBytes + storage.audioCacheBytes + storage.artworkCacheBytes + storage.otherDataBytes + storage.otherCacheBytes + storage.extraAppDataBytes : 0
+    const total = storage ? storage.installationBytes + storage.clapRuntimeBytes + storage.offlineBytes + storage.audioCacheBytes + storage.artworkCacheBytes + storage.otherDataBytes + storage.otherCacheBytes + storage.extraAppDataBytes : 0
     const clearDownloads = async () => {
       if (!window.confirm(t(`Удалить все ${offline.length} офлайн-треков (${sizeLabel(storage?.offlineBytes || 0)})?`, `Remove all ${offline.length} offline tracks (${sizeLabel(storage?.offlineBytes || 0)})?`))) return
       try { await api.clearOfflineTracks(); await queryClient.invalidateQueries({ queryKey: ['offline-tracks'] }); await refetchStorage(); setMessage(t('Офлайн-загрузки удалены.', 'Offline downloads removed.')) }
@@ -134,7 +134,7 @@ export function SettingsSections({ section, settings, update, showDeveloperSetti
     return <div className="settings-card"><h3>{t('Хранилище', 'Storage')}</h3>
       <div className="storage-stats"><div><strong>{storage ? sizeLabel(total) : '—'}</strong><span>{t('всё, что занимает установленное приложение', 'total installed app footprint')}</span></div><div><strong>{storage ? sizeLabel(reclaimable) : '—'}</strong><span>{t('можно освободить загрузками и кэшем', 'reclaimable downloads and caches')}</span></div><div><strong>{offline.length}</strong><span>{t('офлайн-треков', 'offline tracks')}</span></div></div>
       {storage && <div className="storage-breakdown">{([
-        [t('Файлы приложения', 'Application files'), storage.installationBytes - storage.clapModelBytes - storage.clapPreparationBytes],
+        [t('Файлы приложения', 'Application files'), storage.installationBytes - (storage.clapModelBytes - storage.clapRuntimeBytes) - storage.clapPreparationBytes],
         [t('Модель и рабочие файлы CLAP', 'CLAP model and runtime'), storage.clapModelBytes],
         [t('Временные файлы подготовки CLAP', 'CLAP preparation files'), storage.clapPreparationBytes],
         [t('Офлайн-загрузки', 'Offline downloads'), storage.offlineBytes],

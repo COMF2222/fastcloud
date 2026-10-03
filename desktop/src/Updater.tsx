@@ -5,6 +5,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { relaunch } from '@tauri-apps/plugin-process'
 import { check, type Update } from '@tauri-apps/plugin-updater'
+import { useQuery } from '@tanstack/react-query'
 import { api } from './api'
 import { displayReleaseVersion, releaseIsNewer, startUpdatePolling } from './updatePolling'
 import { FASTCLOUD_SERVER_URL } from './server'
@@ -91,6 +92,9 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
     let downloaded = 0
     let total = 0
     try {
+      // Preserve bundled files before NSIS replaces the installation. A failed
+      // optional model setup must not prevent updating a broken client.
+      try { await invoke('preserve_components') } catch { /* The next client can retry setup. */ }
       await update.downloadAndInstall(event => {
         if (event.event === 'Started') {
           total = event.data.contentLength ?? 0
@@ -196,5 +200,33 @@ export function UpdateSettingsCard({ english }: { english: boolean }) {
       </button>
     </>}
     {error && <p className="error-text" role="alert">{english ? 'Update failed' : 'Не удалось обновить'}: {error}</p>}
+    <ComponentStatusCard english={english} />
+  </div>
+}
+
+type ComponentStatus = { state: 'unavailable' | 'checking' | 'downloading' | 'ready' | 'error';
+  completedFiles: number; totalFiles: number; downloadedBytes: number; error: string | null }
+
+function ComponentStatusCard({ english }: { english: boolean }) {
+  const { data, refetch } = useQuery({ queryKey: ['component-status'],
+    queryFn: () => invoke<ComponentStatus>('component_status'), enabled: !api.preview,
+    refetchInterval: query => ['checking', 'downloading'].includes(query.state.data?.state || '') ? 1000 : 10_000,
+    retry: false })
+  const [retrying, setRetrying] = useState(false)
+  if (!data || data.state === 'unavailable') return null
+  const preparing = data.state === 'checking' || data.state === 'downloading'
+  const retry = async () => {
+    setRetrying(true)
+    try { await invoke('prepare_components') } catch { /* The status response contains the error. */ }
+    finally { setRetrying(false); void refetch() }
+  }
+  return <div className="component-status" role="status">
+    <p>{data.state === 'ready'
+      ? english ? 'Recommendation model is ready. Unchanged files are reused between updates.' : 'Модель рекомендаций готова. Неизменившиеся файлы сохраняются между обновлениями.'
+      : preparing
+        ? `${english ? 'Preparing recommendation model' : 'Подготовка модели рекомендаций'}: ${data.completedFiles}/${data.totalFiles}`
+        : english ? 'Could not prepare the recommendation model. Music playback remains available.' : 'Не удалось подготовить модель рекомендаций. Музыку по-прежнему можно слушать.'}</p>
+    {data.state === 'error' && <button className="secondary-button" disabled={retrying} onClick={() => void retry()}>
+      {english ? 'Retry' : 'Повторить'}</button>}
   </div>
 }

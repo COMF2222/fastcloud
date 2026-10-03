@@ -103,7 +103,7 @@ export const api = {
     previewOffline.clear()
     return Promise.resolve()
   },
-  storageReport: () => preview ? Promise.resolve<StorageReport>({ installationBytes: 0, clapModelBytes: 0, clapPreparationBytes: 0, offlineBytes: [...previewOffline.values()].reduce((sum, item) => sum + item.bytes, 0), audioCacheBytes: 0, artworkCacheBytes: 0, otherDataBytes: 0, otherCacheBytes: 0, extraAppDataBytes: 0, installationPath: '', dataPath: '', cachePath: '', extraAppDataPath: '' }) : invoke<StorageReport>('storage_report'),
+  storageReport: () => preview ? Promise.resolve<StorageReport>({ installationBytes: 0, clapModelBytes: 0, clapRuntimeBytes: 0, clapPreparationBytes: 0, offlineBytes: [...previewOffline.values()].reduce((sum, item) => sum + item.bytes, 0), audioCacheBytes: 0, artworkCacheBytes: 0, otherDataBytes: 0, otherCacheBytes: 0, extraAppDataBytes: 0, installationPath: '', dataPath: '', cachePath: '', extraAppDataPath: '' }) : invoke<StorageReport>('storage_report'),
   clearArtworkCache: () => preview ? Promise.resolve() : invoke<void>('clear_artwork_cache'),
   clearClapPreparation: () => preview ? Promise.resolve() : invoke<void>('clear_clap_preparation'),
   tracks: (view: string, query?: string, id?: number) => preview
