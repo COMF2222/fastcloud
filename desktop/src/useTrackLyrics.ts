@@ -8,13 +8,19 @@ export function useTrackLyrics(track: Track | null, durationMs: number, enabled 
   const needsDetail = enabled && !!track && !track.publisher_metadata?.isrc
   const detail = useQuery({ queryKey: ['track', track?.id], queryFn: () => api.track(track!.id),
     enabled: needsDetail, staleTime: 60 * 60_000, retry: false,
-    refetchInterval: query => query.state.data?.status === 'loading' ? 1200 : false })
+    refetchInterval: query => query.state.data?.status === 'loading' ? 1200 : query.state.data?.status === 'failed' ? 30_000 : false })
   const identified = detail.data?.status === 'ready' && detail.data.data.id === track?.id ? detail.data.data : track
   const identity = identified ? lyricsIdentity(identified, durationMs) : null
-  const waiting = needsDetail && (detail.isPending || detail.data?.status === 'loading')
   const lyrics = useQuery({ queryKey: identity?.key || ['track-lyrics', null],
     queryFn: () => api.trackLyrics(identity!.performer, identity!.title, durationMs, identity!.album, identity!.isrc),
-    enabled: enabled && !!identity && !waiting, staleTime: 60 * 60_000, retry: false })
+    // Start with the metadata already available. Enrichment can improve the
+    // identity later, but a slow SoundCloud request must not block lyrics.
+    enabled: enabled && !!identity,
+    staleTime: query => query.state.data ? 60 * 60_000 : 60_000,
+    refetchInterval: query => query.state.status === 'error'
+      ? Math.min(300_000, 30_000 * 2 ** Math.max(0, Math.min(4, query.state.errorUpdateCount - 1)))
+      : false,
+    retry: false })
   return lyrics
 }
 

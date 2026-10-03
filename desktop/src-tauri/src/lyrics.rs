@@ -2,6 +2,7 @@ use scraper::{ElementRef, Html, Selector};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
+use unicode_normalization::UnicodeNormalization;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,12 +62,132 @@ async fn send_lrclib(
     Err("LRCLIB unavailable".into())
 }
 
+fn metadata_text(value: &str) -> String {
+    let decoded = if value.contains('&') {
+        // Decode character references without treating literal title characters
+        // such as <3 as HTML elements.
+        Html::parse_fragment(&value.replace('<', "&lt;"))
+            .root_element()
+            .text()
+            .collect::<String>()
+    } else {
+        value.to_owned()
+    };
+    decoded
+        .nfkc()
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn comparable(value: &str) -> String {
-    value
-        .chars()
-        .flat_map(char::to_lowercase)
-        .filter(|ch| ch.is_alphanumeric())
-        .collect()
+    let normalized = metadata_text(value);
+    let mut key = String::new();
+    for ch in normalized.chars().flat_map(char::to_lowercase) {
+        match ch {
+            'ё' => key.push('е'),
+            // Fold Latin accents without losing meaningful letters such as й
+            // in Cyrillic names. NFKC also handles full-width/stylized letters.
+            '\u{00c0}'..='\u{024f}' => {
+                key.extend(ch.to_string().nfd().filter(|ch| ch.is_alphanumeric()))
+            }
+            _ if ch.is_alphanumeric() => key.push(ch),
+            _ => {}
+        }
+    }
+    key
+}
+
+fn feature_marker(value: &str) -> Option<(usize, usize)> {
+    let lower = value.to_ascii_lowercase();
+    [
+        " feat. ",
+        " feat ",
+        " ft. ",
+        " ft ",
+        " featuring ",
+        " (feat. ",
+        " (feat ",
+        " (ft. ",
+        " (ft ",
+        " (featuring ",
+    ]
+    .iter()
+    .filter_map(|marker| {
+        lower
+            .find(marker)
+            .map(|start| (start, start + marker.len()))
+    })
+    .filter(|(start, end)| !value[..*start].trim().is_empty() && !value[*end..].trim().is_empty())
+    .min_by_key(|(start, _)| *start)
+}
+
+fn feature_label(value: &str) -> bool {
+    let lower = value.trim().to_ascii_lowercase();
+    ["feat. ", "feat ", "ft. ", "ft ", "featuring "]
+        .iter()
+        .any(|marker| {
+            lower
+                .strip_prefix(marker)
+                .is_some_and(|tail| !tail.trim().is_empty())
+        })
+}
+
+fn artist_keys(value: &str) -> Vec<String> {
+    let value = metadata_text(value);
+    let mut keys = vec![comparable(&value)];
+    if let Some((start, _)) = feature_marker(&value) {
+        keys.push(comparable(&value[..start]));
+    }
+    if let Some((name, alias)) = value.split_once('(')
+        && let Some(alias) = alias.strip_suffix(')')
+    {
+        let scripts = |part: &str| {
+            (
+                part.chars().any(|ch| matches!(ch, '\u{0400}'..='\u{052f}')),
+                part.chars().any(|ch| ch.is_ascii_alphabetic()),
+            )
+        };
+        // Genius uses bilingual credits such as "Джизус (Dzhizus)". Labels
+        // such as "Artist (Tribute)" are not aliases of the original artist.
+        let label = alias.to_lowercase();
+        let annotation = promotional(alias)
+            || !version_tags(alias).is_empty()
+            || label.split(|ch: char| !ch.is_alphanumeric()).any(|word| {
+                matches!(
+                    word,
+                    "tribute"
+                        | "translation"
+                        | "translations"
+                        | "fan"
+                        | "трибьют"
+                        | "перевод"
+                        | "кавер"
+                )
+            });
+        if !annotation
+            && matches!(
+                (scripts(name), scripts(alias)),
+                ((true, false), (false, true)) | ((false, true), (true, false))
+            )
+        {
+            keys.extend([comparable(name), comparable(alias)]);
+        }
+    }
+    keys.retain(|key| !key.is_empty());
+    keys
+}
+
+fn same_artist(left: &str, right: &str) -> bool {
+    if let (Some((_, left_end)), Some((_, right_end))) =
+        (feature_marker(left), feature_marker(right))
+        && comparable(&left[left_end..]) != comparable(&right[right_end..])
+    {
+        return false;
+    }
+    let right = artist_keys(right);
+    artist_keys(left).iter().any(|key| right.contains(key))
 }
 
 fn promotional(value: &str) -> bool {
@@ -95,6 +216,7 @@ fn promotional(value: &str) -> bool {
 }
 
 fn clean_title(value: &str) -> String {
+    let value = metadata_text(value);
     let mut output = String::new();
     let mut chars = value.chars().peekable();
     while let Some(ch) = chars.next() {
@@ -116,7 +238,10 @@ fn clean_title(value: &str) -> String {
             }
             part.push(next);
         }
-        if !ended || !promotional(&part) || !version_tags(&part).is_empty() {
+        if !ended
+            || (!promotional(&part) && !feature_label(&part))
+            || !version_tags(&part).is_empty()
+        {
             output.push(ch);
             output.push_str(&part);
             if ended {
@@ -125,6 +250,11 @@ fn clean_title(value: &str) -> String {
         }
     }
     let mut output = output.split_whitespace().collect::<Vec<_>>().join(" ");
+    if let Some((start, _)) = feature_marker(&output)
+        && version_tags(&output) == version_tags(&output[..start])
+    {
+        output.truncate(start);
+    }
     for suffix in [
         "official audio",
         "official video",
@@ -142,7 +272,7 @@ fn clean_title(value: &str) -> String {
 }
 
 fn version_tags(title: &str) -> Vec<String> {
-    let lower = title.to_lowercase();
+    let lower = metadata_text(title).to_lowercase();
     let mut tags = lower
         .split(|ch: char| !ch.is_alphanumeric())
         .filter(|word| {
@@ -169,10 +299,11 @@ fn version_tags(title: &str) -> Vec<String> {
 }
 
 fn candidate_pairs(artist: &str, title: &str) -> Vec<(String, String)> {
-    let artist = artist.trim();
+    let artist = metadata_text(artist);
+    let artist = artist.as_str();
     let title = clean_title(title);
     let known_artist = comparable(artist);
-    let separators = [" - ", " – ", " — ", " | "];
+    let separators = [" - ", " – ", " — ", " | ", "-", "–", "—", "|"];
     let mut candidates = Vec::new();
     // Uploads may put the credited artist on either side of the song name.
     // Use that credit before guessing an artist from an uploader's title.
@@ -184,6 +315,20 @@ fn candidate_pairs(artist: &str, title: &str) -> Vec<(String, String)> {
                 if prefix.is_empty() || suffix.is_empty() {
                     continue;
                 }
+                if comparable(prefix) == known_artist {
+                    candidates.push((artist, suffix));
+                }
+                if comparable(suffix) == known_artist {
+                    candidates.push((artist, prefix));
+                }
+            }
+        }
+    }
+    if candidates.is_empty() && !known_artist.is_empty() {
+        for (index, _) in title.char_indices().filter(|(_, ch)| ch.is_whitespace()) {
+            let prefix = title[..index].trim();
+            let suffix = title[index..].trim();
+            if !prefix.is_empty() && !suffix.is_empty() {
                 if comparable(prefix) == known_artist {
                     candidates.push((artist, suffix));
                 }
@@ -217,6 +362,15 @@ fn candidate_pairs(artist: &str, title: &str) -> Vec<(String, String)> {
         }) {
             pairs.push((performer.to_owned(), song.to_owned()));
         }
+        if let Some((start, _)) = feature_marker(performer) {
+            let primary = performer[..start].trim();
+            if !pairs.iter().any(|pair| {
+                comparable(&pair.0) == comparable(primary)
+                    && comparable(&pair.1) == comparable(song)
+            }) {
+                pairs.push((primary.to_owned(), song.to_owned()));
+            }
+        }
     }
     pairs
 }
@@ -241,7 +395,7 @@ fn match_score(
     if wanted_title.is_empty()
         || wanted_artist.is_empty()
         || comparable(&clean_title(&record.track_name)) != wanted_title
-        || comparable(&record.artist_name) != wanted_artist
+        || !same_artist(&record.artist_name, artist)
         || version_tags(&record.track_name) != version_tags(title)
     {
         return 0;
@@ -278,6 +432,41 @@ fn usable(record: &LyricsRecord) -> bool {
             .is_some_and(|value| !value.trim().is_empty())
 }
 
+fn plain_from_lrc(value: &str) -> Option<String> {
+    let mut lines = Vec::new();
+    for row in value.lines() {
+        let mut text = row.trim();
+        let mut timed = false;
+        while let Some(stamp) = text.strip_prefix('[').and_then(|rest| rest.split_once(']')) {
+            let Some((minutes, seconds)) = stamp.0.split_once(':') else {
+                break;
+            };
+            let (seconds, fraction) = seconds
+                .split_once(['.', ':'])
+                .map_or((seconds, None), |(seconds, fraction)| {
+                    (seconds, Some(fraction))
+                });
+            if !(1..=3).contains(&minutes.len())
+                || !minutes.bytes().all(|ch| ch.is_ascii_digit())
+                || seconds.len() != 2
+                || !seconds.bytes().all(|ch| ch.is_ascii_digit())
+                || fraction.is_some_and(|part| {
+                    !(1..=3).contains(&part.len()) || !part.bytes().all(|ch| ch.is_ascii_digit())
+                })
+            {
+                break;
+            }
+            timed = true;
+            text = stamp.1.trim_start();
+        }
+        // Ignore LRC metadata and untimed headers; retain actual timed words.
+        if timed && !text.is_empty() {
+            lines.push(text);
+        }
+    }
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
 fn select_record(
     records: Vec<LyricsRecord>,
     artist: &str,
@@ -290,6 +479,13 @@ fn select_record(
         .map(|mut record| {
             // Reject timestamps for a different edit before ranking candidates.
             if !duration_difference(&record, duration_ms).is_some_and(|value| value <= 3000.0) {
+                if record
+                    .plain_lyrics
+                    .as_deref()
+                    .is_none_or(|text| text.trim().is_empty())
+                {
+                    record.plain_lyrics = record.synced_lyrics.as_deref().and_then(plain_from_lrc);
+                }
                 record.synced_lyrics = None;
             }
             record
@@ -304,6 +500,57 @@ fn select_record(
         .filter(|(score, _)| *score > 0)
         .max_by_key(|(score, entry)| (*score, entry.synced_lyrics.is_some()))
         .map(|(_, entry)| entry)
+}
+
+fn title_record(records: Vec<LyricsRecord>, title: &str, duration_ms: u64) -> Option<LyricsRecord> {
+    let title = clean_title(title);
+    // A title alone is weak evidence. Require a distinctive multi-word name,
+    // a matching recording length, and a single performer among all matches.
+    if title.split_whitespace().count() < 2 || comparable(&title).chars().count() < 8 {
+        return None;
+    }
+    let matches: Vec<_> = records
+        .into_iter()
+        .filter(|record| {
+            comparable(&clean_title(&record.track_name)) == comparable(&title)
+                && version_tags(&record.track_name) == version_tags(&title)
+                && !comparable(&record.artist_name).is_empty()
+                && duration_difference(record, duration_ms)
+                    .is_some_and(|difference| difference <= 3000.0)
+        })
+        .collect();
+    let artist = matches.first()?.artist_name.clone();
+    if matches
+        .iter()
+        .any(|record| !same_artist(&record.artist_name, &artist))
+    {
+        return None;
+    }
+    // Identity remains useful for another provider even if LRCLIB has metadata
+    // but no actual lyrics. Prefer a usable record when available.
+    select_record(matches.clone(), &artist, &title, duration_ms, None)
+        .or_else(|| matches.into_iter().next())
+}
+
+async fn search_title(
+    client: &reqwest::Client,
+    title: &str,
+    duration_ms: u64,
+) -> Result<Option<LyricsRecord>, String> {
+    let response = send_lrclib(|| {
+        client
+            .get("https://lrclib.net/api/search")
+            .query(&[("track_name", title)])
+    })
+    .await?;
+    if !response.status().is_success() {
+        return Err(format!("LRCLIB HTTP {}", response.status()));
+    }
+    let records = response
+        .json::<Vec<LyricsRecord>>()
+        .await
+        .map_err(|_| "Invalid LRCLIB response")?;
+    Ok(title_record(records, title, duration_ms))
 }
 
 async fn exact(
@@ -517,13 +764,18 @@ fn append_lyrics(element: ElementRef<'_>, output: &mut String) {
 
 fn genius_text(html: &str) -> Option<String> {
     let document = Html::parse_document(html);
-    let selector = Selector::parse("div[data-lyrics-container=\"true\"]").ok()?;
     let mut output = String::new();
-    for container in document.select(&selector) {
-        if !output.is_empty() {
-            output.push('\n');
+    for format in ["[data-lyrics-container=\"true\"]", "div.lyrics"] {
+        let selector = Selector::parse(format).ok()?;
+        for container in document.select(&selector) {
+            if !output.is_empty() {
+                output.push('\n');
+            }
+            append_lyrics(container, &mut output);
         }
-        append_lyrics(container, &mut output);
+        if !output.trim().is_empty() {
+            break;
+        }
     }
     let output = output.trim();
     (!output.is_empty() && output.len() <= 64_000).then(|| output.to_owned())
@@ -536,20 +788,60 @@ struct GeniusCandidate {
     url: reqwest::Url,
 }
 
+fn genius_artist_matches(song: &Value, wanted: &str) -> bool {
+    let primary = song
+        .pointer("/primary_artist/name")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if same_artist(primary, wanted) {
+        return true;
+    }
+    let mut credits = vec![primary];
+    for key in ["primary_artists", "featured_artists"] {
+        if let Some(artists) = song.get(key).and_then(Value::as_array) {
+            credits.extend(
+                artists
+                    .iter()
+                    .filter_map(|artist| artist.get("name").and_then(Value::as_str)),
+            );
+        }
+    }
+    let wanted = metadata_text(wanted);
+    for separator in [" & ", " x ", ", ", " and "] {
+        let parts: Vec<_> = wanted.split(separator).map(str::trim).collect();
+        if parts.len() > 1
+            && parts.iter().all(|part| {
+                !part.is_empty() && credits.iter().any(|credit| same_artist(credit, part))
+            })
+        {
+            return true;
+        }
+    }
+    false
+}
+
 // Complete JSON traversal before awaiting a page request. Only owned candidates
 // cross await points, keeping the command future compatible with Tauri's Send bound.
 fn genius_candidates(data: &Value, artist: &str, title: &str) -> Vec<GeniusCandidate> {
     let mut candidates = Vec::new();
-    let Some(sections) = data.pointer("/response/sections").and_then(Value::as_array) else {
-        return candidates;
-    };
-    for hit in sections
-        .iter()
-        .filter(|section| section.get("type").and_then(Value::as_str) == Some("song"))
-        .filter_map(|section| section.get("hits").and_then(Value::as_array))
-        .flatten()
-        .take(10)
-    {
+    let mut hits: Vec<&Value> = Vec::new();
+    if let Some(sections) = data.pointer("/response/sections").and_then(Value::as_array) {
+        hits.extend(
+            sections
+                .iter()
+                .filter(|section| section.get("type").and_then(Value::as_str) == Some("song"))
+                .filter_map(|section| section.get("hits").and_then(Value::as_array))
+                .flatten(),
+        );
+    }
+    if let Some(direct) = data.pointer("/response/hits").and_then(Value::as_array) {
+        hits.extend(
+            direct
+                .iter()
+                .filter(|hit| hit.get("type").and_then(Value::as_str) == Some("song")),
+        );
+    }
+    for hit in hits.into_iter().take(20) {
         let Some(song) = hit.get("result") else {
             continue;
         };
@@ -562,7 +854,7 @@ fn genius_candidates(data: &Value, artist: &str, title: &str) -> Vec<GeniusCandi
             .and_then(Value::as_str)
             .unwrap_or_default();
         if comparable(&clean_title(found_title)) != comparable(&clean_title(title))
-            || comparable(found_artist) != comparable(artist)
+            || !genius_artist_matches(song, artist)
             || version_tags(found_title) != version_tags(title)
             || song.get("lyrics_state").and_then(Value::as_str) != Some("complete")
             || song.get("instrumental").and_then(Value::as_bool) == Some(true)
@@ -577,6 +869,12 @@ fn genius_candidates(data: &Value, artist: &str, title: &str) -> Vec<GeniusCandi
             continue;
         };
         if url.scheme() != "https" || url.host_str() != Some("genius.com") {
+            continue;
+        }
+        if candidates
+            .iter()
+            .any(|candidate: &GeniusCandidate| candidate.url == url)
+        {
             continue;
         }
         candidates.push(GeniusCandidate {
@@ -596,6 +894,7 @@ async fn genius(
 ) -> Result<Option<LyricsRecord>, String> {
     let response = client
         .get("https://genius.com/api/search/song")
+        .header(reqwest::header::USER_AGENT, GENIUS_USER_AGENT)
         .query(&[("q", format!("{artist} {title}"))])
         .send()
         .await
@@ -611,14 +910,20 @@ async fn genius(
         artist,
         title,
     );
-    for candidate in candidates {
-        let mut response = client
+    let mut failed = false;
+    for candidate in candidates.into_iter().take(3) {
+        let response = client
             .get(candidate.url.clone())
+            .header(reqwest::header::USER_AGENT, GENIUS_USER_AGENT)
             .send()
-            .await
-            .map_err(|_| "Genius page unavailable")?;
+            .await;
+        let Ok(mut response) = response else {
+            failed = true;
+            continue;
+        };
         if !response.status().is_success() {
-            return Err(format!("Genius HTTP {}", response.status()));
+            failed = true;
+            continue;
         }
         let mut bytes = Vec::new();
         while let Some(chunk) = response
@@ -647,7 +952,143 @@ async fn genius(
             }));
         }
     }
-    Ok(None)
+    if failed {
+        Err("Genius page unavailable".into())
+    } else {
+        Ok(None)
+    }
+}
+
+const GENIUS_USER_AGENT: &str =
+    "Mozilla/5.0 (compatible; Fastcloud/0.2; +https://github.com/COMF2222/fastcloud)";
+
+fn plain_fallback_pairs(pairs: &[(String, String)]) -> Vec<(String, String)> {
+    let mut result = Vec::new();
+    for (artist, title) in pairs.iter().take(3) {
+        let mut plain_title = title.clone();
+        for _ in 0..4 {
+            let span = plain_title.char_indices().find_map(|(start, ch)| {
+                let close = match ch {
+                    '(' => ')',
+                    '[' => ']',
+                    _ => return None,
+                };
+                let offset = plain_title[start + 1..].find(close)?;
+                let end = start + 1 + offset;
+                matches!(
+                    comparable(&plain_title[start + 1..end]).as_str(),
+                    "rockversion"
+                        | "рокверсия"
+                        | "slowed"
+                        | "slowedreverb"
+                        | "slowedandreverb"
+                        | "spedup"
+                        | "speedup"
+                        | "nightcore"
+                        | "nightcoreversion"
+                )
+                .then_some(start..end + 1)
+            });
+            let Some(span) = span else { break };
+            plain_title.replace_range(span, " ");
+        }
+        for suffix in [
+            " - slowed + reverb",
+            " - slowed",
+            " - sped up",
+            " - nightcore",
+            " - rock version",
+        ] {
+            if plain_title.to_ascii_lowercase().ends_with(suffix) {
+                plain_title.truncate(plain_title.len() - suffix.len());
+                break;
+            }
+        }
+        let plain_title = clean_title(&plain_title);
+        if comparable(&plain_title) != comparable(title) && !plain_title.is_empty() {
+            result.push((artist.clone(), plain_title));
+        }
+        result.push((artist.clone(), title.clone()));
+    }
+    result.dedup();
+    result.truncate(4);
+    result
+}
+
+async fn lrclib_lookup(
+    client: &reqwest::Client,
+    pairs: &[(String, String)],
+    duration_ms: u64,
+    album: Option<&str>,
+) -> Result<Option<LyricsRecord>, String> {
+    let mut answered = false;
+    for (performer, song) in pairs.iter().take(3) {
+        match exact(client, performer, song, duration_ms, album).await {
+            Ok(Some(record)) => return Ok(Some(record)),
+            Ok(None) => answered = true,
+            Err(_) => {}
+        }
+        // A different artist spelling or an uploader's name must not prevent
+        // discovering the recording by its exact title and duration.
+        let (structured, by_title) = tokio::join!(
+            search_structured(client, performer, song, duration_ms, album),
+            search_title(client, song, duration_ms),
+        );
+        for result in [structured, by_title] {
+            match result {
+                Ok(Some(record)) => return Ok(Some(record)),
+                Ok(None) => answered = true,
+                Err(_) => {}
+            }
+        }
+    }
+    if answered {
+        Ok(None)
+    } else {
+        Err("LRCLIB unavailable".into())
+    }
+}
+
+async fn fallback_sources(
+    client: &reqwest::Client,
+    pairs: &[(String, String)],
+) -> Result<Option<LyricsRecord>, String> {
+    let mut requests = tokio::task::JoinSet::new();
+    let plain_pairs = plain_fallback_pairs(pairs);
+    for (performer, song) in &plain_pairs {
+        let (client, performer, song) = (client.clone(), performer.clone(), song.clone());
+        requests.spawn(async move { genius(&client, &performer, &song).await });
+    }
+    for (performer, song) in &plain_pairs {
+        if !pairs.contains(&(performer.clone(), song.clone())) {
+            // Explicit speed/arrangement labels can share words with the base
+            // recording. Passing no duration deliberately removes all timing.
+            let (client, performer, song) = (client.clone(), performer.clone(), song.clone());
+            requests
+                .spawn(async move { search_structured(&client, &performer, &song, 0, None).await });
+        }
+        // This provider cannot distinguish recording versions.
+        if version_tags(song).is_empty() {
+            let (client, performer, song) = (client.clone(), performer.clone(), song.clone());
+            requests.spawn(async move { lyrics_ovh(&client, &performer, &song).await });
+        }
+    }
+    let mut answered = false;
+    let mut failed = false;
+    while let Some(result) = requests.join_next().await {
+        match result {
+            Ok(Ok(Some(record))) => return Ok(Some(record)),
+            Ok(Ok(None)) => answered = true,
+            _ => failed = true,
+        }
+    }
+    if failed {
+        Err("Some lyrics sources are temporarily unavailable".into())
+    } else if answered {
+        Ok(None)
+    } else {
+        Err("Lyrics sources are temporarily unavailable".into())
+    }
 }
 
 async fn lookup_sources(
@@ -661,48 +1102,32 @@ async fn lookup_sources(
     let mut pairs = candidate_pairs(artist, title);
     if let Some(code) = isrc {
         if let Some(identity) = identify_isrc(&client, code, title, duration_ms).await {
-            pairs = vec![identity];
+            pairs.insert(0, identity);
         }
     }
     if pairs.is_empty() {
         return Ok(None);
     }
-    let mut answered = false;
-    for (performer, song) in &pairs {
-        match exact(&client, performer, song, duration_ms, album).await {
-            Ok(Some(record)) => return Ok(Some(record)),
-            Ok(None) => answered = true,
-            Err(_) => break,
+    // Reserve time for the remaining services even if LRCLIB is slow. Start
+    // fallback requests together so lyrics.ovh cannot starve Genius of time.
+    let primary = tokio::time::timeout(
+        Duration::from_secs(14),
+        lrclib_lookup(&client, &pairs, duration_ms, album),
+    )
+    .await;
+    let mut answered = matches!(primary, Ok(Ok(None)));
+    if let Ok(Ok(Some(record))) = primary {
+        if usable(&record) {
+            return Ok(Some(record));
         }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-        match search_structured(&client, performer, song, duration_ms, album).await {
-            Ok(Some(record)) => return Ok(Some(record)),
-            Ok(None) => answered = true,
-            Err(_) => break,
-        }
+        answered = true;
+        pairs.insert(0, (record.artist_name, record.track_name));
     }
-    // This provider cannot distinguish recording versions; never use it for edited audio.
-    for (performer, song) in &pairs {
-        if !version_tags(song).is_empty() {
-            continue;
-        }
-        match lyrics_ovh(&client, performer, song).await {
-            Ok(Some(record)) => return Ok(Some(record)),
-            Ok(None) => answered = true,
-            Err(_) => {}
-        }
-    }
-    for (performer, song) in &pairs {
-        match genius(&client, performer, song).await {
-            Ok(Some(record)) => return Ok(Some(record)),
-            Ok(None) => answered = true,
-            Err(_) => {}
-        }
-    }
-    if answered {
-        Ok(None)
-    } else {
-        Err("Lyrics sources are temporarily unavailable".into())
+    match fallback_sources(&client, &pairs).await {
+        Ok(Some(record)) => Ok(Some(record)),
+        Ok(None) if answered => Ok(None),
+        Ok(None) => Err("LRCLIB is temporarily unavailable".into()),
+        Err(error) => Err(error),
     }
 }
 
@@ -763,6 +1188,146 @@ mod tests {
     }
 
     #[test]
+    fn unicode_names_match_without_collapsing_distinct_cyrillic_letters() {
+        assert_eq!(comparable("Beyonce\u{301}"), comparable("Beyoncé"));
+        assert_eq!(comparable("Beyonce"), comparable("Beyoncé"));
+        assert_eq!(comparable("𝗟𝗶𝗹 𝗣𝗲𝗲𝗽"), comparable("Lil Peep"));
+        assert_eq!(comparable("Семён"), comparable("Семен"));
+        assert_ne!(comparable("Май"), comparable("Маи"));
+        assert_eq!(metadata_text("ＷＡＲＬＯＲＤ"), "WARLORD");
+    }
+
+    #[test]
+    fn feature_credits_do_not_hide_the_main_title_or_artist() {
+        assert_eq!(
+            clean_title("lovely (feat. Khalid) [Official Audio]"),
+            "lovely"
+        );
+        assert_eq!(clean_title("Song ft. Guest"), "Song");
+        assert_eq!(clean_title("Song (feat. Guest) (Remix)"), "Song (Remix)");
+        let found = candidate_pairs("Post Malone ft. Swae Lee", "Sunflower");
+        assert!(found.contains(&("Post Malone".into(), "Sunflower".into())));
+        assert!(same_artist("Post Malone", "Post Malone ft. Swae Lee"));
+        assert!(!same_artist(
+            "Post Malone ft. First",
+            "Post Malone ft. Second"
+        ));
+        assert!(!same_artist(
+            "Post Malone Tribute",
+            "Post Malone ft. Swae Lee"
+        ));
+    }
+
+    #[test]
+    fn feature_cleanup_keeps_recording_version_checks() {
+        assert_eq!(
+            match_score(
+                &record("Song (Remix)", "Artist", 180.0),
+                "Artist ft. Guest",
+                "Song (feat. Guest)",
+                180_000,
+                None
+            ),
+            0
+        );
+        assert_eq!(
+            clean_title("Song feat. Guest (Remix)"),
+            "Song feat. Guest (Remix)"
+        );
+    }
+
+    #[test]
+    fn joint_genius_credits_must_include_every_requested_artist() {
+        let song = serde_json::json!({"primary_artist":{"name":"Main"},
+            "primary_artists":[{"name":"Main"}], "featured_artists":[{"name":"Guest"}]});
+        assert!(genius_artist_matches(&song, "Main & Guest"));
+        assert!(genius_artist_matches(&song, "Guest, Main"));
+        assert!(!genius_artist_matches(&song, "Main & Unrelated"));
+        assert!(!genius_artist_matches(&song, "Earth, Wind & Fire"));
+        let band = serde_json::json!({"primary_artist":{"name":"Earth, Wind & Fire"}});
+        assert!(genius_artist_matches(&band, "Earth, Wind & Fire"));
+    }
+
+    #[test]
+    fn direct_genius_hits_and_legacy_pages_are_supported() {
+        let data = serde_json::json!({"response":{"hits":[{"type":"song","result":{
+            "id":1,"title":"Song","primary_artist":{"name":"Artist"},
+            "lyrics_state":"complete","url":"https://genius.com/artist-song-lyrics"
+        }}]}});
+        assert_eq!(genius_candidates(&data, "Artist", "Song").len(), 1);
+        assert_eq!(
+            genius_text("<div class=\"lyrics\"><p>First<br>Second</p></div>").as_deref(),
+            Some("First\nSecond")
+        );
+        assert!(genius_text("<html>Access denied</html>").is_none());
+    }
+
+    #[test]
+    fn speed_edits_can_use_plain_base_lyrics_without_reusing_timestamps() {
+        let pairs = vec![("Artist".into(), "Song (slowed + reverb)".into())];
+        let base = plain_fallback_pairs(&pairs);
+        assert_eq!(base[0], ("Artist".into(), "Song".into()));
+        let found = select_record(
+            vec![record("Song", "Artist", 180.0)],
+            &base[0].0,
+            &base[0].1,
+            0,
+            None,
+        )
+        .unwrap();
+        assert!(found.plain_lyrics.is_some());
+        assert!(found.synced_lyrics.is_none());
+        for title in ["Song (Remix)", "Song (Cover)", "Song (Live)"] {
+            let original = vec![("Artist".into(), title.into())];
+            assert_eq!(plain_fallback_pairs(&original), original);
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "contacts public lyrics services"]
+    async fn diverse_metadata_finds_live_lyrics() {
+        let samples = [
+            (
+                "Reuploads",
+                "Lil Peep - Star Shopping (Official Audio)",
+                141_000,
+                "Lil Peep",
+            ),
+            (
+                "Billie Eilish feat. Khalid",
+                "lovely (feat. Khalid)",
+                200_000,
+                "Billie Eilish",
+            ),
+            (
+                "Post Malone ft. Swae Lee",
+                "Sunflower (Official Audio)",
+                158_000,
+                "Post Malone",
+            ),
+            ("Beyonce", "Halo", 264_000, "Beyoncé"),
+            ("THE WEEKND", "Blinding Lights [HD]", 202_000, "The Weeknd"),
+            ("𝗠𝘂𝘀𝗲", "Ｕｐｒｉｓｉｎｇ", 305_000, "Muse"),
+        ];
+        for (artist, title, duration, expected_artist) in samples {
+            let found = lookup(artist.into(), title.into(), duration, None, None)
+                .await
+                .unwrap_or_else(|error| panic!("{artist} / {title}: {error}"))
+                .unwrap_or_else(|| panic!("{artist} / {title}: no lyrics"));
+            assert!(usable(&found) && !found.instrumental, "{artist} / {title}");
+            assert!(
+                same_artist(&found.artist_name, expected_artist),
+                "{artist} / {title}"
+            );
+            println!(
+                "{artist} / {title}: {} (timed={})",
+                found.source,
+                found.synced_lyrics.is_some()
+            );
+        }
+    }
+
+    #[test]
     fn genius_candidates_own_metadata_and_reject_unrelated_results() {
         let candidates = {
             let hit = |id, title, artist, url| {
@@ -815,6 +1380,155 @@ mod tests {
             candidate_pairs("Uploader", "Lil Peep - Star Shopping (Official Audio)")[0],
             ("Lil Peep".into(), "Star Shopping".into())
         );
+    }
+    #[test]
+    fn character_references_and_compact_upload_credits_are_normalized() {
+        assert_eq!(
+            candidate_pairs("&#x4A;ESUS", "Никому Неизвестный Голос&#x20;")[0],
+            ("JESUS".into(), "Никому Неизвестный Голос".into())
+        );
+        assert_eq!(
+            candidate_pairs("JESUS", "Никому Неизвестный Голос JESUS")[0],
+            ("JESUS".into(), "Никому Неизвестный Голос".into())
+        );
+        assert_eq!(
+            candidate_pairs("$KIMO888", "Джизус-WARLORD(rock version)")[0],
+            ("Джизус".into(), "WARLORD(rock version)".into())
+        );
+        assert_eq!(
+            metadata_text("Love <3 &amp; music&nbsp;"),
+            "Love <3 & music"
+        );
+    }
+    #[test]
+    fn a_unique_title_and_matching_length_can_resolve_a_different_artist_credit() {
+        let mut matching = record("Никому неизвестный голос", "Джизус", 144.0);
+        matching.id = 12681071;
+        let found = title_record(vec![matching], "Никому Неизвестный Голос", 144_235).unwrap();
+        assert_eq!(found.id, 12681071);
+        assert!(found.synced_lyrics.is_some());
+    }
+    #[test]
+    fn title_discovery_rejects_ambiguous_artists_wrong_lengths_and_versions() {
+        let title = "A distinctive song name";
+        assert!(
+            title_record(
+                vec![
+                    record(title, "First", 144.0),
+                    record(title, "Second", 144.0)
+                ],
+                title,
+                144_000
+            )
+            .is_none()
+        );
+        assert!(title_record(vec![record(title, "First", 180.0)], title, 144_000).is_none());
+        assert!(
+            title_record(
+                vec![record(title, "First", 144.0)],
+                "A distinctive song name (Remix)",
+                144_000
+            )
+            .is_none()
+        );
+        assert!(title_record(vec![record(title, "First", 144.0)], title, 0).is_none());
+        assert!(title_record(vec![record("Stay", "First", 144.0)], "Stay", 144_000).is_none());
+    }
+    #[test]
+    fn title_discovery_can_supply_metadata_for_another_provider_without_lyrics() {
+        let mut metadata = record("A distinctive song name", "Credited artist", 144.0);
+        metadata.plain_lyrics = None;
+        metadata.synced_lyrics = None;
+        let found = title_record(vec![metadata], "A distinctive song name", 144_000).unwrap();
+        assert_eq!(found.artist_name, "Credited artist");
+        assert!(!usable(&found));
+    }
+    #[test]
+    fn bilingual_genius_credits_match_but_unrelated_artists_and_translations_do_not() {
+        let hit = |artist, title| {
+            serde_json::json!({"result": {
+                "id":1,"title":title,"primary_artist":{"name":artist},
+                "url":"https://genius.com/Dzhizus-warlord-lyrics", "lyrics_state":"complete",
+            }})
+        };
+        let data = serde_json::json!({"response":{"sections":[{"type":"song","hits":[
+            hit("Джизус (Dzhizus)", "WARLORD"),
+            hit("Genius English Translations", "Джизус (Dzhizus) - WARLORD (English Translation)"),
+            hit("Джизус (Tribute)", "WARLORD"),
+        ]}]}});
+        assert_eq!(genius_candidates(&data, "Джизус", "WARLORD").len(), 1);
+        assert_eq!(genius_candidates(&data, "Dzhizus", "WARLORD").len(), 1);
+    }
+    #[test]
+    fn rock_arrangements_use_base_names_only_for_untimed_providers() {
+        let pairs = candidate_pairs("$KIMO888", "Джизус-WARLORD(rock version)");
+        assert_eq!(pairs[0].1, "WARLORD(rock version)");
+        assert_eq!(
+            plain_fallback_pairs(&pairs)[0],
+            ("Джизус".into(), "WARLORD".into())
+        );
+        let remix = vec![("Artist".into(), "Song (Remix)".into())];
+        assert_eq!(plain_fallback_pairs(&remix), remix);
+        let unicode = vec![("Artist".into(), "İstanbul (ROCK VERSION)".into())];
+        assert_eq!(plain_fallback_pairs(&unicode)[0].1, "İstanbul");
+    }
+    #[tokio::test]
+    #[ignore = "contacts public lyrics services"]
+    async fn reported_jesus_track_finds_live_lrclib_lyrics_with_cyrillic_credit() {
+        let found = lookup(
+            "JESUS".into(),
+            "Никому Неизвестный Голос".into(),
+            144_235,
+            Some("TEEN SOUL".into()),
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(found.source, "LRCLIB");
+        assert_eq!(found.id, 12681071);
+        assert!(found.synced_lyrics.is_some());
+    }
+    #[tokio::test]
+    #[ignore = "contacts public lyrics services"]
+    async fn reported_rock_upload_finds_live_genius_plain_lyrics() {
+        let found = lookup(
+            "$KIMO888".into(),
+            "Джизус-WARLORD(rock version)".into(),
+            122_279,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(comparable(&found.track_name), "warlord");
+        assert!(same_artist(&found.artist_name, "Джизус"));
+        assert!(
+            found
+                .plain_lyrics
+                .as_deref()
+                .is_some_and(|text| !text.trim().is_empty())
+        );
+        assert!(found.synced_lyrics.is_none());
+        // Any matching source may win the concurrent fallback. Also verify
+        // the actual Genius page independently rather than requiring it to win.
+        let found = genius(&client().unwrap(), "Джизус", "WARLORD")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.source, "Genius");
+        assert_eq!(
+            found.source_url.as_deref(),
+            Some("https://genius.com/Dzhizus-warlord-lyrics")
+        );
+        assert!(
+            found
+                .plain_lyrics
+                .as_deref()
+                .is_some_and(|text| !text.trim().is_empty())
+        );
+        assert!(found.synced_lyrics.is_none());
     }
     #[test]
     fn credited_artist_suffix_is_recognized_before_an_inferred_prefix() {
@@ -905,10 +1619,12 @@ mod tests {
         assert_eq!(found.source, "LRCLIB");
         assert_eq!(comparable(&found.artist_name), "cupsize");
         assert_eq!(comparable(&found.track_name), "оригами");
-        assert!(found
-            .synced_lyrics
-            .as_deref()
-            .is_some_and(|lyrics| !lyrics.trim().is_empty()));
+        assert!(
+            found
+                .synced_lyrics
+                .as_deref()
+                .is_some_and(|lyrics| !lyrics.trim().is_empty())
+        );
     }
     #[test]
     fn related_titles_and_artists_are_not_the_same_song() {
@@ -956,14 +1672,16 @@ mod tests {
     }
     #[test]
     fn wrong_duration_is_rejected_and_other_edit_timestamps_are_removed() {
-        assert!(select_record(
-            vec![record("Song", "Artist", 260.0)],
-            "Artist",
-            "Song",
-            180_000,
-            None
-        )
-        .is_none());
+        assert!(
+            select_record(
+                vec![record("Song", "Artist", 260.0)],
+                "Artist",
+                "Song",
+                180_000,
+                None
+            )
+            .is_none()
+        );
         let found = select_record(
             vec![record("Song", "Artist", 190.0)],
             "Artist",
@@ -989,6 +1707,23 @@ mod tests {
         )
         .unwrap();
         assert!(found.synced_lyrics.is_some());
+    }
+    #[test]
+    fn synced_only_records_keep_words_when_timing_is_unsuitable() {
+        let mut timed = record("Song", "Artist", 190.0);
+        timed.plain_lyrics = None;
+        timed.synced_lyrics = Some(
+            "[ar:Artist]\n[ti:Song]\n[00:01.25][00:05.50]First\n[00:07:125]Second\n[00:09] [Chorus]\n[00:11.00]\n[not:a timestamp]Discard".into(),
+        );
+        let found = select_record(vec![timed.clone()], "Artist", "Song", 180_000, None).unwrap();
+        assert_eq!(
+            found.plain_lyrics.as_deref(),
+            Some("First\nSecond\n[Chorus]")
+        );
+        assert!(found.synced_lyrics.is_none());
+        assert!(select_record(vec![timed.clone()], "Artist", "Song", 100_000, None).is_none());
+        assert!(select_record(vec![timed], "Other Artist", "Song", 180_000, None).is_none());
+        assert!(plain_from_lrc("[ar:Artist]\n[ti:Song]").is_none());
     }
     #[test]
     fn isrc_validation_and_reused_identifier() {
