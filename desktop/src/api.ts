@@ -79,13 +79,25 @@ export const api = {
   myWave: (likedTracks: Track[], variation: number) => {
     if (!preview) return invoke<Track[]>('my_wave', { likedTracks: likedTracks.slice(0, 500), variation })
     if (!likedTracks.length) return Promise.reject(new Error('Like a few tracks to start My Wave'))
-    const seed = likedTracks[variation % likedTracks.length]
+    const allowed = likedTracks.filter(track => !previewWaveDislikes.has(track.id))
+    if (!allowed.length) return Promise.reject(new Error('No playable liked tracks are available for My Wave'))
+    const seed = allowed[variation % allowed.length]
     return Promise.resolve([seed, ...demo.filter(track => !likedTracks.some(liked => liked.id === track.id) && !previewWaveDislikes.has(track.id))])
   },
   waveDisliked: (trackId: number) => preview ? Promise.resolve(previewWaveDislikes.has(trackId)) : invoke<boolean>('wave_disliked', { trackId }),
   waveDislike: (track: Track, disliked: boolean) => {
     if (!preview) return invoke<void>('wave_dislike', { track, disliked })
-    if (disliked) previewWaveDislikes.add(track.id); else previewWaveDislikes.delete(track.id)
+    if (disliked) {
+      previewWaveDislikes.add(track.id)
+      const current = previewPlayer.queue[previewPlayer.current ?? -1]
+      const next = current?.id === track.id
+        ? previewPlayer.queue.slice((previewPlayer.current ?? -1) + 1).find(item => !previewWaveDislikes.has(item.id))
+        : current
+      const queue = previewPlayer.queue.filter(item => !previewWaveDislikes.has(item.id))
+      const index = next ? queue.findIndex(item => item.id === next.id) : -1
+      previewPlayer = { ...previewPlayer, queue, current: index >= 0 ? index : null, isPlaying: index >= 0 && previewPlayer.isPlaying,
+        ...(current?.id === track.id ? { positionMs: 0, durationMs: next?.duration || 0 } : {}) }
+    } else previewWaveDislikes.delete(track.id)
     return Promise.resolve()
   },
   downloadOfflineTrack: (track: Track) => {
@@ -107,11 +119,16 @@ export const api = {
   storageReport: () => preview ? Promise.resolve<StorageReport>({ installationBytes: 0, clapModelBytes: 0, clapRuntimeBytes: 0, clapPreparationBytes: 0, offlineBytes: [...previewOffline.values()].reduce((sum, item) => sum + item.bytes, 0), audioCacheBytes: 0, artworkCacheBytes: 0, otherDataBytes: 0, otherCacheBytes: 0, extraAppDataBytes: 0, installationPath: '', dataPath: '', cachePath: '', extraAppDataPath: '' }) : invoke<StorageReport>('storage_report'),
   clearArtworkCache: () => preview ? Promise.resolve() : invoke<void>('clear_artwork_cache'),
   clearClapPreparation: () => preview ? Promise.resolve() : invoke<void>('clear_clap_preparation'),
-  tracks: (view: string, query?: string, id?: number) => preview
-    ? Promise.resolve<Data<Track[]>>({ status: 'ready', data: view === 'search' ? demo.filter(t => t.title.toLowerCase().includes((query || '').toLowerCase())) : view === 'likes' ? demo.filter(t => previewLikes.has(t.id)) : view === 'reposts' ? demo.filter(t => previewReposts.has(t.id)) : view === 'feed' ? [1001, 1003, 1005, 1007, 1000].map(trackId => demo.find(t => t.id === trackId)).filter((t): t is Track => !!t).map(t => ({ ...t, feed_reposted: t.id === 1003 })) : view === 'uploads' ? [] : view === 'playlist' && id ? previewPlaylistTracks.has(id) ? (previewPlaylistTracks.get(id) || []).map(trackId => demo.find(t => t.id === trackId)).filter((t): t is Track => !!t) : demo.slice(0, previewPlaylists.find(p => p.id === id)?.track_count || 0) : view === 'artist' ? demo.filter(t => t.user?.id === id) : view === 'related' ? demo.filter(t => t.id !== id) : demo })
-    : !query && id == null && ['likes', 'discover', 'uploads', 'reposts'].includes(view)
+  tracks: async (view: string, query?: string, id?: number) => {
+    const result = preview
+    ? { status: 'ready', data: view === 'search' ? demo.filter(t => t.title.toLowerCase().includes((query || '').toLowerCase())) : view === 'likes' ? demo.filter(t => previewLikes.has(t.id)) : view === 'reposts' ? demo.filter(t => previewReposts.has(t.id)) : view === 'feed' ? [1001, 1003, 1005, 1007, 1000].map(trackId => demo.find(t => t.id === trackId)).filter((t): t is Track => !!t).map(t => ({ ...t, feed_reposted: t.id === 1003 })) : view === 'uploads' ? [] : view === 'playlist' && id ? previewPlaylistTracks.has(id) ? (previewPlaylistTracks.get(id) || []).map(trackId => demo.find(t => t.id === trackId)).filter((t): t is Track => !!t) : demo.slice(0, previewPlaylists.find(p => p.id === id)?.track_count || 0) : view === 'artist' ? demo.filter(t => t.user?.id === id) : view === 'related' ? demo.filter(t => t.id !== id) : demo } as Data<Track[]>
+    : !query && id == null && ['likes', 'uploads', 'reposts'].includes(view)
       ? cachedLibraryData(`tracks:${view}`, () => invoke<Data<Track[]>>('tracks', { view, query, id }))
-      : invoke<Data<Track[]>>('tracks', { view, query, id }),
+      : invoke<Data<Track[]>>('tracks', { view, query, id })
+    const data = await result
+    return preview && ['discover', 'related', 'recommended_genre'].includes(view) && data.status === 'ready'
+      ? { ...data, data: data.data.filter(track => !previewWaveDislikes.has(track.id)) } : data
+  },
   playlists: (view: string, query?: string) => preview
     ? Promise.resolve<Data<Playlist[]>>({ status: 'ready', data: previewPlaylists.filter(list => view === 'feed' ? false : view === 'liked' ? previewLikedPlaylists.has(list.id) : view === 'reposts' ? previewRepostedPlaylists.has(list.id) : view === 'search' ? list.title.toLowerCase().includes((query || '').toLowerCase()) : view.startsWith('artist') ? false : true) })
     : !query && ['liked', 'mine', 'reposts'].includes(view)
@@ -248,8 +265,14 @@ export const api = {
     if (action === 'stop') previewPlayer.isPlaying = false
     return Promise.resolve()
   },
-  play: (tracks: Track[], index: number) => {
-    if (!preview) return invoke<void>('play_tracks', { tracks, index })
+  play: (tracks: Track[], index: number, recommended = false) => {
+    if (!preview) return invoke<void>('play_tracks', { tracks, index, recommended })
+    if (recommended) {
+      const selected = tracks[index]?.id
+      tracks = tracks.filter(track => !previewWaveDislikes.has(track.id))
+      index = tracks.findIndex(track => track.id === selected)
+      if (index < 0) return Promise.reject(new Error('Track was excluded from recommendations'))
+    }
     previewPlayer = { ...previewPlayer, queue: [...tracks], current: index, isPlaying: true, durationMs: tracks[index]?.duration || 0, positionMs: 0, abStartMs: null, abEndMs: null }
     return Promise.resolve()
   },

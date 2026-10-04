@@ -2,6 +2,25 @@
   "schema": 1,
   "releases": [
     {
+      "version": "0.2.14",
+      "ru": {
+        "title": "Дизлайки во всех рекомендациях",
+        "changes": [
+          "Дизлайки теперь учитываются в «Моей волне», станциях и автоматических подборках на главной и в поиске. Трек остаётся доступен в обычном поиске и своих плейлистах.",
+          "Дизлайк удаляет трек из текущей очереди и переключает воспроизведение на следующий подходящий. Фоновый подбор и восстановление волны после перезапуска повторно проверяют исключения.",
+          "Узнаваемые перезаливы одной записи тоже исключаются из рекомендаций; другие исполнители и версии песни остаются доступны."
+        ]
+      },
+      "en": {
+        "title": "Dislikes across recommendations",
+        "changes": [
+          "Dislikes now apply to My Wave, track stations and automatic recommendations on Home and Search. Tracks remain available in regular search and your playlists.",
+          "Disliking removes the track from the current queue and moves playback to the next eligible track. Background refills and restored waves recheck exclusions.",
+          "Recognizable reuploads of the same recording are excluded too, while other artists and versions remain available."
+        ]
+      }
+    },
+    {
       "version": "0.2.13",
       "ru": {
         "title": "Изменения перед обновлением",

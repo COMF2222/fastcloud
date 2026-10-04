@@ -169,7 +169,7 @@ export function LibraryExtra({ tab, filter, view }: { tab: 'liked_playlists' | '
   const queryClient = useQueryClient()
   const [error, setError] = useState('')
   const station = async (track: Track) => {
-    try { await api.setSetting('autoplay', true); const related = await api.tracks('related', undefined, track.id); await api.play([track, ...(related.status === 'ready' ? related.data : [])], 0); await queryClient.invalidateQueries({ queryKey: ['player'] }) } catch (cause) { setError(String(cause)) }
+    try { await api.setSetting('autoplay', true); const related = await api.tracks('related', undefined, track.id); await api.play([track, ...(related.status === 'ready' ? related.data : [])], 0, true); await queryClient.invalidateQueries({ queryKey: ['player'] }) } catch (cause) { setError(String(cause)) }
   }
   if (tab === 'liked_playlists') return <Status value={liked}>{items => <LibraryPlaylists playlists={items.filter(item => !isAlbum(item))} filter={filter} view={view} />}</Status>
   if (tab === 'albums') return <Status value={libraryCollections([liked, mine], true)}>{items => <LibraryPlaylists playlists={items} filter={filter} view={view} />}</Status>

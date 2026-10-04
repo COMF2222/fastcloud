@@ -696,6 +696,41 @@ impl Player {
         }
     }
 
+    /// Remove matching tracks atomically, advancing to the next surviving row
+    /// when the current track is removed. Preserve the effective shuffle order.
+    pub fn remove_matching(&self, mut reject: impl FnMut(&Track) -> bool) -> usize {
+        let (removed, advance, next) = {
+            let mut state = self.state.lock();
+            let rejected: Vec<_> = state.queue.iter().map(&mut reject).collect();
+            let removed = rejected.iter().filter(|&&value| value).count();
+            if removed == 0 { return 0; }
+            let advance = state.current.is_some_and(|index| rejected[index]);
+            let next = state.current.and_then(|current| state.order.iter()
+                .position(|&index| index == current))
+                .and_then(|position| state.order[position + 1..].iter()
+                    .copied().find(|&index| !rejected[index]));
+            let mut remap = vec![None; state.queue.len()];
+            let mut kept = Vec::with_capacity(state.queue.len() - removed);
+            for (index, track) in std::mem::take(&mut state.queue).into_iter().enumerate() {
+                if !rejected[index] {
+                    remap[index] = Some(kept.len());
+                    kept.push(track);
+                }
+            }
+            state.current = state.current.and_then(|index| remap[index]);
+            state.order = state.order.iter().filter_map(|&index| remap[index]).collect();
+            state.queue = kept;
+            state.queue_revision = state.queue_revision.wrapping_add(1);
+            (removed, advance, next.and_then(|index| remap[index]))
+        };
+        if advance {
+            if let Some(next) = next { self.skip_to(next); } else { self.stop(); }
+        } else {
+            self.save_session();
+        }
+        removed
+    }
+
     /// Move a queue row while retaining the current track and shuffle order.
     pub fn move_at(&self, from: usize, to: usize) -> bool {
         let mut state = self.state.lock();
@@ -1875,6 +1910,56 @@ mod tests {
         assert_eq!(state.queue[state.current.unwrap()].id, 110);
         assert_eq!(state.order[state.current.unwrap() + 1], 16);
         assert_eq!(state.queue[16].id, 111);
+    }
+
+    #[test]
+    fn removing_rejected_tracks_preserves_current_and_shuffle_order() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let player = Player::new(
+            Arc::new(AudioOutput::silent([0.0; 10], 0.8)),
+            Arc::new(crate::api::ApiClient::demo()), Arc::new(AudioCache::disabled()),
+            dir.path().join("settings.json"), runtime.handle().clone(),
+        );
+        {
+            let mut state = player.state.lock();
+            state.queue = (1..=5).map(|id| Track {
+                id, ..serde_json::from_str(r#"{"id":0,"title":"Track"}"#).unwrap()
+            }).collect();
+            state.current = Some(2);
+            state.shuffle = true;
+            state.order = vec![1, 2, 4, 0, 3];
+        }
+        assert_eq!(player.remove_matching(|track| matches!(track.id, 2 | 5)), 2);
+        let state = player.state.lock();
+        assert_eq!(state.queue.iter().map(|track| track.id).collect::<Vec<_>>(), vec![1, 3, 4]);
+        assert_eq!(state.current, Some(1));
+        assert_eq!(state.order, vec![1, 0, 2]);
+        assert_eq!(state.queue_revision, 1);
+    }
+
+    #[test]
+    fn removing_current_rejected_track_skips_all_rejected_copies() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let player = Player::new(
+            Arc::new(AudioOutput::silent([0.0; 10], 0.8)),
+            Arc::new(crate::api::ApiClient::demo()), Arc::new(AudioCache::disabled()),
+            dir.path().join("settings.json"), runtime.handle().clone(),
+        );
+        {
+            let mut state = player.state.lock();
+            state.queue = (1..=5).map(|id| Track {
+                id, ..serde_json::from_str(r#"{"id":0,"title":"Track"}"#).unwrap()
+            }).collect();
+            state.current = Some(2);
+            state.order = vec![0, 2, 4, 1, 3];
+        }
+        player.remove_matching(|track| matches!(track.id, 3 | 5));
+        assert_eq!(player.current_track().unwrap().id, 2);
+        player.remove_matching(|_| true);
+        assert!(player.current_track().is_none());
+        assert!(!player.state.lock().is_playing);
     }
 
     #[test]

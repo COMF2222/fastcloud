@@ -92,7 +92,7 @@ export function Status<T>({ value, children }: { value?: Data<T>; children: (row
   return <>{children(value.data)}</>
 }
 
-export function TrackRows({ tracks, compact = false, activeIndex, onPlay }: { tracks: Track[]; compact?: boolean; activeIndex?: number; onPlay?: (index: number) => Promise<void> }) {
+export function TrackRows({ tracks, compact = false, activeIndex, onPlay, recommended = false }: { tracks: Track[]; compact?: boolean; activeIndex?: number; onPlay?: (index: number) => Promise<void>; recommended?: boolean }) {
   const queryClient = useQueryClient()
   const { data: playback } = useQuery({
     queryKey: ['player'], queryFn: api.player,
@@ -126,7 +126,7 @@ export function TrackRows({ tracks, compact = false, activeIndex, onPlay }: { tr
   const { data: repostedTracks } = useQuery({ queryKey: ['tracks', 'reposts'], queryFn: () => api.tracks('reposts'), enabled: menu !== null, refetchInterval: result => dataRefreshInterval(result.state.data) })
   const likedIds = useMemo(() => new Set(likedTracks?.status === 'ready' ? likedTracks.data.map(item => item.id) : settings?.liked_ids || []), [likedTracks, settings?.liked_ids])
   const isLiked = (id: number) => likedIds.has(id)
-  const play = async (index: number) => { try { if (playback?.id === tracks[index].id) await api.transport('play_pause'); else if (onPlay) await onPlay(index); else await api.play(tracks, index); await queryClient.invalidateQueries({ queryKey: ['player'] }) } catch (cause) { setError(String(cause)) } }
+  const play = async (index: number) => { try { if (playback?.id === tracks[index].id) await api.transport('play_pause'); else if (onPlay) await onPlay(index); else await api.play(tracks, index, recommended); await queryClient.invalidateQueries({ queryKey: ['player'] }) } catch (cause) { setError(String(cause)) } }
   const like = async (track: Track) => {
     const liked = !isLiked(track.id)
     try {
@@ -201,7 +201,7 @@ export function TrackRows({ tracks, compact = false, activeIndex, onPlay }: { tr
     if (!pickedTracks.length) return
     setBulkBusy(true); setError('')
     try {
-      if (action === 'play') await api.play(pickedTracks, 0)
+      if (action === 'play') await api.play(pickedTracks, 0, recommended)
       else if (action === 'next' || action === 'queue') await api.enqueueTracks(pickedTracks, action === 'next')
       else if (action === 'playlist' && targetId) {
         await api.addTracksToPlaylist(targetId, pickedTracks.map(track => track.id))
@@ -358,7 +358,7 @@ function HomePage() {
     {historyTracks.length > 0 && <><SectionTitle title={english ? 'Continue listening' : 'Продолжить слушать'} subtitle={english ? 'Recently played' : 'Недавно прослушанное'} action={english ? 'History' : 'Вся история'} onAction={() => openLibrary('history')} /><TrackRows tracks={historyTracks.slice(0, 6)} /></>}
     {freshTracks.length > 0 && <><SectionTitle title={english ? 'From your artists' : 'Новое от подписок'} subtitle={english ? 'Tracks from artists you follow' : 'Треки авторов, на которых ты подписан'} /><TrackRows tracks={freshTracks.slice(0, 6)} /></>}
     <SectionTitle title={english ? 'On rotation' : 'Сейчас в эфире'} subtitle={english ? 'A good place to start' : 'Подборка для хорошего начала'} />
-    <Status value={data}>{tracks => <TrackRows tracks={tracks.slice(0, 6)} />}</Status>
+    <Status value={data}>{tracks => <TrackRows tracks={tracks.slice(0, 6)} recommended />}</Status>
     {likedTracks.length > 0 && <><SectionTitle title={english ? 'Your likes' : 'Твои лайки'} action={english ? 'All likes' : 'Все лайки'} onAction={() => openLibrary('tracks')} /><TrackRows tracks={likedTracks.slice(0, 6)} /></>}
     {(playlists?.status !== 'ready' || playlists.data.some(item => !(item.is_album || item.playlist_type === 'album' || item.set_type === 'album'))) && <><SectionTitle title={english ? 'Saved playlists' : 'Сохранённые плейлисты'} subtitle={english ? 'All in one place' : 'Собранное в одном месте'} action={english ? 'Open library' : 'Все плейлисты'} onAction={() => openLibrary('playlists')} /><Status value={playlists}>{items => <PlaylistCards playlists={items.filter(item => !(item.is_album || item.playlist_type === 'album' || item.set_type === 'album')).slice(0, 5)} />}</Status></>}
     {ownPlaylists?.status === 'ready' && ownPlaylists.data.some(item => !(item.is_album || item.playlist_type === 'album' || item.set_type === 'album')) && <><SectionTitle title={english ? 'Created by you' : 'Создано тобой'} action={english ? 'All playlists' : 'Все плейлисты'} onAction={() => openLibrary('playlists')} /><PlaylistCards playlists={ownPlaylists.data.filter(item => !(item.is_album || item.playlist_type === 'album' || item.set_type === 'album')).slice(0, 5)} /></>}
@@ -460,7 +460,7 @@ function SearchPage({ query }: { query: string }) {
   const likedTracks = likes?.status === 'ready' ? likes.data : []
   const dailyGenres = useMemo(() => favouriteGenres(likedTracks, musicGenres, discoveryDay), [likedTracks, discoveryDay])
   const { data: dailyPicks } = useQuery({ queryKey: ['search-daily-picks', discoveryDay, ...dailyGenres], queryFn: async () => {
-    const responses = await Promise.allSettled(dailyGenres.map(genre => api.tracks('genre', genre)))
+    const responses = await Promise.allSettled(dailyGenres.map(genre => api.tracks('recommended_genre', genre)))
     return responses.flatMap((result, index) => result.status === 'fulfilled' && result.value.status === 'ready' ? result.value.data.filter(track => sameGenre(track.genre, dailyGenres[index])) : [])
   }, enabled: !searching && likes?.status === 'ready', staleTime: 6 * 60 * 60_000 })
   const suggested = useMemo(() => {
@@ -498,7 +498,7 @@ function SearchPage({ query }: { query: string }) {
     if (match) openArtist(match.id, match.username)
   }, [artistLookup, query, users, openArtist])
   const { data: vibe, isLoading: vibeLoading, error: vibeError } = useQuery({ queryKey: ['vibe', query], queryFn: () => api.vibeSearch(query), enabled: tab === 'vibe' && query.trim().length >= 2 })
-  if (!searching) return <div className="page-content search-page"><GenreCarousel onSelect={genre => useApp.getState().setSearch(genre)} english={english} /><div className="search-welcome"><span className="page-kicker">FASTCLOUD / {t('ПОИСК', 'SEARCH')}</span><h1>{t('С чего начнём?', 'What are we listening to?')}</h1><p>{t('Ищи трек, автора или настроение. А пока — музыка, которая может тебе понравиться.', 'Find a track, artist or mood. Here is something for you right now.')}</p></div><SectionTitle title={likedTracks.length ? t('На основе твоего вкуса', 'For your taste') : t('С чего начать', 'Start listening')} subtitle={likedTracks.length ? t('Жанры и авторы из твоих лайков', 'Genres and artists from your likes') : t('Треки из каталога', 'Tracks from the catalog')} />{suggested.length ? <TrackRows tracks={suggested} /> : <Status value={discover}>{() => <Empty message={t('Пока нет новых рекомендаций', 'No new recommendations yet')} detail={t('Попробуй открыть поиск позже.', 'Try opening search again later.')} />}</Status>}{recent?.status === 'ready' && recent.data.length > 0 && <><SectionTitle title={t('Недавно слушал', 'Recently played')} /><TrackRows tracks={recent.data.slice(0, 6)} /></>}</div>
+  if (!searching) return <div className="page-content search-page"><GenreCarousel onSelect={genre => useApp.getState().setSearch(genre)} english={english} /><div className="search-welcome"><span className="page-kicker">FASTCLOUD / {t('ПОИСК', 'SEARCH')}</span><h1>{t('С чего начнём?', 'What are we listening to?')}</h1><p>{t('Ищи трек, автора или настроение. А пока — музыка, которая может тебе понравиться.', 'Find a track, artist or mood. Here is something for you right now.')}</p></div><SectionTitle title={likedTracks.length ? t('На основе твоего вкуса', 'For your taste') : t('С чего начать', 'Start listening')} subtitle={likedTracks.length ? t('Жанры и авторы из твоих лайков', 'Genres and artists from your likes') : t('Треки из каталога', 'Tracks from the catalog')} />{suggested.length ? <TrackRows tracks={suggested} recommended /> : <Status value={discover}>{() => <Empty message={t('Пока нет новых рекомендаций', 'No new recommendations yet')} detail={t('Попробуй открыть поиск позже.', 'Try opening search again later.')} />}</Status>}{recent?.status === 'ready' && recent.data.length > 0 && <><SectionTitle title={t('Недавно слушал', 'Recently played')} /><TrackRows tracks={recent.data.slice(0, 6)} /></>}</div>
   return <div className="page-content search-page"><GenreCarousel selected={query} onSelect={genre => useApp.getState().setSearch(genre)} english={english} /><SectionTitle title={`${t('Результаты', 'Results')}: “${query}”`} subtitle={t('Поиск по SoundCloud', 'Search SoundCloud')} />{keyError && <p className="error-text" role="alert">{keyError}</p>}<div className="tabs"><button className={tab === 'tracks' ? 'active' : ''} onClick={() => setTab('tracks')}>{t('Треки', 'Tracks')}</button><button className={tab === 'vibe' ? 'active' : ''} onClick={() => setTab('vibe')}>{t('По настроению', 'By mood')}</button><button className={tab === 'playlists' ? 'active' : ''} onClick={() => setTab('playlists')}>{t('Плейлисты', 'Playlists')}</button><button className={tab === 'albums' ? 'active' : ''} onClick={() => setTab('albums')}>{t('Альбомы', 'Albums')}</button><button className={tab === 'artists' ? 'active' : ''} onClick={() => setTab('artists')}>{t('Авторы', 'Artists')}</button></div>
     {tab === 'tracks' && <div className="search-results"><Status value={tracks}>{() => <TrackRows tracks={resultTracks} activeIndex={selectedIndex} />}</Status></div>}
     {tab === 'vibe' && <>{query.trim().length < 2 ? <Empty message={t('Опиши настроение', 'Describe a mood')} detail={t('Например: спокойная ночная музыка', 'For example: calm music for the night')} /> : vibeLoading ? <div className="status"><LoaderCircle className="spin" /> {t('Ищем подходящее звучание…', 'Finding the right sound…')}</div> : vibeError ? <Empty message={t('Поиск не удался', 'Search failed')} detail={String(vibeError)} /> : <TrackRows tracks={vibe || []} />}</>}
@@ -901,11 +901,20 @@ function PlayerBar({ wallpaperUrl }: { wallpaperUrl: string | null }) {
     finally { setOptimisticLike(null); setLikeBusy(false) }
   }
   const { data: waveDisliked } = useQuery({ queryKey: ['wave-disliked', track?.id], queryFn: () => api.waveDisliked(track!.id), enabled: !!track })
+  const [feedbackBusy, setFeedbackBusy] = useState(false)
   const setWaveDisliked = async () => {
-    if (!track) return
-    await api.waveDislike(track, !waveDisliked)
-    await queryClient.invalidateQueries({ queryKey: ['wave-disliked', track.id] })
-    if (!waveDisliked) await action('next')
+    if (!track || feedbackBusy) return
+    setFeedbackBusy(true)
+    try {
+      await api.waveDislike(track, !waveDisliked)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['wave-disliked'] }),
+        queryClient.invalidateQueries({ queryKey: ['tracks'], predicate: query => ['discover', 'related', 'recommended_genre'].includes(String(query.queryKey[1])) }),
+        queryClient.invalidateQueries({ queryKey: ['search-daily-picks'] }),
+        refetch(),
+      ])
+    } catch (cause) { setPlayerError(String(cause)) }
+    finally { setFeedbackBusy(false) }
   }
   const { data: trackDetail } = useQuery({
     queryKey: ['track', track?.id],
@@ -937,7 +946,7 @@ function PlayerBar({ wallpaperUrl }: { wallpaperUrl: string | null }) {
   const toggleMini = async () => { await api.setSetting('winamp_window', !settings?.winamp_window); await queryClient.invalidateQueries({ queryKey: ['settings'] }) }
   const updateSound = async (key: string, value: unknown) => { await api.setSetting(key, value); await queryClient.invalidateQueries({ queryKey: ['settings'] }) }
   return <><div className="player-bar">
-    <div className="player-track">{track ? <><button className="player-cover-open" aria-label={t('Открыть плеер', 'Open player')} onClick={() => setNowPlayingOpen(true)}><Artwork item={track} /></button><div><button className="player-track-title" onClick={() => useApp.getState().openTrack(track.id, track.title)}>{track.title}</button>{state?.error || playerError ? <small className="error-text" role="alert">{playerError || state?.error}</small> : <ArtistCredits track={displayTrack || track} className="player-artist-button" title={artistHint} english={english} />}</div><div className="player-feedback"><button className={`icon-button ${trackLiked ? 'on' : ''}`} disabled={likeBusy} aria-pressed={trackLiked} aria-label={trackLiked ? t('Убрать лайк у трека', 'Unlike track') : t('Лайкнуть трек', 'Like track')} title={trackLiked ? t('Убрать лайк SoundCloud', 'Remove SoundCloud like') : t('Лайкнуть в SoundCloud', 'Like on SoundCloud')} onClick={() => void toggleLike()}><Heart size={17} fill={trackLiked ? 'currentColor' : 'none'} /></button><button className={`icon-button ${waveDisliked ? 'on' : ''}`} aria-label={waveDisliked ? t('Вернуть в Мою волну', 'Allow in My Wave') : t('Не рекомендовать в Моей волне', 'Do not recommend in My Wave')} title={waveDisliked ? t('Вернуть в Мою волну', 'Allow in My Wave') : t('Не рекомендовать в Моей волне', 'Do not recommend in My Wave')} onClick={() => void setWaveDisliked()}><ThumbsDown size={17} fill={waveDisliked ? 'currentColor' : 'none'} /></button></div></> : <><div className="player-placeholder"><Music2 size={20} /></div><div><strong>{english ? 'Nothing playing' : 'Ничего не играет'}</strong><small>{english ? 'Choose a track to start' : 'Выбери трек, чтобы начать'}</small></div></>}</div>
+    <div className="player-track">{track ? <><button className="player-cover-open" aria-label={t('Открыть плеер', 'Open player')} onClick={() => setNowPlayingOpen(true)}><Artwork item={track} /></button><div><button className="player-track-title" onClick={() => useApp.getState().openTrack(track.id, track.title)}>{track.title}</button>{state?.error || playerError ? <small className="error-text" role="alert">{playerError || state?.error}</small> : <ArtistCredits track={displayTrack || track} className="player-artist-button" title={artistHint} english={english} />}</div><div className="player-feedback"><button className={`icon-button ${trackLiked ? 'on' : ''}`} disabled={likeBusy} aria-pressed={trackLiked} aria-label={trackLiked ? t('Убрать лайк у трека', 'Unlike track') : t('Лайкнуть трек', 'Like track')} title={trackLiked ? t('Убрать лайк SoundCloud', 'Remove SoundCloud like') : t('Лайкнуть в SoundCloud', 'Like on SoundCloud')} onClick={() => void toggleLike()}><Heart size={17} fill={trackLiked ? 'currentColor' : 'none'} /></button><button disabled={feedbackBusy} className={`icon-button ${waveDisliked ? 'on' : ''}`} aria-label={waveDisliked ? t('Вернуть в рекомендации', 'Allow in recommendations') : t('Не рекомендовать этот трек', 'Do not recommend this track')} title={waveDisliked ? t('Вернуть в рекомендации', 'Allow in recommendations') : t('Не рекомендовать этот трек', 'Do not recommend this track')} onClick={() => void setWaveDisliked()}><ThumbsDown size={17} fill={waveDisliked ? 'currentColor' : 'none'} /></button></div></> : <><div className="player-placeholder"><Music2 size={20} /></div><div><strong>{english ? 'Nothing playing' : 'Ничего не играет'}</strong><small>{english ? 'Choose a track to start' : 'Выбери трек, чтобы начать'}</small></div></>}</div>
     <div className="player-center"><div className="transport-controls">
       <button className={`icon-button ${state?.shuffle ? 'on' : ''}`} aria-label={english ? 'Shuffle' : 'Перемешать'} title={english ? 'Shuffle' : 'Перемешать'} onClick={() => void action('shuffle')}><Shuffle size={18} /></button>
       <button className="icon-button" aria-label={english ? 'Previous track' : 'Предыдущий трек'} title={english ? 'Previous track' : 'Предыдущий трек'} onClick={() => void action('previous')}><SkipBack size={20} fill="currentColor" /></button>

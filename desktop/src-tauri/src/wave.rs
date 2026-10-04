@@ -149,6 +149,48 @@ fn enriched_identity(track: &Track, profile: &Profile) -> TrackIdentity {
     identity
 }
 
+pub(crate) struct DislikeFilter {
+    ids: HashSet<u64>,
+    recordings: Vec<TrackIdentity>,
+}
+
+impl DislikeFilter {
+    fn from_profile(profile: &Profile) -> Self {
+        Self {
+            ids: profile.signals.iter().filter(|(_, signal)| signal.disliked)
+                .map(|(&id, _)| id).collect(),
+            recordings: profile.signals.values().filter(|signal| signal.disliked)
+                .filter_map(|signal| signal.track.as_ref())
+                .map(|track| enriched_identity(track, profile)).collect(),
+        }
+    }
+
+    pub(crate) fn rejects(&self, track: &Track) -> bool {
+        if self.ids.contains(&track.id) { return true; }
+        let identity = track_identity(track);
+        self.recordings.iter().any(|previous|
+            previous.performer_keys.iter().any(|key| identity.performer_keys.contains(key))
+                && same_recording(previous, &identity))
+    }
+
+    pub(crate) fn prune_saved_queue(&self, queue: &mut Vec<Track>, current: Option<usize>) -> Option<usize> {
+        let mut next = None;
+        let mut index = 0;
+        let mut kept = 0;
+        queue.retain(|track| {
+            let old_index = index;
+            index += 1;
+            if self.rejects(track) { return false; }
+            if next.is_none() && current.is_some_and(|current| old_index >= current) {
+                next = Some(kept);
+            }
+            kept += 1;
+            true
+        });
+        next
+    }
+}
+
 #[derive(Clone)]
 struct Observation {
     track: Track,
@@ -290,6 +332,13 @@ impl Engine {
 
     pub fn disliked(&self, id: u64) -> bool {
         self.inner.lock().profile.signals.get(&id).is_some_and(|s| s.disliked)
+    }
+
+    // Keep feedback stable until the caller finishes updating the live queue.
+    // A request started before a dislike must not append its stale result later.
+    pub(crate) fn with_dislike_filter<R>(&self, update: impl FnOnce(&DislikeFilter) -> R) -> R {
+        let inner = self.inner.lock();
+        update(&DislikeFilter::from_profile(&inner.profile))
     }
 
     pub fn begin_audio_analysis(&self, track_id: u64) -> bool {
@@ -496,17 +545,18 @@ fn recency_penalty(last_played: i64, now: i64) -> f64 {
 }
 
 fn choose_seeds(likes: &[Track], profile: &Profile, model: &TasteModel, variation: u32, period: usize, avoid: &HashSet<u64>, avoid_identities: &[TrackIdentity]) -> Vec<Track> {
+    let dislikes = DislikeFilter::from_profile(profile);
     let mut ranked: Vec<_> = likes.iter()
         .filter(|t| !t.is_blocked() && !t.is_snippet() && !avoid.contains(&t.id)
             && !avoid_identities.iter().any(|old| same_recording(old, &enriched_identity(t, profile)))
-            && !profile.signals.get(&t.id).is_some_and(|s| s.disliked))
+            && !dislikes.rejects(t))
         .map(|t| (t, seed_score(t, profile, model, period)))
         .collect();
     if ranked.is_empty() {
         // Reuse a familiar seed to explore its related graph after every liked
         // track has appeared. The seed itself is filtered from the next queue.
         ranked = likes.iter().filter(|track| !track.is_blocked() && !track.is_snippet()
-            && !profile.signals.get(&track.id).is_some_and(|s| s.disliked))
+            && !dislikes.rejects(track))
             .map(|track| (track, seed_score(track, profile, model, period))).collect();
     }
     ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
@@ -601,12 +651,13 @@ pub fn first_seed(engine: &Engine, liked_tracks: &[Track], variation: u32) -> Op
     let liked_ids = likes.iter().map(|track| track.id).collect();
     let discoveries = engaged_discoveries(&profile, &liked_ids);
     let mut starts = engine.starts.lock();
+    let dislikes = DislikeFilter::from_profile(&profile);
     let mut candidates = Vec::<(Track, f64)>::new();
     let mut ids = HashSet::new();
     for (source, bonus) in [(&starts.recommendations, 24.0), (&discoveries, 12.0), (&likes, 0.0)] {
         for track in source {
             if !track.is_blocked() && !track.is_snippet()
-                && !profile.signals.get(&track.id).is_some_and(|signal| signal.disliked)
+                && !dislikes.rejects(track)
                 && ids.insert(track.id) {
                 candidates.push((track.clone(), bonus));
             }
@@ -654,6 +705,7 @@ fn remember_recommendations(engine: &Engine, tracks: &[Track], liked: &HashSet<u
 }
 
 fn assemble(seeds: &[Track], related: Vec<Vec<Track>>, likes: &HashSet<u64>, known: &[TrackIdentity], avoid: &HashSet<u64>, profile: &Profile, model: &TasteModel, text_vectors: &HashMap<u64, Vec<f32>>, period: usize, session_artists: &[TrackIdentity]) -> Vec<Track> {
+    let dislikes = DislikeFilter::from_profile(profile);
     let mut seen = likes.clone();
     seen.extend(avoid.iter().copied());
     if seeds.is_empty() { return Vec::new(); }
@@ -671,7 +723,7 @@ fn assemble(seeds: &[Track], related: Vec<Vec<Track>>, likes: &HashSet<u64>, kno
             let identity = enriched_identity(&candidate, profile);
             if (candidate.is_blocked() || candidate.is_snippet()) || !seen.insert(candidate.id)
                 || known.iter().any(|previous| same_recording(previous, &identity))
-                || profile.signals.get(&candidate.id).is_some_and(|s| s.disliked) { continue; }
+                || dislikes.rejects(&candidate) { continue; }
             let score = 8.0 + source_score * 0.35
                 + model.score(&candidate, period) - index as f64 * 0.04
                 + text_vectors.get(&candidate.id).map_or(0.0, |vector| model.acoustic_score(vector, period))
@@ -793,6 +845,7 @@ pub async fn generate(client: Arc<api::ApiClient>, engine: &Engine, liked_tracks
     }));
     let mut tracks = assemble(&seeds, related, &ids, &known, avoid, &profile, &model, &text_vectors, period, avoid_identities);
     if tracks.len() < 4 {
+        let dislikes = DislikeFilter::from_profile(&profile);
         let mut seen: HashSet<_> = tracks.iter().map(|track| track.id).collect();
         let liked_ids: HashSet<_> = likes.iter().map(|track| track.id).collect();
         for track in engaged_discoveries(&profile, &liked_ids).iter().chain(likes.iter()) {
@@ -800,7 +853,7 @@ pub async fn generate(client: Arc<api::ApiClient>, engine: &Engine, liked_tracks
             if !avoid.contains(&track.id) && !track.is_blocked() && !track.is_snippet()
                 && !tracks.iter().any(|existing| same_recording(
                     &enriched_identity(existing, &profile), &enriched_identity(track, &profile)))
-                && !profile.signals.get(&track.id).is_some_and(|s| s.disliked) && seen.insert(track.id) {
+                && !dislikes.rejects(track) && seen.insert(track.id) {
                 tracks.push(track.clone());
             }
         }
@@ -843,6 +896,79 @@ mod tests {
         let model = TasteModel::from_profile(&profile);
         let tracks = assemble(&demo[..1], vec![vec![demo[1].clone(), demo[2].clone()]], &likes, &[], &HashSet::new(), &profile, &model, &HashMap::new(), 1, &[]);
         assert_eq!(tracks.iter().map(|t| t.id).collect::<Vec<_>>(), vec![demo[2].id]);
+    }
+
+    #[test]
+    fn disliked_recording_is_excluded_even_when_reuploaded() {
+        let demo = crate::demo::demo_tracks();
+        let rejected = Track { title: "Artist - Rejected song".into(), duration_ms: Some(180_000), full_duration_ms: None, ..demo[1].clone() };
+        let copy = Track { id: 999_001, title: "Artist - Rejected song (Official Audio)".into(), ..rejected.clone() };
+        let mut profile = Profile::default();
+        profile.signals.insert(rejected.id, Signal { track: Some(rejected), disliked: true, ..Signal::default() });
+        let tracks = assemble(&demo[..1], vec![vec![copy, demo[2].clone()]],
+            &HashSet::from([demo[0].id]), &[], &HashSet::new(), &profile,
+            &TasteModel::default(), &HashMap::new(), 1, &[]);
+        assert_eq!(tracks.iter().map(|track| track.id).collect::<Vec<_>>(), vec![demo[2].id]);
+    }
+
+    #[test]
+    fn disliked_recording_cannot_open_a_new_wave() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Engine::new(dir.path().join("wave.json"));
+        let mut track = crate::demo::demo_tracks().remove(0);
+        track.title = "Artist - Rejected song".into();
+        track.duration_ms = Some(180_000);
+        track.full_duration_ms = None;
+        let copy = Track { id: 999_001, ..track.clone() };
+        engine.dislike(&track, true);
+        assert!(first_seed(&engine, &[track, copy], 0).is_none());
+    }
+
+    #[test]
+    fn live_filter_rejects_stale_results_and_remembers_feedback_after_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wave.json");
+        let engine = Engine::new(path.clone());
+        let track = crate::demo::demo_tracks().remove(0);
+        let stale_result = vec![track.clone()];
+        engine.dislike(&track, true);
+        let remaining = engine.with_dislike_filter(|filter|
+            stale_result.into_iter().filter(|track| !filter.rejects(track)).count());
+        assert_eq!(remaining, 0);
+        let restored = Engine::new(path);
+        assert!(restored.with_dislike_filter(|filter| filter.rejects(&track)));
+        restored.dislike(&track, false);
+        assert!(!restored.with_dislike_filter(|filter| filter.rejects(&track)));
+    }
+
+    #[test]
+    fn dislikes_do_not_block_another_artist_or_another_version() {
+        let mut track = crate::demo::demo_tracks().remove(0);
+        track.title = "Artist A - Rejected song".into();
+        track.duration_ms = Some(180_000);
+        track.full_duration_ms = None;
+        let other_artist = Track { id: 999_001, title: "Artist B - Rejected song".into(), ..track.clone() };
+        let remix = Track { id: 999_002, title: "Artist A - Rejected song (remix)".into(), ..track.clone() };
+        let mut profile = Profile::default();
+        profile.signals.insert(track.id, Signal { track: Some(track), disliked: true, ..Signal::default() });
+        let filter = DislikeFilter::from_profile(&profile);
+        assert!(!filter.rejects(&other_artist));
+        assert!(!filter.rejects(&remix));
+    }
+
+    #[test]
+    fn saved_wave_removes_old_dislikes_and_remaps_the_current_track() {
+        let tracks = crate::demo::demo_tracks();
+        let mut profile = Profile::default();
+        profile.signals.insert(tracks[0].id, Signal { disliked: true, ..Signal::default() });
+        profile.signals.insert(tracks[2].id, Signal { disliked: true, ..Signal::default() });
+        let filter = DislikeFilter::from_profile(&profile);
+        let mut queue = tracks[..4].to_vec();
+        let current = filter.prune_saved_queue(&mut queue, Some(2));
+        assert_eq!(queue.iter().map(|track| track.id).collect::<Vec<_>>(), vec![tracks[1].id, tracks[3].id]);
+        assert_eq!(current, Some(1));
+        let current = filter.prune_saved_queue(&mut queue, Some(0));
+        assert_eq!(current, Some(0));
     }
 
     #[test]

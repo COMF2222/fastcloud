@@ -162,6 +162,7 @@ fn presence_skips_regular_progress_but_updates_for_seek_and_pause() {
 
 fn append_wave_tracks(
     player: &Arc<Player>,
+    wave: &wave::Engine,
     wave_session: &Arc<Mutex<Option<WaveSession>>>,
     started_at: std::time::Instant,
     generated: Result<Vec<Track>, String>,
@@ -169,11 +170,12 @@ fn append_wave_tracks(
     let mut guard = wave_session.lock();
     if let Some(session) = guard.as_mut().filter(|session| session.started_at == started_at) {
         match generated {
-            Ok(tracks) => {
+            Ok(tracks) => wave.with_dislike_filter(|dislikes| {
                 let queued: std::collections::HashSet<_> = player.state.lock().queue.iter()
                     .map(|track| track.id).collect();
                 let mut fresh = Vec::new();
                 for track in tracks {
+                    if dislikes.rejects(&track) { continue; }
                     if queued.contains(&track.id) || session.seen.contains(&track.id) { continue; }
                     let identity = wave::track_identity(&track);
                     if session.seen_identities.iter().any(|previous| wave::same_recording(previous, &identity)) { continue; }
@@ -185,11 +187,43 @@ fn append_wave_tracks(
                     player.enqueue(fresh, false);
                     player.trim_played_history(120, 15);
                 }
-            }
+            }),
             Err(error) => log::warn!("My Wave refill failed: {error}"),
         }
         session.busy = false;
     }
+}
+
+#[cfg(test)]
+#[test]
+fn wave_refill_rechecks_dislikes_added_after_generation_started() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let player = Arc::new(Player::new(
+        Arc::new(audio::output::AudioOutput::silent([0.0; 10], 0.8)),
+        Arc::new(api::ApiClient::demo()), Arc::new(audio::cache::AudioCache::disabled()),
+        dir.path().join("settings.json"), runtime.handle().clone(),
+    ));
+    let tracks = demo::demo_tracks();
+    {
+        let mut state = player.state.lock();
+        state.queue = vec![tracks[0].clone()];
+        state.order = vec![0];
+        state.current = Some(0);
+    }
+    let started_at = std::time::Instant::now();
+    let session = Arc::new(Mutex::new(Some(WaveSession {
+        likes: vec![tracks[0].clone()], seen: std::collections::HashSet::from([tracks[0].id]),
+        seen_identities: vec![wave::track_identity(&tracks[0])],
+        started_at, variation: 0, busy: true, last_attempt: Some(started_at),
+    })));
+    let engine = wave::Engine::new(dir.path().join("wave.json"));
+    let pending_result = Ok(vec![tracks[1].clone(), tracks[2].clone()]);
+    engine.dislike(&tracks[1], true);
+    append_wave_tracks(&player, &engine, &session, started_at, pending_result);
+    assert_eq!(player.state.lock().queue.iter().map(|track| track.id).collect::<Vec<_>>(),
+        vec![tracks[0].id, tracks[2].id]);
+    assert!(!session.lock().as_ref().unwrap().busy);
 }
 
 #[derive(Clone, Serialize, Default)]
@@ -299,6 +333,14 @@ impl AppState {
             demo,
         ));
         let store = Store::new(client.clone(), rt.handle().clone());
+        let wave = Arc::new(wave::Engine::new(config::app_paths()?.root.join("my-wave-profile.json")));
+        if settings.last_wave_active && !demo {
+            let previous_id = settings.last_queue_idx.and_then(|index| settings.last_queue.get(index)).map(|track| track.id);
+            settings.last_queue_idx = wave.with_dislike_filter(|dislikes|
+                dislikes.prune_saved_queue(&mut settings.last_queue, settings.last_queue_idx));
+            let current_id = settings.last_queue_idx.and_then(|index| settings.last_queue.get(index)).map(|track| track.id);
+            if previous_id != current_id { settings.last_position_ms = Some(0); }
+        }
 
         let player = match (|| -> anyhow::Result<Arc<Player>> {
             let paths = config::app_paths()?;
@@ -332,6 +374,7 @@ impl AppState {
                 state.current = None;
             } else if !settings.last_queue.is_empty() {
                 player.restore_session(settings.last_queue.clone(), settings.last_queue_idx);
+                player.state.lock().position_ms = settings.last_position_ms.unwrap_or(0);
             }
             player.start_paused();
             rt.spawn(player.clone().run());
@@ -351,7 +394,6 @@ impl AppState {
         if settings.discord_presence {
             presence.configure(Some(settings.discord_client_id.clone()));
         }
-        let wave = Arc::new(wave::Engine::new(config::app_paths()?.root.join("my-wave-profile.json")));
         let restored_wave = if settings.last_wave_active && !demo {
             player.as_ref().and_then(|player| {
                 let playback = player.state.lock();
@@ -426,7 +468,7 @@ impl AppState {
                         let wave_session = wave_session.clone();
                         tokio::spawn(async move {
                             let generated = wave::generate(client, &wave, likes, variation, &avoid, &avoid_identities).await;
-                            append_wave_tracks(&player, &wave_session, started_at, generated);
+                            append_wave_tracks(&player, &wave, &wave_session, started_at, generated);
                         });
                     }
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -680,13 +722,22 @@ async fn my_wave(
     let seed = seed
         .ok_or_else(|| "No playable liked tracks are available for My Wave".to_string())?;
     let player = state.player()?.clone();
-    player.play_queue(vec![seed.clone()], 0, false);
     let started_at = std::time::Instant::now();
-    *state.wave_session.lock() = Some(WaveSession {
-        likes: liked_tracks.clone(), seen: std::collections::HashSet::from([seed.id]),
-        seen_identities: vec![wave::track_identity(&seed)],
-        started_at, variation: variation.wrapping_add(1), busy: true, last_attempt: Some(started_at),
-    });
+    {
+        let mut session = state.wave_session.lock();
+        state.wave.with_dislike_filter(|dislikes| {
+            if dislikes.rejects(&seed) {
+                return Err("Track was excluded from My Wave; start a new wave".to_string());
+            }
+            player.play_queue(vec![seed.clone()], 0, false);
+            *session = Some(WaveSession {
+                likes: liked_tracks.clone(), seen: std::collections::HashSet::from([seed.id]),
+                seen_identities: vec![wave::track_identity(&seed)],
+                started_at, variation: variation.wrapping_add(1), busy: true, last_attempt: Some(started_at),
+            });
+            Ok(())
+        })?;
+    }
     state.persist_wave_active(true);
     let client = state.client.clone();
     let wave = state.wave.clone();
@@ -696,14 +747,20 @@ async fn my_wave(
     state.rt.spawn(async move {
         let generated = wave::generate(client, &wave, liked_tracks, variation.wrapping_add(1),
             &avoid, &avoid_identities).await;
-        append_wave_tracks(&player, &wave_session, started_at, generated);
+        append_wave_tracks(&player, &wave, &wave_session, started_at, generated);
     });
     Ok(vec![seed])
 }
 
 #[tauri::command]
 fn wave_dislike(state: tauri::State<'_, AppState>, track: Track, disliked: bool) {
+    let _session = state.wave_session.lock();
     state.wave.dislike(&track, disliked);
+    if disliked && let Some(player) = state.player.as_ref() {
+        state.wave.with_dislike_filter(|dislikes| {
+            player.remove_matching(|queued| dislikes.rejects(queued));
+        });
+    }
 }
 
 #[tauri::command]
@@ -869,7 +926,39 @@ async fn tracks(
     query: Option<String>,
     id: Option<u64>,
 ) -> Result<Data<Arc<Vec<Track>>>, String> {
-    Ok(tracks_data(&state, view, query, id).await)
+    let recommendations = matches!(view.as_str(), "discover" | "related" | "recommended_genre");
+    let result = tracks_data(&state, view, query, id).await;
+    Ok(if recommendations { filter_recommendations(&state.wave, result) } else { result })
+}
+
+fn filter_recommendations(engine: &wave::Engine, result: Data<Arc<Vec<Track>>>) -> Data<Arc<Vec<Track>>> {
+    match result {
+        Data::Ready(mut tracks) => engine.with_dislike_filter(|dislikes| {
+            if tracks.iter().any(|track| dislikes.rejects(track)) {
+                Arc::make_mut(&mut tracks).retain(|track| !dislikes.rejects(track));
+            }
+            Data::Ready(tracks)
+        }),
+        other => other,
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn recommendation_filter_applies_old_dislikes_without_changing_library_cache() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("wave.json");
+    let engine = wave::Engine::new(path.clone());
+    let source = Arc::new(demo::demo_tracks());
+    let rejected = source[0].id;
+    engine.dislike(&source[0], true);
+    let restored = wave::Engine::new(path);
+    let Data::Ready(filtered) = filter_recommendations(&restored, Data::Ready(source.clone())) else { panic!("ready tracks expected") };
+    assert!(!filtered.iter().any(|track| track.id == rejected));
+    assert!(source.iter().any(|track| track.id == rejected));
+    restored.dislike(&source[0], false);
+    let Data::Ready(allowed) = filter_recommendations(&restored, Data::Ready(source.clone())) else { panic!("ready tracks expected") };
+    assert!(Arc::ptr_eq(&source, &allowed));
 }
 
 async fn tracks_data(
@@ -975,7 +1064,7 @@ async fn tracks_data(
         "related" => Key::Related(id.unwrap_or(0)),
         "playlist" => Key::PlaylistTracks(id.unwrap_or(0)),
         "artist" => Key::UserTracks(id.unwrap_or(0)),
-        "genre" => Key::Genre(query.unwrap_or_else(|| "Electronic".into())),
+        "genre" | "recommended_genre" => Key::Genre(query.unwrap_or_else(|| "Electronic".into())),
         _ => Key::Genre("electronic".into()),
     };
     state.store.tracks_shared(key).into()
@@ -1858,13 +1947,26 @@ fn play_tracks(
     state: tauri::State<'_, AppState>,
     tracks: Vec<Track>,
     index: usize,
+    recommended: Option<bool>,
 ) -> Result<(), String> {
     if tracks.is_empty() || index >= tracks.len() {
         return Err("Choose a track to play".into());
     }
     *state.wave_session.lock() = None;
     state.persist_wave_active(false);
-    state.player()?.play_queue(tracks, index, false);
+    let player = state.player()?;
+    if recommended.unwrap_or(false) {
+        state.wave.with_dislike_filter(|dislikes| {
+            let selected_id = tracks[index].id;
+            let tracks: Vec<_> = tracks.into_iter().filter(|track| !dislikes.rejects(track)).collect();
+            let index = tracks.iter().position(|track| track.id == selected_id)
+                .ok_or("Track was excluded from recommendations")?;
+            player.play_queue(tracks, index, false);
+            Ok::<_, String>(())
+        })?;
+    } else {
+        player.play_queue(tracks, index, false);
+    }
     Ok(())
 }
 

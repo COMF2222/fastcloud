@@ -1,252 +1,146 @@
-# Fastcloud
+<p align="center">
+  <img src="desktop/src/assets/fastcloud-logo.png" width="88" height="88" alt="Логотип Fastcloud">
+</p>
 
-**SoundCloud, native and fast.** Fastcloud is a desktop SoundCloud client with
-a React and Tauri interface, a Rust audio core, and a compact Airwave player
-for when the full window is too much.
+<h1 align="center">Fastcloud — SoundCloud на ПК</h1>
 
-[![CI](https://github.com/COMF2222/fastcloud/actions/workflows/ci.yml/badge.svg)](https://github.com/COMF2222/fastcloud/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+<p align="center"><strong>Твоя музыка. Твой плеер. Твоё оформление.</strong></p>
 
-The active application is in [`desktop/`](desktop/). The Rust modules under
-[`src/`](src/) provide the SoundCloud client, authentication, audio pipeline,
-cache, player state, and desktop integrations used by the Tauri application.
+<p align="center">
+  <a href="https://github.com/COMF2222/fastcloud/releases/latest"><strong>Скачать для Windows</strong></a> ·
+  <a href="https://fastcloud.comf.workers.dev/">Сайт и демо</a> ·
+  <a href="https://fastcloud.comf.workers.dev/changes">Что нового</a> ·
+  <a href="README.en.md">English</a>
+</p>
 
-## What it does
+<p align="center">
+  <a href="https://github.com/COMF2222/fastcloud/releases/latest"><img src="https://img.shields.io/github/v/release/COMF2222/fastcloud?color=ff5519" alt="Последняя версия"></a>
+  <img src="https://img.shields.io/badge/Windows-x64-242424" alt="Windows x64">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-242424" alt="Лицензия MIT"></a>
+</p>
 
-### Listen
+**Fastcloud — бесплатный SoundCloud desktop-клиент для Windows** с текстами
+песен, персональной волной и интерфейсом, который можно настроить под себя.
+Слушай любимые треки, открывай свою библиотеку, переноси плейлисты Spotify
+и выбирай, как выглядит твой плеер: от компактного Airwave до большого экрана
+с обложкой и лириками.
 
-- Plays public SoundCloud tracks locally through the Rust HLS and audio
-  pipeline.
-- Supports seeking, queue editing, shuffle, repeat, volume, playback speed,
-  gapless prefetch, a ten-band equalizer, and a limiter.
-- Keeps playback state, queue position, and navigation state across restarts.
-- Shows a full now-playing view with lyrics, comments, waveform progress, and
-  related tracks when the data is available.
+![SoundCloud на ПК: главная Fastcloud с «Моей волной», библиотекой и текстом песни](assets/screenshots/home.png)
 
-### Find and explore
+<p align="center"><sub>Твоя библиотека, «Моя волна» и лирики — в одном окне. Скриншот из установленного приложения.</sub></p>
 
-- Searches tracks, playlists, albums, and artists.
-- Browses the catalog with fresh releases, popular collections, filters, and
-  genre discovery.
-- Provides taste-based discovery through liked tracks, listening history, My
-  Wave, and rotating genre recommendations.
-- Opens dedicated track, playlist, album, and artist pages without losing the
-  player.
+## Что внутри
 
-### Keep your library
-
-- Syncs track likes and artist follows with the connected SoundCloud account.
-- Creates, edits, renames, and deletes playlists.
-- Saves quick-access links, history, reposts, offline downloads, and uploaded
-  tracks.
-- Includes storage reporting and cleanup controls for offline audio, artwork,
-  cache data, and CLAP preparation files.
-
-### Desktop integration
-
-- Runs as a native Tauri window with system tray support, media keys, global
-  shortcuts, deep links, and optional Discord Rich Presence.
-- Switches to the 420×104 Airwave mini player with `Ctrl+M` or the mini-player
-  button in the player bar. Press the same control to restore the main window.
-- Supports Russian and English, dark and light themes, custom accent colours,
-  user backgrounds, custom fonts, reduced motion, and Eco/Balanced/Quality
-  performance profiles.
-- Opens the SoundCloud sign-in screen until an account is connected. The browser
-  preview still uses simulated data for layout work.
-
-## Download and builds
-
-Tagged Windows builds are produced by GitHub Actions with the CLAP model and
-worker bundled. Download the signed installer from the
-[Releases page](https://github.com/COMF2222/fastcloud/releases). Starting with
-v0.1.2, the app checks GitHub Releases for updates and offers an update button
-in Settings → General and in the sidebar when a new version is available.
-
-### Build the desktop app from source
-
-You need Node.js 22+, Rust 1.95+, and the
-[Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your
-platform.
-
-```sh
-git clone https://github.com/COMF2222/fastcloud
-cd fastcloud/desktop
-npm ci
-cp .env.example .env.local
-# Set VITE_FASTCLOUD_SERVER_URL in .env.local to your HTTPS access server.
-npm run tauri dev
-```
-
-The browser preview is useful for checking layout and demo data:
-
-```sh
-npm run dev
-```
-
-Browser preview does not provide native playback, account access, tray
-integration, or real SoundCloud requests. Verify those behaviours in Tauri.
-
-### Local Windows build with CLAP
-
-The CLAP worker and quantized models are downloaded from a pinned model revision
-and kept outside the public source tree. On Windows, prepare them and build:
-
-```powershell
-cd D:\projects\fastcloud\desktop
-npm ci
-Copy-Item .env.example .env.local
-# Set VITE_FASTCLOUD_SERVER_URL in .env.local to your HTTPS access server.
-../tools/prepare_private_clap.ps1
-$env:TAURI_SIGNING_PRIVATE_KEY = "$env:USERPROFILE\.tauri\fastcloud-updater.key"
-$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ''
-npm run tauri:private -- --bundles nsis
-```
-
-The installer is written to
-`desktop/src-tauri/target/release/bundle/nsis/Fastcloud_<version>_x64-setup.exe`.
-The regular `npm run tauri build` command does not include CLAP.
-
-## Connect a SoundCloud account
-
-Fastcloud does not ship a SoundCloud client secret. The first screen asks users
-to sign in. The normal sign-in button connects to the Fastcloud access server
-using each listener's own SoundCloud
-account. The owner approves new accounts in Settings → Account. The separate
-[backend](https://github.com/COMF2222/fastcloud-backend) holds the shared app
-credentials and access decisions.
-
-If you have your own Artist Pro application, use the advanced connection option.
-That local flow follows SoundCloud's registration and authorization process:
-
-1. SoundCloud opens in the browser and registers an API application for the
-   account.
-2. The returned client ID and secret are stored in the operating system keyring,
-   never in the repository or a plain-text project file.
-3. The browser opens again to authorize profile, likes, playlists, follows, and
-   feed access.
-
-If you already have an application, use the redirect URI
-`http://127.0.0.1:41317/callback`. You can provide credentials through the
-environment without writing them to the repository:
-
-```powershell
-$env:FASTCLOUD_CLIENT_ID = '…'
-$env:FASTCLOUD_CLIENT_SECRET = '…'
-```
-
-Go+ tracks and rightsholder restrictions follow SoundCloud's own access rules.
-
-### Connect through an owner-hosted server
-
-The desktop build receives its HTTPS approval-server URL through
-`VITE_FASTCLOUD_SERVER_URL` (`desktop/.env.local` for local builds, the
-`FASTCLOUD_SERVER_URL` Actions secret for tagged releases). The URL is compiled
-into the client and is visible to users of the installed app. Users authorize
-their own SoundCloud account. The server keeps the
-owner's API client secret and a small list of approved SoundCloud account IDs;
-SoundCloud API requests, artwork and playback pass through the server, so the
-client does not need direct connectivity to SoundCloud after browser sign-in.
-The interface, audio decoding, equalizer and offline downloads remain local.
-Private API responses use each listener's own token and are never shared.
-The owner can manage **Users and access** from the same screen while signed
-in with the SoundCloud account that owns the API app. A pending connection waits
-for approval for up to 15 minutes. The backend is maintained as a separate `fastcloud-backend`
-repository with its own Docker deployment instructions.
-
-## Desktop controls
-
-| Shortcut | Action |
+| Возможность | Что получаешь |
 | --- | --- |
-| `Space` | Play or pause |
-| `Ctrl+Left` / `Ctrl+Right` | Previous or next track |
-| `Left` / `Right` | Seek five seconds |
-| `M` | Mute or unmute |
-| `Ctrl+F` or `Ctrl+K` | Focus search |
-| `Ctrl+M` | Toggle the Airwave mini player |
-| `Esc` | Close the queue or clear selection |
-| `F1` | Show keyboard shortcuts |
+| **Твоя библиотека** | Лайки, альбомы, исполнители и плейлисты SoundCloud, закрепления и история прослушиваний. |
+| **«Моя волна»** | Подбор музыки по предпочтениям, лайкам и истории, с учётом дизлайков. Станции на основе трека помогают найти похожее. |
+| **Тексты песен** | Поиск в LRCLIB, Genius и lyrics.ovh; синхронные строки, когда они доступны. Лирики справа или в большом плеере. |
+| **Оформление под себя** | Цвета, шрифты, размеры текста, прозрачность подложек, свои и анимированные фоны. Режим «только фон» скрывает интерфейс. |
+| **Звук и управление** | Эквалайзер, баланс, скорость, повтор участка A–B, очередь, медиаклавиши и горячие клавиши. |
+| **Импорт и интеграции** | Перенос лайков и плейлистов Spotify, импорт из Яндекс Музыки, Discord Rich Presence. |
+| **Удобство на каждый день** | Мини-плеер Airwave, офлайн-загрузки, русский и английский интерфейс, обновления из приложения. |
 
-On macOS, use `Cmd` in place of `Ctrl` where the operating system reserves the
-shortcut.
+<details>
+<summary><strong>Каталог и поиск — посмотреть скриншоты</strong></summary>
 
-## Data, cache, and privacy
+Открывай альбомы и исполнителей, выбирай жанр и находи новую музыку в каталоге.
 
-Fastcloud stores settings, account state, artwork, audio cache, offline files,
-and My Wave data in the operating system application-data directory. The
-Settings → Storage screen reports the local sizes and provides cleanup actions.
+![Каталог Fastcloud с альбомами, исполнителями и выбором музыкального жанра](assets/screenshots/catalog.png)
 
-Client credentials and account tokens use the operating system keyring. Audio
-and artwork caches can be cleared from the app; clearing them does not remove
-SoundCloud likes or playlists. Offline tracks are local copies and can be
-removed individually or all at once.
+Ищи треки, плейлисты, альбомы и исполнителей, не выходя из плеера.
 
-## Repository layout
+![Поиск SoundCloud в Fastcloud с фильтрами по жанрам и списком треков](assets/screenshots/search.png)
 
-| Path | Purpose |
-| --- | --- |
-| [`desktop/src/`](desktop/src/) | React pages, player UI, state, themes, and API bridge |
-| [`desktop/src-tauri/`](desktop/src-tauri/) | Tauri commands, native window, tray, CLAP, and media integration |
-| [`src/api/`](src/api/) | SoundCloud endpoints, models, pagination, and request handling |
-| [`src/auth/`](src/auth/) | OAuth, PKCE, application registration, and keyring access |
-| [`src/audio/`](src/audio/) | HLS download, decoding, EQ, limiter, and cpal output |
-| [`src/player/`](src/player/) | Queue, transport, persistence, and playback state |
-| [`src/store.rs`](src/store.rs) | Shared data cache and asynchronous request state |
-| [`docs/soundcloud-api.md`](docs/soundcloud-api.md) | Endpoint limits and supported substitutions |
-| [`docs/releasing.md`](docs/releasing.md) | Release and packaging notes |
-| [`docs/TAURI_PARITY.md`](docs/TAURI_PARITY.md) | Desktop feature parity checklist |
+</details>
 
-## SoundCloud API limits
+## Музыка и текст на большом экране
 
-The public API is narrower than soundcloud.com. Some web features have no
-official endpoint, including direct messages, a progressive MP3 endpoint,
-playlist snapshots, and a Spotify Connect equivalent. Fastcloud uses related
-tracks, likes, history, and local ranking where an official endpoint is not
-available. The endpoint-level details and current substitutions are documented
-in [`docs/soundcloud-api.md`](docs/soundcloud-api.md).
+Открой большой плеер, чтобы сосредоточиться на музыке: обложка, управление
+воспроизведением и текст песни остаются рядом.
 
-## Development checks
+![Большой плеер Fastcloud с обложкой, синхронными лириками и пользовательским фоном](assets/screenshots/lyrics.png)
 
-From the repository root:
+### Мини-плеер Airwave
 
-```sh
-cargo fmt --all -- --check
-cargo check --manifest-path desktop/src-tauri/Cargo.toml --locked
-cargo clippy --all-targets --all-features --locked -- -D warnings
-cargo test --all-targets --locked
-```
+Когда нужно больше места для других окон, переключись в Airwave кнопкой
+в плеере или сочетанием **Ctrl+M**.
 
-For the React/Tauri application:
+<p align="center"><img src="assets/screenshots/mini-player.png" width="420" alt="Компактный мини-плеер Airwave с названием трека и кнопками воспроизведения"></p>
 
-```sh
-cd desktop
-npm ci
-npm run build
-```
+<details>
+<summary><strong>Оформление под себя — посмотреть настройки</strong></summary>
 
-The single-instance IPC test needs an unused local port. Close Fastcloud before
-running that test if it reports a bind error.
+Цвет текста и подложек, размеры интерфейса и прозрачность настраиваются отдельно.
 
-## Releases
+![Настройки цветов, размеров текста и прозрачности подложек Fastcloud](assets/screenshots/appearance.png)
 
-Pushing a `v*` tag runs the CI release workflow. It checks the desktop build,
-formats and checks the Rust backend, runs the cross-platform test matrix, builds
-the public Tauri bundles, and writes SHA-256 checksums for the resulting
-artifacts. The maintainer checklist is in [`docs/releasing.md`](docs/releasing.md).
+Можно менять прозрачность заголовков и размер лирик.
 
-## Contributing
+![Настройки прозрачности заголовков и отображения текста песни](assets/screenshots/surfaces.png)
 
-Bug reports, fixes, interface improvements, and documentation changes are
-welcome. Before opening a pull request:
+Выбери свой фон и настрой его размытие, затемнение и видимость.
 
-1. Explain the user-visible behaviour or bug in the PR description.
-2. Keep SoundCloud endpoint assumptions aligned with
-   [`docs/soundcloud-api.md`](docs/soundcloud-api.md).
-3. Run the relevant React and Rust checks above.
-4. Include a focused regression test for behaviour changes when a test can
-   reasonably cover the bug.
+![Пользовательский фон, размытие и затемнение в Fastcloud](assets/screenshots/background.png)
 
-## License
+Профили производительности и собственный шрифт помогают подобрать интерфейс под компьютер.
 
-Fastcloud is licensed under the [MIT License](LICENSE). Third-party license
-notices for bundled assets remain in their respective license files. Fastcloud
-is an independent client and is not affiliated with or endorsed by SoundCloud.
+![Профили производительности и выбор шрифта Fastcloud](assets/screenshots/performance-fonts.png)
+
+</details>
+
+## Скачать и начать слушать
+
+1. Открой [последний релиз](https://github.com/COMF2222/fastcloud/releases/latest)
+   и скачай **`Fastcloud_…_x64-setup.exe`** — полный установщик для Windows x64.
+2. Установи Fastcloud и войди в свой SoundCloud-аккаунт через браузер.
+3. Открой библиотеку, выбери трек или запусти «Мою волну».
+
+Новые версии можно устанавливать прямо из приложения. Перед обновлением
+кнопка **«Прочитать изменения»** покажет, что появилось в доступной версии.
+
+Хочешь сначала посмотреть интерфейс? [Попробуй плеер на сайте](https://fastcloud.comf.workers.dev/#interactive-player)
+с демонстрационной библиотекой.
+
+## Несколько ответов перед установкой
+
+### SoundCloud в России: нужен ли VPN?
+
+После авторизации каталог, обложки и музыка проходят через сервер Fastcloud,
+поэтому для прослушивания не требуется прямое подключение компьютера к
+SoundCloud. Доступность страницы входа SoundCloud в браузере зависит от сети.
+
+### Нужны ли Artist Pro или свои API-ключи?
+
+Для обычного входа в Fastcloud — нет. Используй свой SoundCloud-аккаунт.
+Доступ к Go+ и отдельным записям определяется правилами SoundCloud;
+некоторые треки могут быть доступны только как фрагменты.
+
+### Как работает импорт Spotify?
+
+В настройках интеграций экспортируй лайки или плейлист через Exportify и
+выбери полученный CSV/ZIP в Fastcloud. Можно также использовать файлы данных
+аккаунта Spotify. Приложение ищет соответствующие записи в SoundCloud и
+переносит найденные треки. [Подробнее об импорте](docs/spotify-import.md).
+
+### Какие системы поддерживаются?
+
+Готовые установщики публикуются для **Windows x64**. Интерфейс доступен на
+русском и английском. Сборки для Linux и macOS пока не выпускаются.
+
+## Помощь и участие
+
+- [Документация и установка](https://fastcloud.comf.workers.dev/docs)
+- [Ответы на частые вопросы](https://fastcloud.comf.workers.dev/faq)
+- [Сообщить об ошибке или предложить функцию](https://github.com/COMF2222/fastcloud/issues)
+- [Исходники, сборка и устройство приложения](docs/development.md)
+- [Подготовка релизов](docs/releasing.md)
+
+Fastcloud построен на **React, TypeScript, Tauri и Rust**. Исходный код открыт
+под [лицензией MIT](LICENSE). Настройки и кэш хранятся на компьютере,
+а токены аккаунта — в системном хранилище учётных данных.
+
+Если Fastcloud пригодился, поддержи проект **звездой на GitHub** — так другим
+слушателям будет проще его заметить.
+
+Fastcloud — независимый неофициальный клиент, не связанный с SoundCloud.
