@@ -739,8 +739,11 @@ function SettingsPage() {
     queryFn: () => api.approvalUsers(FASTCLOUD_SERVER_URL),
     enabled: section === 'users' && isAdmin,
     retry: false,
-    staleTime: 30_000,
-    refetchInterval: section === 'users' && isAdmin ? 30_000 : false,
+    staleTime: 0,
+    refetchInterval: section === 'users' && isAdmin ? 10_000 : false,
+    refetchIntervalInBackground: true,
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: 'always',
   })
   const setApproval = async (id: number, status: 'approved' | 'denied' | 'pending') => {
     setAccountBusy(true); setError('')
@@ -755,7 +758,11 @@ function SettingsPage() {
   })
   const { data: mediaStats, refetch: refreshMedia } = useQuery({
     queryKey: ['approval-media', ownerId], queryFn: () => api.approvalMedia(FASTCLOUD_SERVER_URL),
-    enabled: adminEnabled, retry: false, refetchInterval: adminEnabled ? 30_000 : false,
+    enabled: adminEnabled, retry: false, staleTime: 0,
+    refetchInterval: adminEnabled ? 10_000 : false,
+    refetchIntervalInBackground: true,
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: 'always',
   })
   const setApprovalMode = async (required: boolean) => {
     setAccountBusy(true); setError('')
@@ -820,6 +827,7 @@ function SettingsPage() {
       {connection?.status === 'signed_in' && <button className="secondary-button" disabled={accountBusy} onClick={() => void accountAction(api.signOut)}>{english ? 'Sign out' : 'Выйти из аккаунта'}</button>}
     </div>}
     {adminEnabled && <div className="settings-card"><h3>{english ? 'User management' : 'Управление пользователями'}</h3>
+      <p>{english ? 'Statistics update automatically every 10 seconds while this section is open.' : 'Статистика обновляется автоматически каждые 10 секунд, пока открыт этот раздел.'}</p>
       <p>{english ? 'Audio API requests today (UTC). Cache hits and CDN downloads are excluded; failed API attempts are included. This is not the remaining SoundCloud quota.' : 'Запросы к аудио API за сегодня (UTC). Кеш и загрузки с CDN не учитываются, неудачные обращения к API учитываются. Это не остаток лимита SoundCloud.'}</p>
       <p>{english ? 'Online: the app contacted the server within the last two minutes.' : 'Онлайн: приложение связывалось с сервером в последние две минуты.'}</p>
       {accessSettings && <label className="setting-row"><span>{english ? 'Approve new users manually' : 'Одобрять новых пользователей вручную'}<small>{english ? 'Existing approved users keep access. Blocked users cannot sign in in either mode.' : 'Уже допущенные пользователи сохранят доступ. Заблокированные не смогут войти в любом режиме.'}</small></span><input type="checkbox" checked={accessSettings.approval_required} disabled={accountBusy} onChange={event => void setApprovalMode(event.target.checked)} /></label>}

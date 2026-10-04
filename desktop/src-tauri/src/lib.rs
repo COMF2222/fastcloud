@@ -3094,7 +3094,7 @@ async fn approval_users(state: tauri::State<'_, AppState>, server_url: String) -
     let token = approval_admin_token(&state).await?;
     let response = reqwest::Client::new().get(format!("{url}/v1/admin/users"))
         .header(reqwest::header::AUTHORIZATION, format!("OAuth {token}"))
-        .send().await.map_err(|error| error.to_string())?;
+        .timeout(std::time::Duration::from_secs(15)).send().await.map_err(|error| error.to_string())?;
     if !response.status().is_success() {
         return Err(approval_response_error(response).await);
     }

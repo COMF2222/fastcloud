@@ -2,6 +2,21 @@
   "schema": 1,
   "releases": [
     {
+      "version": "0.2.16",
+      "ru": {
+        "title": "Хотфикс клиента",
+        "changes": [
+          "Небольшие технические исправления клиента."
+        ]
+      },
+      "en": {
+        "title": "Client hotfix",
+        "changes": [
+          "Minor technical fixes in the client."
+        ]
+      }
+    },
+    {
       "version": "0.2.15",
       "ru": {
         "title": "Поиск по настроению и словам песни",
