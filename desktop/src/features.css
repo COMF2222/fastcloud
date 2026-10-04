@@ -242,3 +242,21 @@ html[data-theme="light"] .app-shell .cards > .card, html[data-theme="light"] .ap
 }
 /* Carousels and the full screen lyrics keep their existing hidden scrollbar. */
 :root .genre-carousel-strip, :root .now-playing-side-scroll { scrollbar-width: none; }
+.mood-examples { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 18px; }
+.search-mode-hint { color: var(--text-muted); margin: 0 0 18px; line-height: 1.6; }
+.lyric-search-results { display: grid; gap: 10px; }
+.lyric-search-result { display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-card); font-size: calc(12px * var(--interface-text-scale, 1)); }
+.lyric-search-cover { position: relative; width: 48px; height: 48px; border-radius: 8px; overflow: hidden; }
+.lyric-search-cover > svg { position: absolute; inset: 0; margin: auto; color: #fff; filter: drop-shadow(0 1px 4px #000); }
+.lyric-search-copy { min-width: 0; }
+.lyric-search-title { display: block; max-width: 100%; color: var(--text); font-size: calc(14px * var(--interface-text-scale, 1)); font-weight: 650; text-align: left; overflow-wrap: anywhere; }
+.lyric-search-copy small, .lyric-search-duration { color: var(--text-muted); }
+.lyric-search-copy p { margin: 6px 0 0; color: var(--text); line-height: 1.5; overflow-wrap: anywhere; }
+.admin-user { display: grid; grid-template-columns: minmax(150px, 1fr) auto minmax(110px, auto) minmax(130px, auto); align-items: center; gap: 16px; padding: 18px 0; border-bottom: 1px solid var(--line, #30323b); font-size: calc(13px * var(--interface-text-scale, 1)); }
+.admin-user-identity, .admin-user-usage { display: flex; flex-direction: column; gap: 5px; min-width: 0; overflow-wrap: anywhere; }
+.admin-user small { color: var(--text-muted); font-size: calc(11px * var(--interface-text-scale, 1)); }
+.admin-user-presence { white-space: nowrap; }
+.admin-user-presence.online::before { content: ''; display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: #62c99e; }
+.admin-user .approval-actions { justify-content: flex-end; }
+@media (max-width: 1100px) { .admin-user { grid-template-columns: minmax(140px, 1fr) auto minmax(90px, auto); } .admin-user .approval-actions { grid-column: 1 / -1; justify-content: flex-start; } }
+@media (max-width: 650px) { .admin-user { grid-template-columns: minmax(0, 1fr) auto; } .admin-user-usage { grid-column: 1 / -1; } }

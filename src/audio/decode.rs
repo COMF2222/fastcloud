@@ -244,7 +244,6 @@ impl SegmentDecoder {
     pub fn next_packet(&mut self, out: &mut Vec<f32>) -> Result<bool> {
         if self.exhausted_current {
             // Nothing more in the current reader; caller must append more.
-            self.exhausted_current = false;
             return Ok(false);
         }
         loop {
@@ -340,6 +339,9 @@ mod tests {
         let has_packet = dec.next_packet(&mut out).unwrap();
 
         assert!(!has_packet);
+        assert!(dec.exhausted_current);
+        assert!(!dec.next_packet(&mut out).unwrap());
+        dec.append(&[4, 5]);
         assert!(!dec.exhausted_current);
     }
 

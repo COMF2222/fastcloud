@@ -29,7 +29,7 @@ import { UpdateNotice, UpdateSettingsCard, UpdateSidebarButton } from './Updater
 import { LoginGate } from './LoginGate'
 import { FASTCLOUD_SERVER_URL } from './server'
 import { hasRestoredNavigation, useApp, type Page } from './store'
-import { libraryCollections, artist, artistCredit, artworkForSize, cover, duration, quickAccessTarget, sameArtistName, type Data, type MainWindowBounds, type Playlist, type QuickAccessShortcut, type Settings, type Track, type User } from './types'
+import { libraryCollections, artist, artistCredit, artworkForSize, cover, duration, quickAccessTarget, sameArtistName, type Data, type LyricTrackMatch, type MainWindowBounds, type Playlist, type QuickAccessShortcut, type Settings, type Track, type User } from './types'
 
 const sidebar: { page: Page; label: string; english: string; icon: typeof Home }[] = [
   { page: 'home', label: 'Главная', english: 'Home', icon: Home },
@@ -438,12 +438,35 @@ function InboxPage({ openLink }: { openLink: (raw: string) => Promise<void> }) {
   return <div className="page-content"><div className="page-intro"><span className="page-kicker">FASTCLOUD / {t('ВХОДЯЩИЕ', 'LINKS')}</span><h1>{t('Открытые ссылки', 'Opened links')}</h1><p>{t('Ссылки SoundCloud, которые ты открывал в Fastcloud, хранятся локально.', 'SoundCloud links opened in Fastcloud are stored locally.')}</p></div>{entries.length ? <div className="inbox-list">{entries.map((item, index) => <button key={`${item.link}-${index}`} onClick={() => void openLink(item.link)}><span><strong>{item.label}</strong><small>{item.link}</small></span><time>{new Date(item.at * 1000).toLocaleString(english ? 'en-US' : 'ru-RU')}</time><ArrowRight size={16} /></button>)}</div> : <Empty message={t('Ссылок пока нет', 'No links yet')} detail={t('Вставь ссылку SoundCloud в поиск или открой ссылку fastcloud:.', 'Paste a SoundCloud link in search or open a fastcloud: link.')} />}</div>
 }
 
+function LyricSearchResults({ matches, english }: { matches: LyricTrackMatch[]; english: boolean }) {
+  const queryClient = useQueryClient()
+  const [error, setError] = useState('')
+  const play = async (index: number) => {
+    try {
+      setError('')
+      await api.play(matches.map(match => match.track), index)
+      await queryClient.invalidateQueries({ queryKey: ['player'] })
+    } catch (cause) { setError(String(cause)) }
+  }
+  return <div className="lyric-search-results">
+    {error && <p className="error-text" role="alert">{error}</p>}
+    {matches.map(({ track, excerpt }, index) => <article className="lyric-search-result" key={track.id}>
+      <button className="lyric-search-cover" aria-label={`${english ? 'Play' : 'Слушать'} ${track.title}`} onClick={() => void play(index)}><Artwork item={track} /><Play size={18} fill="currentColor" /></button>
+      <div className="lyric-search-copy"><button className="lyric-search-title" onClick={() => useApp.getState().openTrack(track.id, track.title)}>{track.title}</button><small>{artist(track)}</small><p>«{excerpt}»</p></div>
+      <span className="lyric-search-duration">{duration(track.full_duration_ms || track.duration)}</span>
+    </article>)}
+  </div>
+}
+
 function SearchPage({ query }: { query: string }) {
   const english = useEnglish()
   const t = (ru: string, en: string) => english ? en : ru
   const searchKind = useApp(state => state.searchKind)
   const artistLookup = useApp(state => state.artistLookup)
-  const [tab, setTab] = useState<'tracks' | 'vibe' | 'playlists' | 'albums' | 'artists'>(searchKind)
+  const [tab, setTab] = useState<'tracks' | 'vibe' | 'lyrics' | 'playlists' | 'albums' | 'artists'>(searchKind)
+  const [settledQuery, setSettledQuery] = useState(query.trim())
+  useEffect(() => { const timer = window.setTimeout(() => setSettledQuery(query.trim()), 450); return () => window.clearTimeout(timer) }, [query])
+  const waitingForInput = query.trim() !== settledQuery
   const [shuffleSeed] = useState(() => Math.floor(Math.random() * 0x100000000))
   const [discoveryDay, setDiscoveryDay] = useState(() => Math.floor(Date.now() / 86400000))
   useEffect(() => { const timer = window.setInterval(() => setDiscoveryDay(Math.floor(Date.now() / 86400000)), 60_000); return () => window.clearInterval(timer) }, [])
@@ -497,11 +520,22 @@ function SearchPage({ query }: { query: string }) {
     useApp.getState().clearArtistLookup()
     if (match) openArtist(match.id, match.username)
   }, [artistLookup, query, users, openArtist])
-  const { data: vibe, isLoading: vibeLoading, error: vibeError } = useQuery({ queryKey: ['vibe', query], queryFn: () => api.vibeSearch(query), enabled: tab === 'vibe' && query.trim().length >= 2 })
-  if (!searching) return <div className="page-content search-page"><GenreCarousel onSelect={genre => useApp.getState().setSearch(genre)} english={english} /><div className="search-welcome"><span className="page-kicker">FASTCLOUD / {t('ПОИСК', 'SEARCH')}</span><h1>{t('С чего начнём?', 'What are we listening to?')}</h1><p>{t('Ищи трек, автора или настроение. А пока — музыка, которая может тебе понравиться.', 'Find a track, artist or mood. Here is something for you right now.')}</p></div><SectionTitle title={likedTracks.length ? t('На основе твоего вкуса', 'For your taste') : t('С чего начать', 'Start listening')} subtitle={likedTracks.length ? t('Жанры и авторы из твоих лайков', 'Genres and artists from your likes') : t('Треки из каталога', 'Tracks from the catalog')} />{suggested.length ? <TrackRows tracks={suggested} recommended /> : <Status value={discover}>{() => <Empty message={t('Пока нет новых рекомендаций', 'No new recommendations yet')} detail={t('Попробуй открыть поиск позже.', 'Try opening search again later.')} />}</Status>}{recent?.status === 'ready' && recent.data.length > 0 && <><SectionTitle title={t('Недавно слушал', 'Recently played')} /><TrackRows tracks={recent.data.slice(0, 6)} /></>}</div>
-  return <div className="page-content search-page"><GenreCarousel selected={query} onSelect={genre => useApp.getState().setSearch(genre)} english={english} /><SectionTitle title={`${t('Результаты', 'Results')}: “${query}”`} subtitle={t('Поиск по SoundCloud', 'Search SoundCloud')} />{keyError && <p className="error-text" role="alert">{keyError}</p>}<div className="tabs"><button className={tab === 'tracks' ? 'active' : ''} onClick={() => setTab('tracks')}>{t('Треки', 'Tracks')}</button><button className={tab === 'vibe' ? 'active' : ''} onClick={() => setTab('vibe')}>{t('По настроению', 'By mood')}</button><button className={tab === 'playlists' ? 'active' : ''} onClick={() => setTab('playlists')}>{t('Плейлисты', 'Playlists')}</button><button className={tab === 'albums' ? 'active' : ''} onClick={() => setTab('albums')}>{t('Альбомы', 'Albums')}</button><button className={tab === 'artists' ? 'active' : ''} onClick={() => setTab('artists')}>{t('Авторы', 'Artists')}</button></div>
+  const { data: vibe, isLoading: vibeLoading, error: vibeError } = useQuery({ queryKey: ['vibe', settledQuery], queryFn: () => api.vibeSearch(settledQuery), enabled: tab === 'vibe' && !waitingForInput && settledQuery.length >= 2, staleTime: 5 * 60_000, retry: false })
+  const { data: lyricMatches, isLoading: lyricsLoading, error: lyricsError, refetch: retryLyrics } = useQuery({ queryKey: ['lyric-tracks', settledQuery], queryFn: () => api.lyricTracks(settledQuery), enabled: tab === 'lyrics' && !waitingForInput && settledQuery.length >= 4 && settledQuery.length <= 200, staleTime: 5 * 60_000, retry: false })
+  if (!searching) return <div className="page-content search-page"><GenreCarousel onSelect={genre => useApp.getState().setSearch(genre)} english={english} /><div className="search-welcome"><span className="page-kicker">FASTCLOUD / {t('ПОИСК', 'SEARCH')}</span><h1>{t('С чего начнём?', 'What are we listening to?')}</h1><p>{t('Ищи трек, автора, настроение или строчку песни. А пока — музыка, которая может тебе понравиться.', 'Find a track, artist, mood or lyric. Here is something for you right now.')}</p></div><SectionTitle title={likedTracks.length ? t('На основе твоего вкуса', 'For your taste') : t('С чего начать', 'Start listening')} subtitle={likedTracks.length ? t('Жанры и авторы из твоих лайков', 'Genres and artists from your likes') : t('Треки из каталога', 'Tracks from the catalog')} />{suggested.length ? <TrackRows tracks={suggested} recommended /> : <Status value={discover}>{() => <Empty message={t('Пока нет новых рекомендаций', 'No new recommendations yet')} detail={t('Попробуй открыть поиск позже.', 'Try opening search again later.')} />}</Status>}{recent?.status === 'ready' && recent.data.length > 0 && <><SectionTitle title={t('Недавно слушал', 'Recently played')} /><TrackRows tracks={recent.data.slice(0, 6)} /></>}</div>
+  return <div className="page-content search-page"><GenreCarousel selected={query} onSelect={genre => useApp.getState().setSearch(genre)} english={english} /><SectionTitle title={`${t('Результаты', 'Results')}: “${query}”`} subtitle={t('Поиск по SoundCloud', 'Search SoundCloud')} />{keyError && <p className="error-text" role="alert">{keyError}</p>}<div className="tabs"><button className={tab === 'tracks' ? 'active' : ''} onClick={() => setTab('tracks')}>{t('Треки', 'Tracks')}</button><button className={tab === 'vibe' ? 'active' : ''} onClick={() => setTab('vibe')}>{t('По настроению', 'By mood')}</button><button className={tab === 'lyrics' ? 'active' : ''} onClick={() => setTab('lyrics')}>{t('По тексту', 'By lyrics')}</button><button className={tab === 'playlists' ? 'active' : ''} onClick={() => setTab('playlists')}>{t('Плейлисты', 'Playlists')}</button><button className={tab === 'albums' ? 'active' : ''} onClick={() => setTab('albums')}>{t('Альбомы', 'Albums')}</button><button className={tab === 'artists' ? 'active' : ''} onClick={() => setTab('artists')}>{t('Авторы', 'Artists')}</button></div>
     {tab === 'tracks' && <div className="search-results"><Status value={tracks}>{() => <TrackRows tracks={resultTracks} activeIndex={selectedIndex} />}</Status></div>}
-    {tab === 'vibe' && <>{query.trim().length < 2 ? <Empty message={t('Опиши настроение', 'Describe a mood')} detail={t('Например: спокойная ночная музыка', 'For example: calm music for the night')} /> : vibeLoading ? <div className="status"><LoaderCircle className="spin" /> {t('Ищем подходящее звучание…', 'Finding the right sound…')}</div> : vibeError ? <Empty message={t('Поиск не удался', 'Search failed')} detail={String(vibeError)} /> : <TrackRows tracks={vibe || []} />}</>}
+    {tab === 'vibe' && <>
+      <div className="mood-examples" aria-label={t('Примеры настроений', 'Mood examples')}>{[['Грустное', 'Sad'], ['Весёлое', 'Happy'], ['В дороге', 'Road trip'], ['На тренировке', 'Workout']].map(([ru, en]) => <button className="secondary-button" key={en} onClick={() => useApp.getState().setSearch(english ? en : ru)}>{t(ru, en)}</button>)}</div>
+      {query.trim().length < 2 ? <Empty message={t('Опиши настроение', 'Describe a mood')} detail={t('Например: спокойная ночная музыка', 'For example: calm music for the night')} /> : waitingForInput || vibeLoading ? <div className="status" role="status"><LoaderCircle className="spin" /> {t('Ищем подходящее звучание…', 'Finding the right sound…')}</div> : vibeError ? <Empty message={String(vibeError).includes('PREVIEW_SEARCH') ? t('Поиск доступен в приложении', 'Search is available in the app') : t('Поиск не удался', 'Search failed')} detail={String(vibeError).includes('PREVIEW_SEARCH') ? undefined : String(vibeError)} /> : <TrackRows tracks={vibe || []} recommended />}
+    </>}
+    {tab === 'lyrics' && <>
+      <p className="search-mode-hint">{t('Введи запомнившиеся слова в строку поиска. Самое точное совпадение будет первым.', 'Type the words you remember in the search bar. The closest match appears first.')}</p>
+      {query.trim().length < 4 ? <Empty message={t('Вспомни строчку песни', 'Remember a lyric')} detail={t('Лучше несколько слов подряд.', 'A few consecutive words work best.')} /> : query.trim().length > 200 ? <Empty message={t('Сократи строчку до 200 символов', 'Shorten the line to 200 characters')} /> : waitingForInput || lyricsLoading ? <div className="status" role="status"><LoaderCircle className="spin" /> {t('Ищем песню по словам…', 'Finding the song by its lyrics…')}</div> : lyricsError ? <>
+        <Empty message={String(lyricsError).includes('PREVIEW_SEARCH') ? t('Поиск доступен в приложении', 'Search is available in the app') : t('Поиск по тексту временно недоступен', 'Lyric search is temporarily unavailable')} detail={t('Попробуй позже или найди трек по названию.', 'Try again later or search by the track title.')} />
+        <button className="secondary-button" onClick={() => void retryLyrics()}>{t('Повторить', 'Retry')}</button>
+      </> : lyricMatches?.length ? <LyricSearchResults matches={lyricMatches} english={english} /> : <Empty message={t('Совпадений не найдено', 'No matches found')} detail={t('Попробуй другую строчку или добавь ещё несколько слов.', 'Try another line or add a few more words.')} />}
+    </>}
     {tab === 'playlists' && <Status value={lists}>{items => <PlaylistCards playlists={items.filter(item => !(item.is_album || item.playlist_type === 'album' || item.set_type === 'album'))} />}</Status>}
     {tab === 'albums' && <Status value={lists}>{items => <PlaylistCards playlists={items.filter(item => item.is_album || item.playlist_type === 'album' || item.set_type === 'album')} />}</Status>}
     {tab === 'artists' && <Status value={users}>{items => items.length ? <div className="artist-grid">{items.map(user => <button className="artist-card" key={user.id} onClick={() => openArtist(user.id, user.username)}>{user.avatar_url ? <RemoteImage className="artist-avatar" src={user.avatar_url} pixels={160} alt="" loading="lazy" /> : <span className="artist-avatar">{user.username.slice(0, 1).toUpperCase()}</span>}<strong>{user.username}</strong><small>{user.followers_count} {t('подписчиков', 'followers')}</small></button>)}</div> : <Empty message={t('Авторы не найдены', 'No artists found')} />}</Status>}
@@ -693,13 +727,20 @@ function SettingsPage() {
   const { data: account } = useQuery({ queryKey: ['my-profile'], queryFn: api.myProfile, enabled: connection?.status === 'signed_in' })
   const [error, setError] = useState('')
   const [accountBusy, setAccountBusy] = useState(false)
-  const { data: approvalUsers, refetch: refreshApprovals } = useQuery({
+  const ownerId = account?.status === 'ready' ? account.data.id : null
+  const { data: serverSession } = useQuery({
+    queryKey: ['server-session', ownerId], queryFn: api.serverSession,
+    enabled: connection?.status === 'signed_in' && ownerId !== null && !!FASTCLOUD_SERVER_URL && !api.preview,
+    retry: false, staleTime: 30_000,
+  })
+  const isAdmin = connection?.status === 'signed_in' && ownerId !== null && serverSession?.user_id === ownerId && serverSession.admin
+  const { data: approvalUsers, isPending: usersPending, error: usersError, refetch: refreshApprovals } = useQuery({
     queryKey: ['approval-users', account?.status === 'ready' ? account.data.id : null],
     queryFn: () => api.approvalUsers(FASTCLOUD_SERVER_URL),
-    enabled: (section === 'account' || section === 'integrations') && connection?.status === 'signed_in' && account?.status === 'ready' && !!FASTCLOUD_SERVER_URL && !api.preview,
+    enabled: section === 'users' && isAdmin,
     retry: false,
     staleTime: 30_000,
-    refetchInterval: section === 'account' ? 30_000 : false,
+    refetchInterval: section === 'users' && isAdmin ? 30_000 : false,
   })
   const setApproval = async (id: number, status: 'approved' | 'denied' | 'pending') => {
     setAccountBusy(true); setError('')
@@ -707,8 +748,7 @@ function SettingsPage() {
     catch (cause) { setError(String(cause)) }
     finally { setAccountBusy(false) }
   }
-  const ownerId = account?.status === 'ready' ? account.data.id : null
-  const adminEnabled = section === 'account' && connection?.status === 'signed_in' && approvalUsers !== undefined && ownerId !== null
+  const adminEnabled = section === 'users' && isAdmin
   const { data: accessSettings, refetch: refreshAccessSettings } = useQuery({
     queryKey: ['approval-settings', ownerId], queryFn: () => api.approvalSettings(FASTCLOUD_SERVER_URL),
     enabled: adminEnabled, retry: false, staleTime: 30_000,
@@ -738,7 +778,7 @@ function SettingsPage() {
     finally { setAccountBusy(false) }
   }
   const english = data?.language === 'English'
-  const sections: { id: SettingsSection; label: string; en: string }[] = [{ id: 'general', label: 'Общее', en: 'General' }, { id: 'appearance', label: 'Оформление', en: 'Appearance' }, { id: 'sound', label: 'Звук', en: 'Sound' }, { id: 'integrations', label: 'Интеграции', en: 'Integrations' }, { id: 'storage', label: 'Хранилище', en: 'Storage' }, { id: 'account', label: 'Аккаунт', en: 'Account' }]
+  const sections: { id: SettingsSection; label: string; en: string }[] = [{ id: 'general', label: 'Общее', en: 'General' }, { id: 'appearance', label: 'Оформление', en: 'Appearance' }, { id: 'sound', label: 'Звук', en: 'Sound' }, { id: 'integrations', label: 'Интеграции', en: 'Integrations' }, { id: 'storage', label: 'Хранилище', en: 'Storage' }, { id: 'account', label: 'Аккаунт', en: 'Account' }, ...(isAdmin ? [{ id: 'users' as const, label: 'Управление пользователями', en: 'User management' }] : [])]
   const settingItems: { id: SettingsSection; label: string; en: string; heading: string; terms?: string }[] = [
     { id: 'general', label: 'Язык', en: 'Language', heading: 'Общее' },
     { id: 'general', label: 'Стартовая страница', en: 'Start page', heading: 'Общее' },
@@ -760,7 +800,7 @@ function SettingsPage() {
     { id: 'integrations', label: 'Импорт из Яндекс Музыки', en: 'Yandex Music import', heading: 'Импорт из Яндекс Музыки', terms: 'oauth токен token' },
     { id: 'storage', label: 'Хранилище и кэш', en: 'Storage and cache', heading: 'Хранилище' },
     { id: 'account', label: 'Аккаунт SoundCloud', en: 'SoundCloud account', heading: 'Аккаунт SoundCloud' },
-    ...(approvalUsers !== undefined ? [{ id: 'account' as const, label: 'Пользователи и доступ', en: 'Users and access', heading: 'Пользователи и доступ', terms: 'заявки одобрение администратор сервер кеш users approval administrator server cache' }] : []),
+    ...(isAdmin ? [{ id: 'users' as const, label: 'Управление пользователями', en: 'User management', heading: 'Управление пользователями', terms: 'заявки онлайн статистика api одобрение администратор сервер кеш users online usage approval administrator server cache' }] : []),
     { id: 'general', label: 'Обновления', en: 'Updates', heading: 'Обновления приложения' },
   ]
   const matchingSettings = settingsSearch.trim() ? settingItems.filter(item => `${item.label} ${item.en} ${item.terms || ''}`.toLocaleLowerCase().includes(settingsSearch.trim().toLocaleLowerCase())) : []
@@ -768,7 +808,7 @@ function SettingsPage() {
     setSection(item.id)
     setSettingsSearch('')
     requestAnimationFrame(() => requestAnimationFrame(() => {
-      const englishHeadings: Record<string, string> = { 'Общее': 'General', 'Тема': 'Theme', 'Текст песен': 'Lyrics', 'Фоновое изображение': 'Background image', 'Видимость фона': 'Wallpaper visibility', 'Производительность': 'Performance', 'Шрифт': 'Font', 'Воспроизведение': 'Playback', 'Эквалайзер': 'Equalizer', 'Мини-плеер': 'Mini player', 'Импорт из Spotify': 'Import from Spotify', 'Импорт из Яндекс Музыки': 'Import from Yandex Music', 'Хранилище': 'Storage', 'Аккаунт SoundCloud': 'SoundCloud account', 'Пользователи и доступ': 'Users and access', 'Обновления приложения': 'Application updates' }
+      const englishHeadings: Record<string, string> = { 'Общее': 'General', 'Тема': 'Theme', 'Текст песен': 'Lyrics', 'Фоновое изображение': 'Background image', 'Видимость фона': 'Wallpaper visibility', 'Производительность': 'Performance', 'Шрифт': 'Font', 'Воспроизведение': 'Playback', 'Эквалайзер': 'Equalizer', 'Мини-плеер': 'Mini player', 'Импорт из Spotify': 'Import from Spotify', 'Импорт из Яндекс Музыки': 'Import from Yandex Music', 'Хранилище': 'Storage', 'Аккаунт SoundCloud': 'SoundCloud account', 'Управление пользователями': 'User management', 'Обновления приложения': 'Application updates' }
       const name = english ? englishHeadings[item.heading] || item.heading : item.heading
       const heading = [...document.querySelectorAll<HTMLElement>('.settings-body h3')].find(node => node.textContent?.toLocaleLowerCase().includes(name.toLocaleLowerCase()))
       heading?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -779,14 +819,23 @@ function SettingsPage() {
       {account?.status === 'ready' && <div className="account-details">{account.data.avatar_url ? <RemoteImage src={account.data.avatar_url} pixels={160} alt="" /> : <span className="account-avatar"><Music2 size={22} /></span>}<div><strong>{account.data.username}</strong><span>SoundCloud ID {account.data.id}{account.data.followers_count != null ? ` · ${account.data.followers_count} ${english ? 'followers' : 'подписчиков'}` : ''}</span></div></div>}
       {connection?.status === 'signed_in' && <button className="secondary-button" disabled={accountBusy} onClick={() => void accountAction(api.signOut)}>{english ? 'Sign out' : 'Выйти из аккаунта'}</button>}
     </div>}
-    {adminEnabled && approvalUsers && <div className="settings-card"><h3>{english ? 'Users and access' : 'Пользователи и доступ'}</h3>
+    {adminEnabled && <div className="settings-card"><h3>{english ? 'User management' : 'Управление пользователями'}</h3>
+      <p>{english ? 'Audio API requests today (UTC). Cache hits and CDN downloads are excluded; failed API attempts are included. This is not the remaining SoundCloud quota.' : 'Запросы к аудио API за сегодня (UTC). Кеш и загрузки с CDN не учитываются, неудачные обращения к API учитываются. Это не остаток лимита SoundCloud.'}</p>
+      <p>{english ? 'Online: the app contacted the server within the last two minutes.' : 'Онлайн: приложение связывалось с сервером в последние две минуты.'}</p>
       {accessSettings && <label className="setting-row"><span>{english ? 'Approve new users manually' : 'Одобрять новых пользователей вручную'}<small>{english ? 'Existing approved users keep access. Blocked users cannot sign in in either mode.' : 'Уже допущенные пользователи сохранят доступ. Заблокированные не смогут войти в любом режиме.'}</small></span><input type="checkbox" checked={accessSettings.approval_required} disabled={accountBusy} onChange={event => void setApprovalMode(event.target.checked)} /></label>}
       <button className="secondary-button" disabled={accountBusy} onClick={() => { void refreshApprovals(); void refreshAccessSettings(); void refreshMedia() }}>{english ? 'Refresh' : 'Обновить'}</button>
-      <div className="approval-users">{approvalUsers.length === 0 ? <p>{english ? 'No users yet.' : 'Пользователей пока нет.'}</p> : approvalUsers.map(user => <div className="setting-row" key={user.id}><span><strong>{user.username}{user.id === ownerId ? english ? ' · administrator' : ' · администратор' : ''}</strong><small>{user.status === 'approved' ? english ? 'Access allowed' : 'Доступ разрешён' : user.status === 'denied' ? english ? 'Blocked' : 'Заблокирован' : english ? 'Awaiting approval' : 'Ожидает одобрения'}{user.last_seen > 0 ? ` · ${english ? 'Last sign-in' : 'Последний вход'}: ${new Date(user.last_seen * 1000).toLocaleString(english ? 'en-GB' : 'ru-RU')}` : ''}</small></span>{user.id !== ownerId && <div className="approval-actions"><button className="secondary-button" disabled={accountBusy || user.status === 'approved'} onClick={() => void setApproval(user.id, 'approved')}>{english ? 'Allow access' : 'Разрешить доступ'}</button><button className="secondary-button" disabled={accountBusy || user.status === 'denied'} onClick={() => void setApproval(user.id, 'denied')}>{english ? 'Block' : 'Заблокировать'}</button></div>}</div>)}</div>
+      {usersPending && <p>{english ? 'Loading users…' : 'Загрузка пользователей…'}</p>}
+      {usersError && <p className="error-text">{english ? 'Could not refresh users. Try Refresh.' : 'Не удалось обновить список. Нажми «Обновить».'}</p>}
+      <div className="approval-users">{approvalUsers?.length === 0 ? <p>{english ? 'No users yet.' : 'Пользователей пока нет.'}</p> : approvalUsers?.map(user => <div className="admin-user" key={user.id}>
+        <div className="admin-user-identity"><strong>{user.username}{user.id === ownerId ? english ? ' · administrator' : ' · администратор' : ''}</strong><small>{user.status === 'approved' ? english ? 'Access allowed' : 'Доступ разрешён' : user.status === 'denied' ? english ? 'Blocked' : 'Заблокирован' : english ? 'Awaiting approval' : 'Ожидает одобрения'}</small><small>{user.last_seen > 0 ? `${english ? 'Last active' : 'Последняя активность'}: ${new Date(user.last_seen * 1000).toLocaleString(english ? 'en-GB' : 'ru-RU')}` : english ? 'No activity yet' : 'Активности пока нет'}</small></div>
+        <span className={`admin-user-presence ${user.online ? 'online' : ''}`}>{user.online == null ? '—' : user.online ? english ? 'Online' : 'Онлайн' : english ? 'Offline' : 'Офлайн'}</span>
+        <div className="admin-user-usage"><strong>{user.stream_requests_today == null ? '—' : user.stream_requests_today.toLocaleString(english ? 'en-GB' : 'ru-RU')}</strong><small>{english ? 'API today' : 'API за сегодня'}</small><small>{user.usage_day ? `${user.usage_day} UTC` : english ? 'Update the server' : 'Обнови сервер'}</small></div>
+        {user.id !== ownerId && <div className="approval-actions"><button className="secondary-button" disabled={accountBusy || user.status === 'approved'} onClick={() => void setApproval(user.id, 'approved')}>{english ? 'Allow access' : 'Разрешить доступ'}</button><button className="secondary-button" disabled={accountBusy || user.status === 'denied'} onClick={() => void setApproval(user.id, 'denied')}>{english ? 'Block' : 'Заблокировать'}</button></div>}
+      </div>)}</div>
       {mediaStats && <div className="server-media-stats"><h3>{english ? 'Server audio cache' : 'Серверный кеш музыки'}</h3><p>{english ? 'Cache' : 'Кеш'}: {(mediaStats.cache_bytes / 1024 ** 3).toFixed(2)} / {(mediaStats.cache_limit_bytes / 1024 ** 3).toFixed(0)} GiB · {english ? 'Active downloads' : 'Загружается'}: {mediaStats.active_downloads}</p><p>{english ? 'Audio delivered this month' : 'Отдано аудио за месяц'} ({mediaStats.traffic_month}): {(mediaStats.month_served_bytes / 1024 ** 3).toFixed(2)} GiB</p></div>}
     </div>}
     {section === 'general' && <UpdateSettingsCard english={english} />}
-    {data && <SettingsSections section={section} settings={data} update={update} showDeveloperSettings={connection?.status === 'signed_in' && account?.status === 'ready' && approvalUsers !== undefined} />}
+    {data && <SettingsSections section={section} settings={data} update={update} showDeveloperSettings={isAdmin} />}
     {section === 'sound' && data && <Equalizer settings={data} update={update} />}
     {error && <p className="error-text">{error}</p>}</div></div></div>
 }
@@ -911,6 +960,7 @@ function PlayerBar({ wallpaperUrl }: { wallpaperUrl: string | null }) {
         queryClient.invalidateQueries({ queryKey: ['wave-disliked'] }),
         queryClient.invalidateQueries({ queryKey: ['tracks'], predicate: query => ['discover', 'related', 'recommended_genre'].includes(String(query.queryKey[1])) }),
         queryClient.invalidateQueries({ queryKey: ['search-daily-picks'] }),
+        queryClient.invalidateQueries({ queryKey: ['vibe'] }),
         refetch(),
       ])
     } catch (cause) { setPlayerError(String(cause)) }
@@ -989,6 +1039,11 @@ export default function App() {
   const previousVolume = useRef(.8)
   const { data: connection, error: connectionError } = useQuery({ queryKey: ['connection'], queryFn: api.connection, refetchInterval: result => !result.state.data || ['connecting', 'registering', 'pairing'].includes(result.state.data.status) ? 250 : 2500 })
   const { data: profile } = useQuery({ queryKey: ['my-profile'], queryFn: api.myProfile, enabled: connection?.status === 'signed_in' || api.preview, refetchInterval: result => dataRefreshInterval(result.state.data) })
+  useQuery({
+    queryKey: ['server-session', profile?.status === 'ready' ? profile.data.id : null], queryFn: api.serverSession,
+    enabled: connection?.status === 'signed_in' && profile?.status === 'ready' && !!FASTCLOUD_SERVER_URL && !api.preview,
+    retry: false, staleTime: 30_000, refetchInterval: 45_000, refetchIntervalInBackground: true,
+  })
   const { data: settings } = useQuery({ queryKey: ['settings'], queryFn: api.settings })
   const english = settings?.language === 'English'
   useEffect(() => {
@@ -1056,6 +1111,7 @@ export default function App() {
     previousConnection.current = status
     if (!api.preview && status !== 'signed_in') {
       queryClient.removeQueries({ queryKey: ['my-profile'] })
+      queryClient.removeQueries({ queryKey: ['server-session'] })
       queryClient.removeQueries({ queryKey: ['approval-users'] })
       queryClient.removeQueries({ queryKey: ['approval-settings'] })
       queryClient.removeQueries({ queryKey: ['approval-media'] })

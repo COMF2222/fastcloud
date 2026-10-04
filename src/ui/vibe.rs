@@ -15,6 +15,8 @@ pub struct VibeProfile {
     pub genres: Vec<String>,
     pub exact_genre: Option<String>,
     terms: Vec<String>,
+    moods: Vec<usize>,
+    pub searches: Vec<String>,
 }
 
 struct Preset {
@@ -37,10 +39,14 @@ const PRESETS: &[Preset] = &[
             "workout",
             "running",
             "gym",
+            "fitness",
+            "training",
             "энерг",
             "трен",
             "бег",
             "качал",
+            "зал",
+            "зале",
         ],
         genres: &["drum & bass", "electronic", "rock"],
     },
@@ -56,7 +62,10 @@ const PRESETS: &[Preset] = &[
             "chill",
             "focus",
             "relax",
+            "relaxing",
+            "relaxed",
             "study",
+            "studying",
             "спокой",
             "чил",
             "фокус",
@@ -74,6 +83,7 @@ const PRESETS: &[Preset] = &[
         label: "Melancholy",
         keywords: &[
             "sad",
+            "depressed",
             "melanch",
             "rain",
             "lonely",
@@ -88,6 +98,8 @@ const PRESETS: &[Preset] = &[
         label: "Good mood",
         keywords: &[
             "happy",
+            "cheerful",
+            "upbeat",
             "summer",
             "sunny",
             "fun",
@@ -136,10 +148,15 @@ const PRESETS: &[Preset] = &[
         ],
         genres: &["metal", "hard rock", "hardcore"],
     },
+    Preset {
+        label: "Road trip",
+        keywords: &["road trip", "road", "driving", "drive", "travel", "в дороге", "в дорогу", "дорога", "дорожн", "поездк", "путешеств", "машин", "рулем"],
+        genres: &["synthwave", "indie", "rock"],
+    },
 ];
 
 pub fn profile(query: &str) -> VibeProfile {
-    let normalized = query.trim().to_lowercase();
+    let normalized = normalize(query);
     let exact_genre = if is_genre_query(&normalized) {
         Some(normalized.clone())
     } else {
@@ -147,18 +164,31 @@ pub fn profile(query: &str) -> VibeProfile {
     };
     let mut genre_scores: HashMap<&'static str, u32> = HashMap::new();
     let mut labels = Vec::new();
+    let mut moods = Vec::new();
+    let mut searches = vec![query.trim().to_owned()];
 
-    for preset in PRESETS {
+    for (index, preset) in PRESETS.iter().enumerate() {
         if exact_genre.is_some() { break; }
         let matches = preset
             .keywords
             .iter()
-            .filter(|keyword| normalized.contains(**keyword))
+            .filter(|keyword| keyword_matches(&normalized, keyword))
             .count() as u32;
         if matches == 0 {
             continue;
         }
         labels.push(preset.label);
+        moods.push(index);
+        let phrase = match preset.label {
+            "Night flow" => "night chill", "Energy boost" => "workout",
+            "Hyper rush" => "rave", "Calm focus" => "chill",
+            "After dark" => "dark", "Melancholy" => "sad",
+            "Good mood" => "happy", "Party" => "party",
+            "Slow romance" => "romantic", "Sleep" => "sleep",
+            "Heavy pressure" => "aggressive", "Road trip" => "road trip",
+            _ => preset.label,
+        };
+        if normalized != phrase { searches.push(phrase.into()); }
         for (position, genre) in preset.genres.iter().enumerate() {
             *genre_scores.entry(genre).or_default() += matches * 10 + (3 - position as u32);
         }
@@ -207,6 +237,8 @@ pub fn profile(query: &str) -> VibeProfile {
         genres,
         exact_genre,
         terms,
+        moods,
+        searches,
     }
 }
 
@@ -280,36 +312,58 @@ pub fn rank(profile: &VibeProfile, tracks: impl IntoIterator<Item = Track>) -> V
     ranked.into_iter().map(|(track, _)| track).collect()
 }
 
-fn track_score(profile: &VibeProfile, track: &Track) -> u32 {
+fn normalize(value: &str) -> String {
+    value.trim().to_lowercase().replace('ё', "е")
+}
+
+fn keyword_matches(value: &str, keyword: &str) -> bool {
+    let keyword = normalize(keyword);
+    if keyword.contains(' ') {
+        let words = value.split(|ch: char| !ch.is_alphanumeric()).filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" ");
+        return format!(" {words} ").contains(&format!(" {keyword} "));
+    }
+    value.split(|ch: char| !ch.is_alphanumeric()).any(|word| {
+        word == keyword || (!keyword.is_ascii() && !matches!(keyword.as_str(), "зал" | "зале" | "сон") && keyword.chars().count() >= 3 && word.starts_with(&keyword))
+            || keyword == "melanch" && word.starts_with("melanch")
+    })
+}
+
+fn mood_evidence(preset: &Preset, value: &str) -> bool {
+    preset.keywords.iter().any(|keyword| keyword_matches(value, keyword))
+}
+
+fn track_score(profile: &VibeProfile, track: &Track) -> i32 {
     if profile.exact_genre.is_some() { return 100; }
-    let genre = track.genre.as_deref().unwrap_or_default().to_lowercase();
-    let title = track.title.to_lowercase();
-    let artist = track.artist().to_lowercase();
-    let description = track
-        .description
-        .as_deref()
-        .unwrap_or_default()
-        .to_lowercase();
-    let mut score = profile
-        .genres
-        .iter()
-        .enumerate()
-        .filter(|(_, candidate)| genre.contains(candidate.as_str()))
-        .map(|(position, _)| 18_u32.saturating_sub(position as u32 * 2))
-        .sum();
+    let genre = normalize(track.genre.as_deref().unwrap_or_default());
+    let tags = normalize(track.tag_list.as_deref().unwrap_or_default());
+    let title = normalize(&track.title);
+    let artist = normalize(track.artist());
+    let description = normalize(track.description.as_deref().unwrap_or_default());
+    let mut score: i32 = profile.genres.iter().enumerate()
+        .filter(|(_, candidate)| genre.contains(candidate.as_str()) || tags.contains(candidate.as_str()))
+        .map(|(position, _)| 18 - position as i32 * 2).sum();
+    for &index in &profile.moods {
+        let preset = &PRESETS[index];
+        if mood_evidence(preset, &tags) { score += 80; }
+        if mood_evidence(preset, &title) { score += 60; }
+        if mood_evidence(preset, &description) { score += 20; }
+        let opposite = match preset.label {
+            "Good mood" => Some("Melancholy"), "Melancholy" => Some("Good mood"),
+            "Energy boost" => Some("Sleep"), "Sleep" => Some("Energy boost"),
+            "Calm focus" => Some("Heavy pressure"), "Heavy pressure" => Some("Calm focus"),
+            _ => None,
+        };
+        if let Some(opposite) = PRESETS.iter().find(|preset| Some(preset.label) == opposite)
+            && !profile.moods.iter().any(|&other| PRESETS[other].label == opposite.label)
+            && (mood_evidence(opposite, &tags) || mood_evidence(opposite, &title)) {
+            score -= 160;
+        }
+    }
     for term in &profile.terms {
-        if genre.contains(term) {
-            score += 7;
-        }
-        if title.contains(term) {
-            score += 4;
-        }
-        if artist.contains(term) {
-            score += 2;
-        }
-        if description.contains(term) {
-            score += 1;
-        }
+        if keyword_matches(&genre, term) { score += 7; }
+        if keyword_matches(&title, term) { score += 4; }
+        if keyword_matches(&artist, term) { score += 2; }
+        if keyword_matches(&description, term) { score += 1; }
     }
     score
 }
@@ -327,6 +381,25 @@ mod tests {
             "likes_count": likes
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn everyday_russian_and_english_moods_have_the_same_windows() {
+        for (ru, en) in [("грустное", "sad"), ("весёлое", "happy"), ("в дороге", "road trip"), ("в зале", "gym"), ("на тренировке", "workout")] {
+            assert_eq!(profile(ru).genres, profile(en).genres, "{ru} / {en}");
+            assert!(profile(ru).searches.len() > 1);
+        }
+        assert!(profile("funeral").moods.is_empty());
+        assert!(profile("избегать").moods.is_empty());
+    }
+
+    #[test]
+    fn explicit_mood_tags_beat_popularity_and_opposite_moods() {
+        let mut sad = track(1, "A song", "A", "pop", 1);
+        sad.tag_list = Some("sad melancholy".into());
+        let happy = track(2, "Happy summer", "B", "indie", 1_000_000);
+        let generic = track(3, "A song", "C", "indie", 100_000);
+        assert_eq!(rank(&profile("грустное"), [happy, generic, sad]).iter().map(|track| track.id).collect::<Vec<_>>(), [1, 3]);
     }
 
     #[test]

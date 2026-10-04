@@ -234,7 +234,7 @@ impl HlsDownloader {
         .await
         .unwrap_or(None);
         if let Some(hit) = cached {
-            return Ok(hit);
+            if validate_segment(&hit).is_ok() { return Ok(hit); }
         }
         let resp = self.request(url).send().await?.error_for_status()?;
         let status = resp.status();
@@ -260,7 +260,7 @@ impl HlsDownloader {
         .await
         .unwrap_or(None);
         if let Some(hit) = cached {
-            return Ok(hit);
+            if validate_segment(&hit).is_ok() { return Ok(hit); }
         }
         let resp = self.request(url).send().await?.error_for_status()?;
         let bytes = read_segment(resp).await?;
@@ -288,7 +288,23 @@ async fn read_segment(mut response: reqwest::Response) -> Result<Vec<u8>> {
         anyhow::ensure!(chunk.len() <= MAX_SEGMENT_BYTES.saturating_sub(bytes.len()), "Audio segment exceeds the size limit");
         bytes.extend_from_slice(&chunk);
     }
+    validate_segment(&bytes)?;
     Ok(bytes)
+}
+
+fn validate_segment(bytes: &[u8]) -> Result<()> {
+    anyhow::ensure!(!bytes.is_empty(), "Audio server returned an empty segment");
+    // Some gateways return an error page with HTTP 200. Never cache it as
+    // audio or let the decoder report an opaque format-probe failure later.
+    let prefix = String::from_utf8_lossy(&bytes[..bytes.len().min(512)]);
+    let prefix = prefix.trim_start_matches('\u{feff}').trim_start().to_ascii_lowercase();
+    anyhow::ensure!(
+        !prefix.starts_with("<!doctype html") && !prefix.starts_with("<html")
+            && !prefix.starts_with("<?xml") && !prefix.starts_with("{\"error")
+            && !prefix.starts_with("#extm3u"),
+        "Audio server returned a page or playlist instead of an audio segment"
+    );
+    Ok(())
 }
 
 fn retry_segment(error: &anyhow::Error) -> bool {
@@ -321,6 +337,35 @@ fn needs_oauth(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cached_error_pages_are_refetched_and_http_200_errors_are_not_cached() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let directory = tempfile::tempdir().unwrap();
+        let cache = Arc::new(super::super::cache::AudioCache::new(directory.path().to_path_buf(), 1024).unwrap());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let good = format!("{base}/good");
+        let bad = format!("{base}/bad");
+        cache.put_segment("track", &good, b"<!doctype html><html>gateway error</html>");
+        let server = tokio::spawn(async move {
+            for body in [b"audio fixture".as_slice(), b"<html>unavailable</html>".as_slice()] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0; 4096];
+                socket.read(&mut request).await.unwrap();
+                let header = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                socket.write_all(header.as_bytes()).await.unwrap();
+                socket.write_all(body).await.unwrap();
+            }
+        });
+        let downloader = HlsDownloader::new(reqwest::Client::new(), cache.clone());
+        assert_eq!(downloader.segment("track", &good).await.unwrap(), b"audio fixture");
+        assert_eq!(cache.get_segment("track", &good).unwrap(), b"audio fixture");
+        assert!(downloader.segment("track", &bad).await.unwrap_err().to_string().contains("instead of an audio segment"));
+        assert!(cache.get_segment("track", &bad).is_none());
+        assert!(validate_segment(&[]).is_err());
+        server.await.unwrap();
+    }
 
     #[tokio::test]
     async fn prefetch_delivers_first_segment_before_slow_next_one_and_bounds_lookahead() {

@@ -26,7 +26,7 @@ fn lrclib_source() -> String {
     "LRCLIB".into()
 }
 
-fn client() -> Result<reqwest::Client, String> {
+pub(super) fn client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(6))
         .user_agent("Fastcloud/0.2 (https://github.com/COMF2222/fastcloud)")
@@ -62,7 +62,7 @@ async fn send_lrclib(
     Err("LRCLIB unavailable".into())
 }
 
-fn metadata_text(value: &str) -> String {
+pub(super) fn metadata_text(value: &str) -> String {
     let decoded = if value.contains('&') {
         // Decode character references without treating literal title characters
         // such as <3 as HTML elements.
@@ -81,7 +81,7 @@ fn metadata_text(value: &str) -> String {
         .join(" ")
 }
 
-fn comparable(value: &str) -> String {
+pub(super) fn comparable(value: &str) -> String {
     let normalized = metadata_text(value);
     let mut key = String::new();
     for ch in normalized.chars().flat_map(char::to_lowercase) {
@@ -107,11 +107,13 @@ fn feature_marker(value: &str) -> Option<(usize, usize)> {
         " ft. ",
         " ft ",
         " featuring ",
+        " w/ ",
         " (feat. ",
         " (feat ",
         " (ft. ",
         " (ft ",
         " (featuring ",
+        " (w/ ",
     ]
     .iter()
     .filter_map(|marker| {
@@ -125,7 +127,7 @@ fn feature_marker(value: &str) -> Option<(usize, usize)> {
 
 fn feature_label(value: &str) -> bool {
     let lower = value.trim().to_ascii_lowercase();
-    ["feat. ", "feat ", "ft. ", "ft ", "featuring "]
+    ["feat. ", "feat ", "ft. ", "ft ", "featuring ", "w/ "]
         .iter()
         .any(|marker| {
             lower
@@ -188,7 +190,7 @@ fn artist_keys(value: &str) -> Vec<String> {
     keys
 }
 
-fn same_artist(left: &str, right: &str) -> bool {
+pub(super) fn same_artist(left: &str, right: &str) -> bool {
     if let (Some((_, left_end)), Some((_, right_end))) =
         (feature_marker(left), feature_marker(right))
         && comparable(&left[left_end..]) != comparable(&right[right_end..])
@@ -280,7 +282,7 @@ fn clean_title(value: &str) -> String {
     output.trim().to_owned()
 }
 
-fn version_tags(title: &str) -> Vec<String> {
+pub(super) fn version_tags(title: &str) -> Vec<String> {
     let lower = metadata_text(title).to_lowercase();
     let mut tags = lower
         .split(|ch: char| !ch.is_alphanumeric())
@@ -307,7 +309,7 @@ fn version_tags(title: &str) -> Vec<String> {
     tags
 }
 
-fn candidate_pairs(artist: &str, title: &str) -> Vec<(String, String)> {
+pub(super) fn candidate_pairs(artist: &str, title: &str) -> Vec<(String, String)> {
     let artist = metadata_text(artist);
     let artist = artist.as_str();
     let title = clean_title(title);
@@ -797,7 +799,7 @@ struct GeniusCandidate {
     url: reqwest::Url,
 }
 
-fn genius_title_keys(value: &str) -> Vec<String> {
+pub(super) fn genius_title_keys(value: &str) -> Vec<String> {
     let value = clean_title(value);
     // Genius can append an editorial * after a bilingual title. Keep this
     // convention local to Genius; LRCLIB recording/timing checks stay exact.
@@ -839,7 +841,7 @@ fn genius_artist_matches(song: &Value, wanted: &str) -> bool {
             return true;
         }
     }
-    false
+    credits.iter().any(|credit| same_artist(credit, &wanted))
 }
 
 fn genius_metadata_matches(song: &Value, artist: &str, title: &str) -> bool {
@@ -1029,7 +1031,7 @@ async fn genius(
     }
 }
 
-const GENIUS_USER_AGENT: &str =
+pub(super) const GENIUS_USER_AGENT: &str =
     "Mozilla/5.0 (compatible; Fastcloud/0.2; +https://github.com/COMF2222/fastcloud)";
 
 fn plain_fallback_pairs(pairs: &[(String, String)]) -> Vec<(String, String)> {
@@ -1208,7 +1210,7 @@ pub async fn lookup(
     album: Option<String>,
     isrc: Option<String>,
 ) -> Result<Option<LyricsRecord>, String> {
-    tokio::time::timeout(
+    let result = tokio::time::timeout(
         Duration::from_secs(40),
         lookup_sources(
             &artist,
@@ -1219,7 +1221,9 @@ pub async fn lookup(
         ),
     )
     .await
-    .map_err(|_| "Lyrics search timed out; try again")?
+    .map_err(|_| "Lyrics search timed out; try again")?;
+    if let Ok(Some(record)) = &result { crate::lyrics_search::remember(record); }
+    result
 }
 
 pub async fn search(query: String) -> Result<Vec<LyricsRecord>, String> {
@@ -1316,6 +1320,31 @@ mod tests {
         assert!(!genius_artist_matches(&song, "Earth, Wind & Fire"));
         let band = serde_json::json!({"primary_artist":{"name":"Earth, Wind & Fire"}});
         assert!(genius_artist_matches(&band, "Earth, Wind & Fire"));
+        assert!(!genius_artist_matches(&band, "Fire"));
+    }
+
+    #[test]
+    fn white_wine_upload_matches_explicit_joint_credits() {
+        let title = "white wine w/ lil tracy (prod. nedarb)";
+        assert_eq!(clean_title(title), "white wine");
+        assert!(candidate_pairs("Lil Peep", title).contains(&("Lil Peep".into(), "white wine".into())));
+        let song = serde_json::json!({"title":"White Wine", "primary_artist":{"name":"Lil Peep & Lil Tracy"},
+            "primary_artists":[{"name":"Lil Peep"},{"name":"Lil Tracy"}]});
+        assert!(genius_metadata_matches(&song, "Lil Peep", title));
+        assert!(genius_metadata_matches(&song, "Lil Tracy", "White Wine"));
+        assert!(!genius_metadata_matches(&song, "Unrelated", title));
+        assert!(!genius_metadata_matches(&song, "Lil Peep", "White Wine w/ Lil Tracy (Remix)"));
+        assert_eq!(clean_title("Song (w/ Guest) (Remix)"), "Song (Remix)");
+        assert_eq!(clean_title("Dance with Me"), "Dance with Me");
+    }
+
+    #[tokio::test]
+    #[ignore = "contacts public lyrics services"]
+    async fn reported_white_wine_upload_finds_synced_lyrics() {
+        let record = lookup("Lil Peep".into(), "white wine w/ lil tracy (prod. nedarb)".into(), 156_000, None, None)
+            .await.unwrap().expect("White Wine lyrics");
+        assert_eq!(comparable(&record.track_name), "whitewine");
+        assert!(record.synced_lyrics.as_deref().is_some_and(|text| !text.is_empty()));
     }
 
     #[test]

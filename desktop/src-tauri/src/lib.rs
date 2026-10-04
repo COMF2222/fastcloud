@@ -33,6 +33,7 @@ mod artwork;
 mod clap;
 mod components;
 mod lyrics;
+mod lyrics_search;
 mod update_events;
 mod spotify;
 
@@ -265,10 +266,31 @@ struct ApprovalUser {
     updated_at: i64,
     #[serde(default)]
     last_seen: i64,
+    #[serde(default)]
+    online: Option<bool>,
+    #[serde(default)]
+    stream_requests_today: Option<u64>,
+    #[serde(default)]
+    usage_day: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
 struct ApprovalUsers { users: Vec<ApprovalUser> }
+
+#[derive(Serialize, serde::Deserialize)]
+struct ServerSession { user_id: u64, admin: bool }
+
+#[cfg(test)]
+#[test]
+fn admin_payloads_preserve_legacy_unknown_usage_and_require_boolean_role() {
+    let legacy: ApprovalUser = serde_json::from_str(r#"{"id":42,"username":"Fixture","status":"approved","updated_at":1}"#).unwrap();
+    assert_eq!(legacy.online, None);
+    assert_eq!(legacy.stream_requests_today, None);
+    let current: ApprovalUser = serde_json::from_str(r#"{"id":42,"username":"Fixture","status":"approved","updated_at":1,"online":true,"stream_requests_today":7,"usage_day":"2026-10-04"}"#).unwrap();
+    assert_eq!(current.online, Some(true));
+    assert_eq!(current.stream_requests_today, Some(7));
+    assert!(serde_json::from_str::<ServerSession>(r#"{"user_id":42,"admin":"true"}"#).is_err());
+}
 
 #[derive(Serialize)]
 #[serde(tag = "status", content = "data", rename_all = "snake_case")]
@@ -1316,6 +1338,55 @@ async fn search_lyrics(query: String) -> Result<Vec<lyrics::LyricsRecord>, Strin
     lyrics::search(query).await
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LyricTrackMatch {
+    track: Track,
+    excerpt: String,
+    match_score: u16,
+    recording_score: u16,
+}
+
+#[tauri::command]
+async fn lyric_tracks(state: tauri::State<'_, AppState>, query: String) -> Result<Vec<LyricTrackMatch>, String> {
+    if state.client.is_demo() { return Ok(Vec::new()); }
+    let songs = lyrics_search::search(&query).await?;
+    let mut requests = tokio::task::JoinSet::new();
+    for song in songs {
+        let client = state.client.clone();
+        requests.spawn(async move {
+            let query = format!("{} {}", song.record.artist_name, song.record.track_name);
+            api::endpoints::search_tracks(&client, &query).await.next_page().await.map(|tracks| {
+                tracks.into_iter().filter_map(|track| {
+                    let recording_score = lyrics_search::track_score(&song, &track);
+                    (recording_score > 0).then(|| LyricTrackMatch {
+                        track, excerpt: song.excerpt.clone(), match_score: song.score, recording_score,
+                    })
+                }).collect::<Vec<_>>()
+            })
+        });
+    }
+    let mut results = Vec::new();
+    let mut answered = requests.is_empty();
+    let mut failure = String::new();
+    while let Some(response) = requests.join_next().await {
+        match response {
+            Ok(Ok(matches)) => { answered = true; results.extend(matches); }
+            Ok(Err(error)) => failure = error.to_string(),
+            Err(_) => failure = "Track search interrupted".into(),
+        }
+    }
+    if !answered { return Err(failure); }
+    results.sort_by(|left, right| right.match_score.cmp(&left.match_score)
+        .then_with(|| right.recording_score.cmp(&left.recording_score))
+        .then_with(|| right.track.likes_count.cmp(&left.track.likes_count))
+        .then_with(|| left.track.id.cmp(&right.track.id)));
+    let mut seen = std::collections::HashSet::new();
+    results.retain(|item| seen.insert(item.track.id));
+    results.truncate(24);
+    Ok(results)
+}
+
 #[tauri::command]
 fn open_lyrics_source(raw: String) -> Result<(), String> {
     let url = url::Url::parse(&raw).map_err(|error| error.to_string())?;
@@ -1457,23 +1528,35 @@ async fn vibe_search(
     if state.client.is_demo() {
         return Ok(vibe::rank(&profile, demo::demo_tracks()));
     }
-    let mut candidates = api::endpoints::search_tracks(&state.client, query)
-        .await
-        .next_page()
-        .await
-        .map_err(|error| error.to_string())?;
-    for genre in profile.genres.iter().take(4) {
-        let mut rows = api::endpoints::tracks_by_genre(&state.client, genre, 30)
-            .await
-            .next_page()
-            .await
-            .map_err(|error| error.to_string())?;
-        if rows.is_empty() && profile.exact_genre.is_some() {
-            rows = api::endpoints::tracks_by_genre(&state.client, genre, 365)
-                .await.next_page().await.map_err(|error| error.to_string())?;
-        }
-        candidates.extend(rows);
+    let mut requests = tokio::task::JoinSet::new();
+    for search in profile.searches.iter().take(3) {
+        let client = state.client.clone();
+        let search = search.clone();
+        requests.spawn(async move { api::endpoints::search_tracks(&client, &search).await.next_page().await });
     }
+    for genre in profile.genres.iter().take(3) {
+        let client = state.client.clone();
+        let genre = genre.clone();
+        let exact = profile.exact_genre.is_some();
+        requests.spawn(async move {
+            let rows = api::endpoints::tracks_by_genre(&client, &genre, 30).await.next_page().await?;
+            if rows.is_empty() && exact {
+                api::endpoints::tracks_by_genre(&client, &genre, 365).await.next_page().await
+            } else { Ok(rows) }
+        });
+    }
+    let mut candidates = Vec::new();
+    let mut answered = false;
+    let mut failure = String::new();
+    while let Some(response) = requests.join_next().await {
+        match response {
+            Ok(Ok(rows)) => { answered = true; candidates.extend(rows); }
+            Ok(Err(error)) => failure = error.to_string(),
+            Err(_) => failure = "Mood search interrupted".into(),
+        }
+    }
+    if !answered { return Err(failure); }
+    state.wave.with_dislike_filter(|dislikes| candidates.retain(|track| !track.is_blocked() && !dislikes.rejects(track)));
     let mut result = vibe::rank(&profile, candidates);
     result.truncate(80);
     Ok(result)
@@ -2982,6 +3065,19 @@ async fn approval_admin_token(state: &AppState) -> Result<String, String> {
     session.access_token().await.map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+async fn server_session(state: tauri::State<'_, AppState>) -> Result<ServerSession, String> {
+    let session = state.session.lock().clone().ok_or("Sign in to SoundCloud first")?;
+    let server = session.media_server_url().ok_or("No Fastcloud server configured")?;
+    let server = auth::checked_server_url(&server).map_err(|error| error.to_string())?;
+    let token = session.access_token().await.map_err(|error| error.to_string())?;
+    let response = reqwest::Client::new().get(format!("{server}/v1/session"))
+        .header(reqwest::header::AUTHORIZATION, format!("OAuth {token}"))
+        .timeout(std::time::Duration::from_secs(10)).send().await.map_err(|error| error.to_string())?;
+    if !response.status().is_success() { return Err(approval_response_error(response).await); }
+    response.json().await.map_err(|error| error.to_string())
+}
+
 async fn approval_response_error(response: reqwest::Response) -> String {
     let status = response.status();
     let detail = response.json::<serde_json::Value>().await.ok()
@@ -3369,6 +3465,7 @@ pub fn run() {
             comments,
             track_lyrics,
             search_lyrics,
+            lyric_tracks,
             open_lyrics_source,
             user_profiles,
             related_users,
@@ -3427,6 +3524,7 @@ pub fn run() {
             approval_server_url,
             connect_server,
             approval_users,
+            server_session,
             approval_set_user,
             approval_settings,
             approval_media,

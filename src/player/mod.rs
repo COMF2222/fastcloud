@@ -1284,7 +1284,7 @@ impl Player {
                                 }
                             }
                             Err(e) => {
-                                log::warn!("decode: {e}");
+                                log::warn!("decode: {e:#}");
                                 let remaining = slot
                                     .playlist
                                     .as_ref()
@@ -1296,7 +1296,7 @@ impl Player {
                                 } else {
                                     slot.exhausted = true;
                                     slot.failed = true;
-                                    DecodeAction::Fatal(e.to_string())
+                                    DecodeAction::Fatal(format!("{e:#}"))
                                 }
                             }
                         }

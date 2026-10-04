@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
-import type { Comment, Connection, Data, LyricsRecord, Me, OfflineEntry, PlayerState, Playlist, QuickAccessShortcut, Settings, StorageReport, Track, User, VisualiserFrame, WaveformSamples, WebProfile } from './types'
+import type { Comment, Connection, Data, LyricsRecord, LyricTrackMatch, Me, OfflineEntry, PlayerState, Playlist, QuickAccessShortcut, Settings, StorageReport, Track, User, VisualiserFrame, WaveformSamples, WebProfile } from './types'
 import { cachedLibraryData, clearLibraryCache, forgetLibraryEntry, setCacheConnection } from './libraryCache'
 import { emptySpotifyImport, type SpotifyImportSelection, type SpotifyImportView } from './spotifyImportTypes'
 import { releaseNotesUrl } from './releaseNotes'
@@ -146,6 +146,7 @@ export const api = {
   }) : invoke<LyricsRecord | null>('track_lyrics', { artist, title, durationMs, albumName: albumName || null, isrc: isrc || null }),
   openLyricsSource: (raw: string) => preview ? Promise.resolve(void window.open(raw, '_blank', 'noopener,noreferrer')) : invoke<void>('open_lyrics_source', { raw }),
   searchLyrics: (query: string) => preview ? Promise.resolve<LyricsRecord[]>([]) : invoke<LyricsRecord[]>('search_lyrics', { query }),
+  lyricTracks: (query: string) => preview ? Promise.reject<LyricTrackMatch[]>(new Error('PREVIEW_SEARCH')) : invoke<LyricTrackMatch[]>('lyric_tracks', { query }),
   postComment: (id: number, body: string, timestampMs?: number) => preview ? Promise.resolve(void previewComments.push({ id, body, timestamp_ms: timestampMs, user: { id: 1, username: previewText('Вы', 'You') } })) : invoke<void>('post_comment', { id, body, timestampMs }),
   userProfiles: (id: number) => preview ? Promise.resolve<Data<WebProfile[]>>({ status: 'ready', data: [] }) : invoke<Data<WebProfile[]>>('user_profiles', { id }),
   relatedUsers: (id: number) => preview ? Promise.resolve<Data<User[]>>({ status: 'ready', data: previewUsers.filter(user => user.id !== id) }) : invoke<Data<User[]>>('related_users', { id }),
@@ -155,7 +156,7 @@ export const api = {
     const raw = releaseNotesUrl(version, english)
     return preview ? (window.open(raw, '_blank', 'noopener,noreferrer'), Promise.resolve()) : invoke<void>('open_release_notes', { raw })
   },
-  vibeSearch: (query: string) => preview ? Promise.resolve(demo.filter(track => track.title.toLowerCase().includes(query.toLowerCase()) || track.genre?.toLowerCase().includes(query.toLowerCase()))) : invoke<Track[]>('vibe_search', { query }),
+  vibeSearch: (query: string) => preview ? Promise.reject<Track[]>(new Error('PREVIEW_SEARCH')) : invoke<Track[]>('vibe_search', { query }),
   repost: (kind: 'track' | 'playlist', id: number, active: boolean) => {
     if (!preview) return afterChange(invoke<void>('repost', { kind, id, active }), kind === 'track' ? 'tracks:reposts' : 'playlists:reposts')
     if (kind === 'track') { if (active) previewReposts.add(id); else previewReposts.delete(id) }
@@ -333,6 +334,7 @@ export const api = {
   signOut: async () => { if (!preview) { await invoke<void>('sign_out'); clearLibraryCache() } },
   approvalServerUrl: () => preview ? Promise.resolve<string | null>(null) : invoke<string | null>('approval_server_url'),
   connectServer: async (serverUrl: string) => { if (!preview) { await invoke<void>('connect_server', { serverUrl }); clearLibraryCache() } },
+  serverSession: () => preview ? Promise.resolve<ServerSession>({ user_id: 0, admin: false }) : invoke<ServerSession>('server_session'),
   approvalUsers: (serverUrl: string) => preview ? Promise.resolve<ApprovalUser[]>([]) : invoke<ApprovalUser[]>('approval_users', { serverUrl }),
   approvalSetUser: (serverUrl: string, userId: number, status: 'approved' | 'denied' | 'pending') =>
     preview ? Promise.resolve() : invoke<void>('approval_set_user', { serverUrl, userId, status }),
@@ -343,6 +345,7 @@ export const api = {
   preview,
 }
 
-export type ApprovalUser = { id: number; username: string; status: 'pending' | 'approved' | 'denied'; updated_at: number; last_seen: number }
+export type ServerSession = { user_id: number; admin: boolean }
+export type ApprovalUser = { id: number; username: string; status: 'pending' | 'approved' | 'denied'; updated_at: number; last_seen: number; online?: boolean | null; stream_requests_today?: number | null; usage_day?: string | null }
 export type ApprovalSettings = { approval_required: boolean }
 export type MediaStats = { cache_bytes: number; cache_limit_bytes: number; cache_hits: number; cache_misses: number; active_downloads: number; peak_downloads: number; month_served_bytes: number; traffic_month: string }

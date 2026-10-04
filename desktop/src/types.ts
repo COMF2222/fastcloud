@@ -47,6 +47,7 @@ export type User = { id: number; username: string; avatar_url?: string | null; f
 export type Me = { id: number; username: string; avatar_url?: string | null; followers_count?: number | null }
 export type Comment = { id: number; body: string; created_at?: string | null; timestamp_ms?: number | null; user?: { id: number; username: string; avatar_url?: string | null } | null }
 export type LyricsRecord = { id: number; trackName: string; artistName: string; albumName?: string | null; duration?: number | null; plainLyrics?: string | null; syncedLyrics?: string | null; instrumental: boolean; source?: string; sourceUrl?: string | null }
+export type LyricTrackMatch = { track: Track; excerpt: string; matchScore: number; recordingScore: number }
 export type WebProfile = { title?: string | null; url: string; service?: string | null }
 export type QuickAccessShortcut =
   | { track: { id: number; title: string; artist: string; artwork_url: string | null } }

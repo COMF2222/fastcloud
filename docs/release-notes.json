@@ -2,6 +2,27 @@
   "schema": 1,
   "releases": [
     {
+      "version": "0.2.15",
+      "ru": {
+        "title": "Поиск по настроению и словам песни",
+        "changes": [
+          "Поиск по настроению лучше понимает русские и английские запросы: для тренировки, грустное, весёлое и в дороге. При подборе учитываются метки и описание треков.",
+          "В поиске появилась вкладка «По тексту»: можно искать треки по запомнившейся строке песни. Результаты проверяются по фрагменту текста и данным записи; доступность зависит от сервисов текстов.",
+          "Поиск текста лучше учитывает совместных исполнителей, в том числе обозначение w/ в названии трека.",
+          "Улучшена обработка пустых и неверных ответов аудиосервера. Сообщения об ошибках декодирования стали подробнее."
+        ]
+      },
+      "en": {
+        "title": "Search by mood and remembered lyrics",
+        "changes": [
+          "Mood search better understands Russian and English requests such as workout, sad, happy and road trip, using track tags and descriptions.",
+          "A By lyrics tab lets you search for tracks using a remembered lyric passage. Matches are checked against the passage and recording metadata; availability depends on lyric services.",
+          "Lyrics lookup better handles collaborator credits, including w/ in track titles.",
+          "Improved handling of empty or invalid audio server responses and added more detail to decoding errors."
+        ]
+      }
+    },
+    {
       "version": "0.2.14",
       "ru": {
         "title": "Дизлайки во всех рекомендациях",

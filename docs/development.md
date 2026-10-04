@@ -178,6 +178,29 @@ npm run build
 The single-instance IPC test needs an unused local port. Close Fastcloud before
 running that test if it reports a bind error.
 
+## Mood and lyric search
+
+The desktop mood search recognizes Russian and English phrases, searches their
+SoundCloud equivalents alongside genre windows, and ranks explicit mood tags
+and titles above popularity. Opposing mood tags reduce relevance. This is
+metadata-based discovery: an untagged recording's emotional character is not
+verified acoustically. Disliked recordings are filtered again when playback starts.
+
+The By lyrics tab uses Genius's public lyric index, then checks the returned
+passage and corroborates each SoundCloud candidate's title, artist credits,
+recording version and duration when available. LRCLIB metadata search can also
+provide candidates, but its lyric body must contain the phrase; LRCLIB does not
+offer a full-text lyric index. The last 64 displayed lyric records are indexed
+in memory for the current session, with a per-record size limit of 128 KiB.
+No API keys are required. Public services can deny requests or become unavailable;
+those failures appear as errors rather than misleading empty search results.
+The browser preview shows the controls, while both searches run in the native app.
+
+The Genius endpoint follows the [LyricsGenius public search implementation](https://github.com/johnwmillr/LyricsGenius/blob/master/lyricsgenius/api/public_methods/search.py).
+Run offline regression checks with `cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --lib`.
+The reported White Wine upload also has an opt-in live test:
+`cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --lib reported_white_wine_upload_finds_synced_lyrics -- --ignored`.
+
 ## Releases
 
 Pushing a `v*` tag runs the CI release workflow. It checks the desktop build,

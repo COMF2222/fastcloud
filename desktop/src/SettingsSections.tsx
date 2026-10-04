@@ -8,7 +8,7 @@ import { SpotifyImport } from './SpotifyImport'
 
 const sizeLabel = (bytes: number) => bytes >= 1073741824 ? `${(bytes / 1073741824).toFixed(2)} GiB` : `${(bytes / 1048576).toFixed(1)} MiB`
 
-export type SettingsSection = 'general' | 'appearance' | 'sound' | 'integrations' | 'storage' | 'account'
+export type SettingsSection = 'general' | 'appearance' | 'sound' | 'integrations' | 'storage' | 'account' | 'users'
 
 export function SettingsSections({ section, settings, update, showDeveloperSettings }: { section: SettingsSection; settings: Settings; update: (key: string, value: unknown) => Promise<void>; showDeveloperSettings: boolean }) {
   const queryClient = useQueryClient()
