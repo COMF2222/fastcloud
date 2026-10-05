@@ -20,6 +20,7 @@ mod media;
 mod offline;
 mod appearance;
 mod diagnostics;
+mod personal;
 mod wave;
 #[path = "../../../src/player/mod.rs"]
 mod player;
@@ -76,6 +77,8 @@ use tauri::{
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 struct AppState {
+    queue_wave_history: Mutex<std::collections::VecDeque<Option<WaveSession>>>,
+    personal: Arc<personal::Hub>,
     rt: tokio::runtime::Runtime,
     client: Arc<api::ApiClient>,
     player: Option<Arc<Player>>,
@@ -98,6 +101,7 @@ struct AppState {
     wave_session: Arc<Mutex<Option<WaveSession>>>,
 }
 
+#[derive(Clone)]
 struct WaveSession {
     likes: Vec<Track>,
     seen: std::collections::HashSet<u64>,
@@ -317,6 +321,9 @@ impl<T: Serialize> From<Slot<T>> for Data<T> {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PlayerView {
+    can_undo_queue: bool,
+    sleep_remaining_ms: Option<u64>,
+    sleep_after_track: bool,
     queue: Option<Vec<Track>>,
     queue_revision: u64,
     current: Option<usize>,
@@ -358,6 +365,8 @@ impl AppState {
         ));
         let store = Store::new(client.clone(), rt.handle().clone());
         let wave = Arc::new(wave::Engine::new(config::app_paths()?.root.join("my-wave-profile.json")));
+        let personal = Arc::new(personal::Hub::new(config::app_paths()?.root.join("personal"),config::settings_path()?)?);
+        personal.seed_preferences(&settings);
         wave.set_preferences(settings.music_taste.clone());
         if settings.last_wave_active && !demo {
             let previous_id = settings.last_queue_idx.and_then(|index| settings.last_queue.get(index)).map(|track| track.id);
@@ -386,6 +395,7 @@ impl AppState {
             ));
             player.attach();
             player.set_autoplay(settings.autoplay);
+            player.set_audio_preferences(settings.normalization, settings.crossfade_ms, settings.gapless);
             player.restore_controls(settings.volume, settings.balance, settings.mono);
             player.set_eq(settings.eq_enabled, settings.eq_gains_db);
             player.set_eq_preamp_db(settings.eq_preamp_db);
@@ -438,6 +448,7 @@ impl AppState {
         } else { None };
         let wave_session = Arc::new(Mutex::new(restored_wave));
         if let Some(player) = player.clone() {
+            let personal = personal.clone();
             let wave = wave.clone();
             let wave_session = wave_session.clone();
             let client = client.clone();
@@ -453,6 +464,9 @@ impl AppState {
                             remaining, state.repeat == RepeatMode::Off)
                     };
                     wave.observe(snapshot.0.as_ref(), snapshot.1, snapshot.2, snapshot.3, snapshot.4);
+                    if !client.is_demo() {
+                        personal.observe(snapshot.0.as_ref(), snapshot.1, snapshot.3, snapshot.4, player.state.lock().playback_speed);
+                    }
                     clap::release_if_idle();
                     if snapshot.1 >= 35_000 && snapshot.3 && !snapshot.4 && clap::available() {
                         if let Some(track) = snapshot.0.as_ref().filter(|track| wave.begin_audio_analysis(track.id)) {
@@ -501,6 +515,8 @@ impl AppState {
             });
         }
         let app = Self {
+            queue_wave_history: Mutex::new(std::collections::VecDeque::new()),
+            personal,
             rt,
             client,
             player,
@@ -530,6 +546,23 @@ impl AppState {
             wave,
             wave_session,
         };
+        {
+            let personal = app.personal.clone(); let client = app.client.clone();
+            let settings = app.settings.clone(); let player = app.player.clone(); let connection = app.connection.clone(); let wave = app.wave.clone();
+            app.rt.spawn(async move {
+                let mut last_sync: Option<std::time::Instant> = None;
+                loop {
+                    let signed_in = matches!(*connection.lock(),Connection::SignedIn);
+                    if signed_in && last_sync.is_none_or(|last| last.elapsed() >= std::time::Duration::from_secs(30)) {
+                        last_sync = Some(std::time::Instant::now());
+                        if personal.sync(&client,&settings,player.as_ref()).await.is_err() { personal.sync_failed(); }
+                        wave.set_preferences(settings.lock().music_taste.clone());
+                    }
+                    if !signed_in { last_sync = None; }
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            });
+        }
         if !demo {
             let client = app.client.clone();
             let store = app.store.clone();
@@ -675,6 +708,9 @@ fn player_state(
     }
     let track_id = current.current.and_then(|index| current.queue.get(index)).map(|track| track.id);
     let mut view = PlayerView {
+        can_undo_queue: player.can_undo_queue(),
+        sleep_remaining_ms: player.sleep_view().0,
+        sleep_after_track: player.sleep_view().1,
         queue: queue_snapshot(&current.queue, current.queue_revision, known_queue_revision),
         queue_revision: current.queue_revision,
         current: current.current,
@@ -2002,7 +2038,18 @@ fn transport(
     target: Option<usize>,
 ) -> Result<(), String> {
     let player = state.player()?;
+    if ["remove", "move", "clear_played", "clear_upcoming", "clear_queue"].contains(&action.as_str()) {
+        player.checkpoint_queue();
+        let snapshot = state.wave_session.lock().clone();
+        let mut history = state.queue_wave_history.lock(); history.push_back(snapshot); while history.len() > 5 { history.pop_front(); }
+    }
     match action.as_str() {
+        "undo_queue" => {
+            if player.undo_queue() {
+                let wave = state.queue_wave_history.lock().pop_back().flatten();
+                let active = wave.is_some(); *state.wave_session.lock() = wave; state.persist_wave_active(active);
+            }
+        },
         "toggle" => player.play_pause(),
         "next" => {
             player.next();
@@ -2127,6 +2174,7 @@ async fn set_liked(
     settings.save().map_err(|error| error.to_string())?;
     drop(settings);
     // Likes on the current track affect the next refill immediately.
+    if liked { state.personal.liked(track_id); }
     let playing_track = state.player.as_ref().and_then(|player| {
         let playback = player.state.lock();
         playback.queue.iter().find(|track| track.id == track_id).cloned()
@@ -2185,6 +2233,57 @@ fn theme_action(state: tauri::State<'_, AppState>, action: String, name: Option<
         }
         _ => return Err("Unknown theme action".into()),
     }
+    state.personal.preferences_changed(&settings);
+    Ok(settings.clone())
+}
+
+#[tauri::command]
+fn personal_collections(state: tauri::State<'_, AppState>) -> serde_json::Value { state.personal.collections() }
+
+#[tauri::command]
+fn listening_statistics(state: tauri::State<'_, AppState>) -> serde_json::Value { state.personal.statistics() }
+
+#[tauri::command]
+fn update_personal_collection(state: tauri::State<'_, AppState>, section: String, id: String, value: serde_json::Value) -> Result<(),String> {
+    state.personal.change_collection(&section,id,value).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn smart_playlist_tracks(state: tauri::State<'_, AppState>, id: String) -> Result<Data<Vec<Track>>,String> {
+    match tracks_data(&state,"likes".into(),None,None).await {
+        Data::Ready(likes) => state.personal.smart_tracks(&id,&likes).map(Data::Ready).map_err(|error| error.to_string()),
+        Data::Loading => Ok(Data::Loading), Data::Unavailable => Ok(Data::Unavailable), Data::Failed(error) => Ok(Data::Failed(error)),
+    }
+}
+
+#[tauri::command]
+fn sleep_timer(state: tauri::State<'_, AppState>, seconds: Option<u64>, after_track: bool) -> Result<(),String> {
+    state.player()?.set_sleep_timer(seconds,after_track).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn sync_personal_data(state: tauri::State<'_, AppState>) -> Result<(),String> {
+    state.personal.sync(&state.client,&state.settings,state.player.as_ref()).await.map_err(|_| "Could not sync personal data; the local copy is kept".to_owned())?;
+    state.wave.set_preferences(state.settings.lock().music_taste.clone());
+    Ok(())
+}
+
+#[tauri::command]
+fn settings_backup(state: tauri::State<'_, AppState>, action: String, path: String) -> Result<config::Settings,String> {
+    if !path.to_lowercase().ends_with(".json") { return Err("Use a .json backup file".into()); }
+    let mut settings = state.settings.lock();
+    if action == "export" {
+        let collections = state.personal.collections();
+        let value = serde_json::json!({"version":1,"preferences":personal::portable(&settings),"folders":collections["folders"],"smartPlaylists":collections["smartPlaylists"]});
+        std::fs::write(path,serde_json::to_vec_pretty(&value).map_err(|error| error.to_string())?).map_err(|error|error.to_string())?;
+    } else if action == "import" {
+        let backup = personal::read_backup(std::path::Path::new(&path)).map_err(|error|error.to_string())?;
+        let next = personal::apply_preferences(&settings,&backup.preferences).map_err(|error|error.to_string())?;
+        state.personal.import_collections(backup.folders,backup.smart_playlists).map_err(|error|error.to_string())?;
+        next.save().map_err(|error|error.to_string())?; *settings = next;
+        state.personal.preferences_changed(&settings); state.wave.set_preferences(settings.music_taste.clone());
+        if let Some(player) = &state.player { player.set_audio_preferences(settings.normalization,settings.crossfade_ms,settings.gapless); player.set_autoplay(settings.autoplay); }
+    } else { return Err("Unknown backup action".into()); }
     Ok(settings.clone())
 }
 
@@ -2240,6 +2339,7 @@ fn toggle_quick_access(
     let mut settings = state.settings.lock();
     let pinned = settings.toggle_quick_access(item);
     settings.save().map_err(|error| error.to_string())?;
+    state.personal.preferences_changed(&settings);
     Ok(pinned)
 }
 
@@ -2436,6 +2536,9 @@ fn set_setting(
 ) -> Result<(), String> {
     let mut settings = state.settings.lock();
     match key.as_str() {
+        "normalization" => settings.normalization = value.as_bool().ok_or("Expected true or false")?,
+        "gapless" => settings.gapless = value.as_bool().ok_or("Expected true or false")?,
+        "crossfade_ms" => settings.crossfade_ms = value.as_u64().ok_or("Expected transition duration")?.min(8000) as u32,
         "music_taste" => {
             let mut taste: config::MusicTaste = serde_json::from_value(value).map_err(|e| e.to_string())?;
             taste.normalize();
@@ -2652,6 +2755,8 @@ fn set_setting(
         _ => return Err("Unknown setting".into()),
     }
     settings.save().map_err(|e| e.to_string())?;
+    if let Some(player) = &state.player { player.set_audio_preferences(settings.normalization,settings.crossfade_ms,settings.gapless); }
+    state.personal.preferences_changed(&settings);
     drop(settings);
     if key == "eq_auto" {
         *state.last_eq_track.lock() = None;
@@ -3107,6 +3212,7 @@ async fn sign_out(state: tauri::State<'_, AppState>) -> Result<(), String> {
         .sign_out()
         .await
         .map_err(|error| error.to_string())?;
+    state.personal.detach_account().map_err(|error| error.to_string())?;
     state.store.set_signed_in(false);
     state.store.clear();
     *state.wave_session.lock() = None;
@@ -3366,6 +3472,7 @@ pub fn run() {
                     let close_to_tray = settings.close_to_tray;
                     drop(settings);
                     if !close_to_tray {
+                        state.personal.flush();
                         state.persist_wave_active(state.wave_session.lock().is_some());
                         if let Some(player) = &state.player { player.shutdown(); }
                     }
@@ -3532,6 +3639,7 @@ pub fn run() {
                                 }
                             }
                             state.persist_wave_active(state.wave_session.lock().is_some());
+                            state.personal.flush();
                             if let Some(player) = &state.player { player.shutdown(); }
                         }
                         app.exit(0);
@@ -3557,6 +3665,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            personal_collections, listening_statistics, update_personal_collection, smart_playlist_tracks,
+            sleep_timer, sync_personal_data, settings_backup,
             connection,
             my_profile,
             take_pending_link,

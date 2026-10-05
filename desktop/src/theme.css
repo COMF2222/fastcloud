@@ -1,5 +1,7 @@
 /* Optional user colours override both base themes and artwork-local palettes. */
 :root { --interface-text-scale: 1; --interface-scale: 1; --layout-scale: 1; --navigation-scale: 1; font-size: calc(16px * var(--interface-text-scale)); }
+:root { --on-light-control: #181a21; }
+.play-button, .catalog-feature-play { color: var(--on-light-control); }
 :root[data-custom-text="true"], :root[data-custom-text="true"] :is(.detail-page, .search-welcome, .catalog-hero, .catalog-feature, .now-playing) { --text: var(--user-text); color: var(--text); }
 :root[data-custom-muted-text="true"], :root[data-custom-muted-text="true"] :is(.detail-page, .search-welcome, .catalog-hero, .catalog-feature, .now-playing) { --text-muted: var(--user-text-muted); }
 :root[data-custom-text="true"] :is(.page-kicker, .my-wave-copy small) { color: var(--text); }
@@ -11,8 +13,9 @@
 :root[data-custom-panels="true"] :where(
   .sidebar, .topbar, .player-bar, .settings-card, .settings-nav, .track-list,
   .my-wave, .card, .artist-card, .profile-hero, .library-stats > button, .comment,
+  .listening-summary > div, .sleep-dialog,
   .lyrics-panel-header, .search-box, .account-card, .search-start,
-  .search-welcome, .catalog-hero, .catalog-feature, .page-intro, .section-title,
+  .search-welcome, .catalog-hero, .catalog-feature,
   .detail-hero, .detail-content-panel, .detail-owner, .detail-metrics > span,
   .track-liner-stats > span, .track-community-main .comments, .track-uploader-card,
   .track-side-related, .playlist-ribbon, .comment-form, .creator-form,
@@ -29,6 +32,13 @@
 :root[data-custom-panels="true"] :is(.sidebar, .topbar, .player-bar, .settings-nav, .now-playing-header) { background: var(--panel-nav-fill) !important; }
 :root[data-custom-panels="true"] :is(.row-menu, .artist-credit-menu, .quick-access-sort-menu, .queue-panel, .selection-playlists, .shortcuts-panel, .sound-controls-panel, .login-card, .color-picker-popover, .account-card, .search-box, .settings-search, .theme-preview) { background: var(--panel-raised-fill) !important; }
 :root[data-custom-panels="true"] :is(.storage-breakdown, .storage-paths, .detail-metrics > span, .track-liner-stats > span) { background: transparent !important; backdrop-filter: none !important; }
+:root[data-custom-panels="true"] :is(.settings-card, .track-list, .my-wave, .catalog-hero, .catalog-feature, .quick-pick) { box-shadow: none; }
+:root[data-custom-panels="true"] :is(.nav-item.active, .settings-nav button.active, .library-subitem.active, .queue-item.playing) { background: color-mix(in srgb, var(--panel-accent) 10%, var(--panel-nav-fill)); color: var(--accent-readable); }
+:root[data-custom-panels="true"] :is(.track-row, .queue-item):hover { background: color-mix(in srgb, var(--panel-text) 6%, var(--panel-fill)) !important; }
+:root[data-custom-panels="true"] :is(input:not([type="range"]):not([type="checkbox"]), textarea, select, .color-picker-trigger, .secondary-button) { border-color: var(--panel-control-line); }
+:root[data-custom-panels="true"] .catalog-hero-stats span { background: var(--panel-raised-fill); border-color: var(--panel-line); }
+:root[data-custom-panels="true"][data-heading-opacity="false"] :is(.section-title, .page-intro) { background: transparent !important; backdrop-filter: none !important; border-color: transparent; }
+:root[data-custom-panels="true"] :is(.section-title, .page-intro) { text-shadow: none; border-radius: 12px; }
 :root[data-custom-panels="true"][data-transparent-headings="true"] :is(.section-title, .page-intro) { --text: var(--page-text); --text-muted: var(--page-muted); --user-text: var(--page-text); --user-text-muted: var(--page-muted); }
 :root[data-custom-panels="true"] :is(.track-row, .queue-item):not(:hover):not(.selected):not(.is-current):not(.playing) { background: transparent !important; }
 /* The lyrics header shares the topbar's single surface. Tint the body separately
@@ -48,7 +58,7 @@
 :root { --heading-rgb: 18 20 29; }
 html[data-theme="light"] { --heading-rgb: 249 250 245; }
 .detail-page { --heading-rgb: 18 20 29; }
-:root[data-heading-opacity="true"] .app-shell :is(.section-title, .page-intro) { background: rgb(var(--user-heading-rgb, var(--heading-rgb)) / var(--heading-opacity)) !important; backdrop-filter: blur(calc(var(--panel-blur, 12px) * var(--heading-opacity))) !important; border-color: color-mix(in srgb, var(--line) calc(var(--heading-opacity) * 100%), transparent) !important; }
+:root[data-heading-opacity="true"] .app-shell :is(.section-title, .page-intro) { background: rgb(var(--user-heading-rgb, var(--heading-rgb)) / var(--heading-opacity)) !important; backdrop-filter: blur(calc(var(--panel-blur, 12px) * var(--heading-opacity))) !important; border-color: color-mix(in srgb, var(--line) calc(var(--heading-opacity) * 100%), transparent) !important; --text: var(--heading-text); --text-muted: var(--heading-muted); --user-text: var(--heading-text); --user-text-muted: var(--heading-muted); color: var(--text); }
 :root[data-heading-opacity="true"][data-quality="eco"] .app-shell :is(.section-title, .page-intro) { backdrop-filter: none !important; }
 .theme-heading-opacity { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
 .theme-heading-opacity > .theme-range-control { flex: 1; min-width: 0; }

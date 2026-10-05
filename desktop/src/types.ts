@@ -72,6 +72,9 @@ export type Connection =
   | { status: 'pairing'; code: string; url: string }
   | { status: 'error'; message: string }
 export type PlayerState = {
+  canUndoQueue: boolean
+  sleepRemainingMs: number | null
+  sleepAfterTrack: boolean
   queue: Track[]
   current: number | null
   waveActive: boolean
@@ -91,12 +94,17 @@ export type PlayerState = {
   error: string | null
 }
 export type OfflineEntry = { track: Track; bytes: number; pinned: boolean }
+export type PlaylistFolder = { name: string; playlistIds: number[]; pinned: boolean; order: number }
+export type SmartPlaylist = { name: string; genre: string; addedDays: number; unplayedDays: number; limit: number }
+export type PersonalCollections = { folders: Record<string, PlaylistFolder>; smartPlaylists: Record<string, SmartPlaylist>; syncStatus: string }
+export type ListeningTrack = { trackId: number; title: string; artist: string; genre: string; ms: number; plays: number; lastPlayed: number }
+export type ListeningStatistics = { totals: { ms: number; plays: number }; daily: { day: string; ms: number; plays: number }[]; tracks: ListeningTrack[]; syncStatus: string }
 export type OfflineCapacity = { usedBytes: number; freeBytes: number; limitBytes: number }
 export type MusicTaste = { discovery: number; diversity: number; repeat_days: number; genres: string[] }
 export type ProblemReport = { version: string; os: string; architecture: string; connection: string; queueLength: number; playing: boolean; loading: boolean; errorStage: string; sampleRate: number; bitrateKbps: number; settingsVersion: number }
 export type StorageReport = { installationBytes: number; clapModelBytes: number; clapRuntimeBytes: number; clapPreparationBytes: number; offlineBytes: number; audioCacheBytes: number; artworkCacheBytes: number; otherDataBytes: number; otherCacheBytes: number; extraAppDataBytes: number; installationPath: string; dataPath: string; cachePath: string; extraAppDataPath: string }
 export type MainWindowBounds = { x: number; y: number; width: number; height: number; maximized: boolean }
-export type Settings = { settings_version: number; music_taste: MusicTaste; theme_presets: import("./themePresets").ThemePreset[]; offline_limit_mb: number; autoplay: boolean; compact_rows: boolean; visualiser: 'Spectrum' | 'Scope' | 'Off'; theme: 'Dark' | 'Light' | 'System'; language: 'English' | 'Russian'; liked_ids: number[]; followed_user_ids: number[]; quick_access: QuickAccessShortcut[]; inbox: { label: string; link: string; at: number }[]; mono: boolean; balance: number; eq_enabled: boolean; eq_preamp_db: number; eq_gains_db: number[]; startup_page: 'Home' | 'Search' | 'Library' | 'Settings'; main_window_bounds: MainWindowBounds | null; close_to_tray: boolean; memory_profile: 'Eco' | 'Balanced' | 'Quality'; reduced_motion: boolean; accent_rgb: number[]; panel_rgb: number[] | null; panel_opacity: number; panel_blur: number; heading_opacity: number | null; text_rgb: number[] | null; muted_text_rgb: number[] | null; interface_text_scale: number; interface_scale: number; background_image: string | null; interface_font: string | null; background_opacity: number; background_dim: number; background_blur: number; background_overlay: number; lyrics_scale: number; lyrics_blur_past: boolean; lyrics_auto_scroll: boolean; show_track_numbers: boolean; soundcloud_profile_url: string | null; discord_client_id: string; discord_presence: boolean; audio_cache_limit_mb: number; eq_auto: boolean; mini_player_style: 'Airwave' | 'Winamp'; winamp_window: boolean; winamp_on_top: boolean; winamp_skin: string | null; winamp_shade: boolean; winamp_eq_window: boolean; winamp_eq_shade: boolean; winamp_pl_window: boolean; winamp_pl_shade: boolean; winamp_pl_rows: number; winamp_scale: number }
+export type Settings = { normalization: boolean; crossfade_ms: number; gapless: boolean; settings_version: number; music_taste: MusicTaste; theme_presets: import("./themePresets").ThemePreset[]; offline_limit_mb: number; autoplay: boolean; compact_rows: boolean; visualiser: 'Spectrum' | 'Scope' | 'Off'; theme: 'Dark' | 'Light' | 'System'; language: 'English' | 'Russian'; liked_ids: number[]; followed_user_ids: number[]; quick_access: QuickAccessShortcut[]; inbox: { label: string; link: string; at: number }[]; mono: boolean; balance: number; eq_enabled: boolean; eq_preamp_db: number; eq_gains_db: number[]; startup_page: 'Home' | 'Search' | 'Library' | 'Settings'; main_window_bounds: MainWindowBounds | null; close_to_tray: boolean; memory_profile: 'Eco' | 'Balanced' | 'Quality'; reduced_motion: boolean; accent_rgb: number[]; panel_rgb: number[] | null; panel_opacity: number; panel_blur: number; heading_opacity: number | null; text_rgb: number[] | null; muted_text_rgb: number[] | null; interface_text_scale: number; interface_scale: number; background_image: string | null; interface_font: string | null; background_opacity: number; background_dim: number; background_blur: number; background_overlay: number; lyrics_scale: number; lyrics_blur_past: boolean; lyrics_auto_scroll: boolean; show_track_numbers: boolean; soundcloud_profile_url: string | null; discord_client_id: string; discord_presence: boolean; audio_cache_limit_mb: number; eq_auto: boolean; mini_player_style: 'Airwave' | 'Winamp'; winamp_window: boolean; winamp_on_top: boolean; winamp_skin: string | null; winamp_shade: boolean; winamp_eq_window: boolean; winamp_eq_shade: boolean; winamp_pl_window: boolean; winamp_pl_shade: boolean; winamp_pl_rows: number; winamp_scale: number }
 export type VisualiserFrame = { bars: number[]; peaks: (number | null)[]; scope: number[] }
 export type WaveformSamples = { values: number[]; height: number }
 

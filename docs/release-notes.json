@@ -2,6 +2,39 @@
   "schema": 1,
   "releases": [
     {
+      "version": "0.4.0",
+      "ru": {
+        "title": "Твоя музыка и настройки между устройствами",
+        "changes": [
+          "Добавлена личная статистика отдельной кнопкой в сайдбаре: время музыки, число прослушиваний, активность по дням, исполнители, жанры и треки. Паузы, загрузка и перемотка не добавляют минуты; статистика собирается с этой версии.",
+          "Плейлисты можно распределять по папкам, закреплять и менять порядок папок, искать по названию или автору. Оригинальные плейлисты SoundCloud остаются на месте.",
+          "Умные плейлисты автоматически выбирают треки из лайков по жанру, дате добавления и времени последнего прослушивания. Для старых лайков дата добавления может быть неизвестна.",
+          "Оформление, свои пресеты, музыкальный вкус, закрепления, папки, правила подборок и личная статистика синхронизируются через аккаунт Fastcloud. Локальная копия сохраняется при отсутствии сети.",
+          "Настройки, пресеты и коллекции можно сохранить в JSON и восстановить из файла. Токены, локальные пути к фонам и шрифтам, скачанные треки и история прослушивания в резервную копию не входят.",
+          "Появился таймер сна на 15–120 минут или после текущего трека, с плавным затиханием перед остановкой. Таймер после трека отменяется при ручном выборе другой песни.",
+          "Добавлены выравнивание громкости по началу записи, плавные переходы на 2–8 секунд и подготовка следующего трека для воспроизведения без паузы. Если следующий поток не готов, плеер использует обычное переключение.",
+          "Последние пять изменений очереди можно отменить. По возможности текущий трек продолжает звучать без перезапуска.",
+          "При высокой непрозрачности цвет подложек смягчается под тёмную или светлую тему; 100% полностью скрывают фон за панелями. Заголовки своих подложек по умолчанию остаются без отдельной заливки, исправлен контраст иконки Play.",
+          "Убрана техническая подпись о готовой модели рекомендаций и повторном использовании файлов."
+        ]
+      },
+      "en": {
+        "title": "Your music and settings across devices",
+        "changes": [
+          "Personal listening statistics have their own sidebar button: listening time, listen counts, daily activity, artists, genres and tracks. Pauses, loading and seeking do not add minutes; tracking starts with this version.",
+          "Organise playlists into folders, pin and reorder folders, and search by title or creator. Original SoundCloud playlists remain unchanged.",
+          "Smart playlists automatically select liked tracks by genre, like date and last-played time. Older like dates may be unknown.",
+          "Appearance, custom presets, musical taste, pins, folders, collection rules and personal listening statistics sync with your Fastcloud account. The local copy is kept when offline.",
+          "Export settings, presets and collections as JSON and restore them from a file. Backups exclude tokens, local wallpaper/font paths, downloads and listening history.",
+          "Set a sleep timer for 15–120 minutes or after the current track, with a fade before pausing. Choosing another song manually cancels an after-track timer.",
+          "Volume normalization estimates the opening of each recording. Optional 2–8 second crossfade and next-track preparation support smoother playback; ordinary switching is used when the next stream is not ready.",
+          "Undo the last five queue edits, preserving the currently playing track without restarting it where possible.",
+          "At high opacity, surface colours soften to suit dark or light mode; 100% completely hides the wallpaper behind panels. Custom surface headings default to no separate fill, and Play icon contrast has been corrected.",
+          "Removed the technical message about the ready recommendation model and reuse of unchanged files."
+        ]
+      }
+    },
+    {
       "version": "0.3.1",
       "ru": {
         "title": "Удобнее настройки вкуса и оформления",

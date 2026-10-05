@@ -67,6 +67,11 @@ fn write_stereo_frame(frame: &mut [f32], left: f32, right: f32) {
 
 /// Shared playback state consumed by the cpal audio callback.
 pub struct OutputState {
+    tail: Option<FadeTail>,
+    pub normalization: bool,
+    recording_gain: f32,
+    smooth_gain: f32,
+    pub sleep_gain: f32,
     /// Interleaved stereo f32 samples at `source_rate`, produced by the decode thread.
     /// Consumed prefix is drained by the producer side; see `maybe_compact`.
     pub buffer: Vec<f32>,
@@ -103,6 +108,7 @@ pub struct OutputState {
 impl Default for OutputState {
     fn default() -> Self {
         Self {
+            tail: None, normalization: false, recording_gain: 1.0, smooth_gain: 1.0, sleep_gain: 1.0,
             buffer: Vec::new(),
             pos_frames: 0.0,
             consumed_frames: 0,
@@ -119,6 +125,34 @@ impl Default for OutputState {
             track_seq: 0,
         }
     }
+}
+
+struct FadeTail {
+    buffer: Vec<f32>, pos: f64, rate: u32, duration_frames: f64, elapsed_frames: f64, gain: f32,
+}
+
+fn mixed_frame(state: &mut OutputState, device_rate: u32) -> (f32, f32) {
+    let ratio = state.source_rate as f64 / device_rate.max(1) as f64 * f64::from(state.playback_speed);
+    let target = if state.normalization { state.recording_gain } else { 1.0 };
+    state.smooth_gain += (target - state.smooth_gain) * 0.002;
+    let (l,r) = next_frame(state, ratio);
+    let mut result = (l * state.smooth_gain, r * state.smooth_gain);
+    if let Some(tail) = &mut state.tail {
+        let index = tail.pos.floor() as usize;
+        let amount = (tail.elapsed_frames / tail.duration_frames.max(1.0)).clamp(0.0,1.0) as f32;
+        if index + 1 < tail.buffer.len() / 2 {
+            let fraction = (tail.pos - index as f64) as f32;
+            let old_l = tail.buffer[index*2] + (tail.buffer[(index+1)*2] - tail.buffer[index*2]) * fraction;
+            let old_r = tail.buffer[index*2+1] + (tail.buffer[(index+1)*2+1] - tail.buffer[index*2+1]) * fraction;
+            // Complementary linear ramps avoid the +3 dB sum of identical
+            // signals produced by equal-power fades.
+            result = (result.0 * amount + old_l * tail.gain * (1.0-amount), result.1 * amount + old_r * tail.gain * (1.0-amount));
+        }
+        tail.pos += tail.rate as f64 / device_rate.max(1) as f64 * f64::from(state.playback_speed);
+        tail.elapsed_frames += f64::from(state.playback_speed);
+        if tail.elapsed_frames >= tail.duration_frames { state.tail = None; }
+    }
+    (result.0 * state.sleep_gain, result.1 * state.sleep_gain)
 }
 
 impl OutputState {
@@ -274,11 +308,10 @@ impl AudioOutput {
                     data.fill(0.0);
                     return;
                 }
-                let sr_ratio = state.source_rate as f64 / config_rate as f64 * f64::from(state.playback_speed);
                 let (gain_l, gain_r) = state.channel_gain();
                 tapped.clear();
                 for frame in data.chunks_mut(output_channels) {
-                    let (l, r) = next_frame(&mut state, sr_ratio);
+                    let (l, r) = mixed_frame(&mut state, config_rate);
                     let (mut l, mut r) = if state.eq_enabled {
                         eq.process_stereo(l, r)
                     } else {
@@ -291,7 +324,7 @@ impl AudioOutput {
                     tapped.push(r);
                     l *= gain_l;
                     r *= gain_r;
-                    let (l, r) = limit_if_needed(&mut limiter, state.eq_enabled, l, r);
+                    let (l, r) = limit_if_needed(&mut limiter, state.eq_enabled || state.normalization || state.tail.is_some(), l, r);
                     write_stereo_frame(frame, l, r);
                 }
                 drop(state);
@@ -322,6 +355,9 @@ impl AudioOutput {
     pub fn start_track(&self, samples: Vec<f32>, rate: u32, playing: bool, start_ms: u64) {
         let mut s = self.state.lock();
         let rate = rate.max(1);
+        s.recording_gain = super::level::recording_gain(&samples);
+        s.smooth_gain = if s.normalization { s.recording_gain } else { 1.0 };
+        s.tail = None;
         s.buffer = samples;
         s.pos_frames = 0.0;
         s.consumed_frames = start_ms * u64::from(rate) / 1000;
@@ -330,6 +366,27 @@ impl AudioOutput {
         s.track_seq = s.track_seq.wrapping_add(1);
         self.cond.notify_all();
     }
+
+    /// Preserve only the buffered outgoing tail; all further decoding belongs
+    /// to the incoming recording. Source rates are resampled independently.
+    pub fn start_crossfade(&self, samples: Vec<f32>, rate: u32, fade_ms: u64) {
+        let mut state = self.state.lock();
+        maybe_compact(&mut state);
+        let frames = ((fade_ms * u64::from(state.source_rate)) / 1000) as usize;
+        let old = state.buffer[..state.buffer.len().min((frames + 2) * 2)].to_vec();
+        let tail = FadeTail { buffer: old, pos: state.pos_frames, rate: state.source_rate,
+            duration_frames: fade_ms as f64 * f64::from(self.device_sample_rate) / 1000.0,
+            elapsed_frames: 0.0, gain: state.smooth_gain };
+        state.recording_gain = super::level::recording_gain(&samples);
+        state.smooth_gain = if state.normalization { state.recording_gain } else { 1.0 };
+        state.buffer = samples; state.source_rate = rate.max(1); state.pos_frames = 0.0; state.consumed_frames = 0;
+        state.tail = if fade_ms > 0 { Some(tail) } else { None };
+        state.track_seq = state.track_seq.wrapping_add(1);
+        self.cond.notify_all();
+    }
+
+    pub fn set_normalization(&self, enabled: bool) { self.state.lock().normalization = enabled; }
+    pub fn set_sleep_gain(&self, gain: f32) { self.state.lock().sleep_gain = gain.clamp(0.0,1.0); }
 
     /// Append decoded samples for gapless continuation.
     /// Drains the consumed prefix first so long HLS sessions stay bounded
@@ -390,6 +447,7 @@ impl AudioOutput {
     /// stream for anything further (see `Player::seek_ms`).
     pub fn seek_ms(&self, ms: u64) {
         let mut s = self.state.lock();
+        s.tail = None;
         let rate = u64::from(s.source_rate.max(1));
         let target = ms * rate / 1000;
         let total = s.buffer.len() as u64 / 2;
@@ -508,6 +566,17 @@ fn next_frame(state: &mut OutputState, sr_ratio: f64) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crossfade_blends_rates_without_exceeding_identical_source_level() {
+        let output = AudioOutput::silent([0.0;10],1.0);
+        output.start_track(vec![0.5; 44100 * 2],44100,true,0);
+        output.start_crossfade(vec![0.5; 48000 * 2],48000,1000);
+        let mut state = output.state.lock();
+        for _ in 0..48000 { let (l,r) = mixed_frame(&mut state,48000); assert!(l <= 0.5001 && r <= 0.5001); }
+        assert!(state.tail.is_none());
+        assert_eq!(state.source_rate,48000);
+    }
 
     #[test]
     fn state_defaults() {

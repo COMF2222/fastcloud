@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { queueRows, queuePlaylistIds } from '../src/queue.ts'
 import { builtInThemes, captureTheme, savedThemes, themeIsActive, validateTheme } from '../src/themePresets.ts'
-import { contrast, panelPalette, readableAccent } from '../src/theme.ts'
+import { contrast, headingSurfaceOpacity, luminance, panelPalette, readableAccent } from '../src/theme.ts'
 import { playbackError } from '../src/playbackErrors.ts'
 import type { Settings, Track } from '../src/types.ts'
 
@@ -50,16 +50,41 @@ test('ready-made palettes preserve user sizes and selection tolerates native flo
   }
 })
 
-test('opaque coloured panels retain readable automatic text and separate surface shades', () => {
-  for (const color of [[181, 156, 225], [244, 237, 222], [23, 20, 34], [117, 117, 117], [255, 0, 0]]) {
-    const palette = panelPalette(color, 1, false)
-    assert.ok(contrast(color, palette.text) >= 4.5)
-    assert.ok(contrast(color, palette.muted) >= 4.5)
-    assert.ok(contrast(color, readableAccent([184, 156, 255], color, palette.text)) >= 4.5)
+test('opaque surfaces stay in the selected theme and all surface levels retain contrast', () => {
+  for (const light of [false, true]) for (const color of [[181, 156, 225], [244, 237, 222], [23, 20, 34], [117, 117, 117], [255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 255], [0, 0, 0]]) {
+    const palette = panelPalette(color, 1, light)
+    assert.ok(light ? luminance(palette.surface) >= .7 : luminance(palette.surface) <= .07)
+    for (const background of palette.backgrounds) {
+      assert.ok(contrast(background, palette.text) >= 4.5)
+      assert.ok(contrast(background, palette.muted) >= 4.5)
+      assert.ok(contrast(background, palette.controlLine) >= 3)
+    }
+    assert.ok(contrast(palette.background, readableAccent([184, 156, 255], palette.background, palette.text)) >= 4.5)
     assert.equal(palette.alpha, 1)
     assert.notDeepEqual(palette.nav, palette.raised)
   }
   assert.equal(panelPalette([23, 20, 34], 0, false).alpha, 0)
+  assert.deepEqual(panelPalette([181,156,225],.1,false).surface,[181,156,225])
+})
+
+test('surface tint changes continuously and automatic headings avoid a second panel', () => {
+  let previous = panelPalette([181,156,225],0,false).surface
+  for (let index = 1; index <= 100; index++) {
+    const surface = panelPalette([181,156,225],index/100,false).surface
+    assert.ok(surface.every((channel, i) => Math.abs(channel - previous[i]) <= 5))
+    previous = surface
+  }
+  const settings = { panel_rgb:[181,156,225],panel_opacity:1,heading_opacity:null } as Settings
+  assert.equal(headingSurfaceOpacity(settings),0)
+  assert.equal(headingSurfaceOpacity({ ...settings, heading_opacity:.6 }),.6)
+  for (const light of [false,true]) {
+    let previous = panelPalette([0,0,0],1,light).surface
+    for (let channel = 1; channel <= 255; channel++) {
+      const surface = panelPalette([channel,channel,channel],1,light).surface
+      assert.ok(surface.every((value,i) => Math.abs(value - previous[i]) <= 4))
+      previous = surface
+    }
+  }
 })
 
 test('account cache can reset when WebView storage is unavailable', async () => {

@@ -48,6 +48,10 @@ pub struct Settings {
     pub music_taste: MusicTaste,
     pub theme_presets: Vec<serde_json::Value>,
     pub offline_limit_mb: u64,
+    pub normalization: bool,
+    pub crossfade_ms: u32,
+    #[serde(default = "default_true")]
+    pub gapless: bool,
     pub theme: ThemeMode,
     /// Language used by the application interface.
     #[serde(default)]
@@ -264,6 +268,9 @@ impl Default for Settings {
             music_taste: MusicTaste::default(),
             theme_presets: Vec::new(),
             offline_limit_mb: 0,
+            normalization: false,
+            crossfade_ms: 0,
+            gapless: true,
             theme: ThemeMode::Dark,
             language: Language::English,
             memory_profile: MemoryProfile::Balanced,
@@ -578,6 +585,7 @@ impl Settings {
         settings.music_taste.normalize();
         settings.theme_presets.truncate(20);
         settings.offline_limit_mb = settings.offline_limit_mb.min(102_400);
+        settings.crossfade_ms = settings.crossfade_ms.min(8000);
         settings.settings_version = 2;
         settings.interface_text_scale = settings.interface_text_scale
             .clamp(INTERFACE_TEXT_SCALE_MIN, INTERFACE_TEXT_SCALE_MAX);
@@ -594,7 +602,12 @@ impl Settings {
 
     pub fn save(&self) -> Result<()> {
         let path = settings_path()?;
-        self.save_to_preserving_session(&path)
+        self.save_to(&path)
+    }
+
+    /// Save UI preferences while preserving the player's latest session.
+    pub fn save_to(&self, path: &std::path::Path) -> Result<()> {
+        self.save_to_preserving_session(path)
     }
 
     fn save_to_preserving_session(&self, path: &std::path::Path) -> Result<()> {

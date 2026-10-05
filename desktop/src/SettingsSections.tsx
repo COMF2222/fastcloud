@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from './api'
 import type { Settings } from './types'
 import { ThemePresets } from './AppImprovements'
+import { PlaybackOptions } from './PersonalPages'
 import { ThemeSettings } from './ThemeSettings'
 import { ColorPicker } from './ColorPicker'
 import { SpotifyImport } from './SpotifyImport'
@@ -78,7 +79,7 @@ export function SettingsSections({ section, settings, update, showDeveloperSetti
     <div className="settings-card"><h3>{t('Шрифт', 'Font')}</h3><div className="inline-form"><button className="secondary-button" disabled={api.preview} onClick={() => void choose('font')}>{t('Выбрать файл…', 'Choose file…')}</button>{settings.interface_font && <button className="secondary-button" onClick={() => void update('interface_font', null)}>{t('Стандартный шрифт', 'Default font')}</button>}</div></div>{message && <p role="status" className="muted">{message}</p>}
   </>
 
-  if (section === 'sound') return <>
+  if (section === 'sound') return <><PlaybackOptions settings={settings} update={update} />
     <div className="settings-card"><h3>{t('Воспроизведение', 'Playback')}</h3><label className="setting-row"><span><strong>{t('Автовоспроизведение', 'Autoplay')}</strong><small>{t('Подбирать треки после конца очереди', 'Find similar tracks when the queue ends')}</small></span><input type="checkbox" checked={settings.autoplay} onChange={event => void update('autoplay', event.target.checked)} /></label><label className="setting-row"><span><strong>{t('Моно', 'Mono')}</strong></span><input type="checkbox" checked={settings.mono} onChange={event => void update('mono', event.target.checked)} /></label><label className="setting-row"><span><strong>{t('Пресеты EQ для треков', 'Per-track EQ presets')}</strong><small>{t('Сохрани настройки EQ для текущего трека. При следующем воспроизведении они применятся автоматически. Без сохранённого пресета звук не меняется.', 'Save an EQ preset for the current track. It will be applied automatically next time. Without a saved preset, the sound stays unchanged.')}</small></span><input type="checkbox" checked={settings.eq_auto} onChange={event => void update('eq_auto', event.target.checked)} /></label>{player?.current != null && <div className="inline-form"><button className="secondary-button" onClick={() => void api.eqPreset().then(() => setMessage(t('Пресет сохранён для текущего трека', 'Preset saved for this track'))).catch(error => setMessage(String(error)))}>{t('Сохранить EQ для трека', 'Save EQ for track')}</button><button className="secondary-button" onClick={() => void api.eqPreset(true).then(() => setMessage(t('Пресет трека удалён', 'Track preset removed'))).catch(error => setMessage(String(error)))}>{t('Удалить пресет', 'Remove preset')}</button></div>}</div>
     <div className="settings-card"><h3>{t('Мини-плеер', 'Mini player')}</h3><p className="muted">{t('Компактное окно Airwave. Переключайся кнопкой в плеере или Ctrl+M.', 'Compact Airwave window. Use the player button or Ctrl+M to switch.')}</p><label className="setting-row"><span><strong>{t('Поверх окон', 'Always on top')}</strong></span><input type="checkbox" checked={settings.winamp_on_top} onChange={event => void update('winamp_on_top', event.target.checked)} /></label></div>
     {message && <p role="status" className="muted">{message}</p>}

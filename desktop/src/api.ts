@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { captureTheme, validateTheme, type ThemePreset } from './themePresets'
-import type { ProblemReport, OfflineCapacity, Comment, Connection, Data, LyricsRecord, LyricTrackMatch, Me, OfflineEntry, PlayerState, Playlist, QuickAccessShortcut, Settings, StorageReport, Track, User, VisualiserFrame, WaveformSamples, WebProfile } from './types'
+import type { PersonalCollections, ListeningStatistics, SmartPlaylist, ProblemReport, OfflineCapacity, Comment, Connection, Data, LyricsRecord, LyricTrackMatch, Me, OfflineEntry, PlayerState, Playlist, QuickAccessShortcut, Settings, StorageReport, Track, User, VisualiserFrame, WaveformSamples, WebProfile } from './types'
 import { cachedLibraryData, clearLibraryCache, forgetLibraryEntry, setCacheConnection } from './libraryCache'
 import { emptySpotifyImport, type SpotifyImportSelection, type SpotifyImportView } from './spotifyImportTypes'
 import { releaseNotesUrl } from './releaseNotes'
@@ -40,7 +40,7 @@ const demo: Track[] = [
   'Northern Lights', 'Sunset Drive', 'Rain on Glass', 'Neon District', 'Paper Planes',
   'Golden Hour', 'Static Fields', 'Low Tide', 'Concrete Garden', 'Afterglow',
 ].map((title, index) => ({ id: 1000 + index, title, duration: 120000 + index * 13000, user: { id: 1, username: 'SoundCloud Demo' }, genre: 'Ambient / Electronic', playback_count: 10000 + index * 2341 }))
-let previewPlayer: PlayerState = { queue: [...demo], current: null, waveActive: false, isPlaying: false, loading: false, positionMs: 0, durationMs: 0, previewFallback: false, volume: .8, playbackSpeed: 1, shuffle: false, repeat: 'Off', abStartMs: null, abEndMs: null, bitrateKbps: 0, sampleRate: 0, error: null }
+let previewPlayer: PlayerState = { canUndoQueue: false, sleepRemainingMs: null, sleepAfterTrack: false, queue: [...demo], current: null, waveActive: false, isPlaying: false, loading: false, positionMs: 0, durationMs: 0, previewFallback: false, volume: .8, playbackSpeed: 1, shuffle: false, repeat: 'Off', abStartMs: null, abEndMs: null, bitrateKbps: 0, sampleRate: 0, error: null }
 const previewLikes = new Set<number>()
 const previewWaveDislikes = new Set<number>()
 const previewOffline = new Map<number, OfflineEntry>()
@@ -49,7 +49,7 @@ const previewPlaylists: Playlist[] = ['Neon Nights', 'Low Tide Radio', 'Concrete
 const previewPlaylistTracks = new Map<number, number[]>()
 const previewFollowed = new Set<number>()
 const previewUsers: User[] = [{ id: 1, username: 'SoundCloud Demo', full_name: 'Fastcloud Preview', description: 'Здесь можно посмотреть, как будут выглядеть треки, альбомы и плейлисты твоего профиля.', followers_count: 0, track_count: demo.length, public_playlists_count: previewPlaylists.length }]
-const previewSettings: Settings = { settings_version: 2, music_taste: { discovery: .5, diversity: .5, repeat_days: 2, genres: [] }, theme_presets: [], offline_limit_mb: 0, autoplay: true, compact_rows: false, visualiser: 'Spectrum', theme: 'Dark', language: 'Russian', liked_ids: [], followed_user_ids: [], quick_access: [], inbox: [], mono: false, balance: 0, eq_enabled: false, eq_preamp_db: 0, eq_gains_db: Array(10).fill(0), startup_page: 'Home', main_window_bounds: null, close_to_tray: true, memory_profile: 'Balanced', reduced_motion: false, accent_rgb: [255, 85, 25], background_image: null, interface_font: null, discord_client_id: '', discord_presence: false, background_opacity: .25, background_dim: 0, background_blur: 0, background_overlay: .8, panel_rgb: null, panel_opacity: .85, panel_blur: 12, heading_opacity: null, text_rgb: null, muted_text_rgb: null, interface_text_scale: 1, interface_scale: 1, lyrics_scale: 1, lyrics_blur_past: true, lyrics_auto_scroll: true, show_track_numbers: true, soundcloud_profile_url: null, audio_cache_limit_mb: 2048, eq_auto: false, mini_player_style: 'Airwave', winamp_window: false, winamp_on_top: false, winamp_skin: null, winamp_shade: false, winamp_eq_window: false, winamp_eq_shade: false, winamp_pl_window: false, winamp_pl_shade: false, winamp_pl_rows: 8, winamp_scale: 2 }
+const previewSettings: Settings = { normalization: false, crossfade_ms: 0, gapless: true, settings_version: 2, music_taste: { discovery: .5, diversity: .5, repeat_days: 2, genres: [] }, theme_presets: [], offline_limit_mb: 0, autoplay: true, compact_rows: false, visualiser: 'Spectrum', theme: 'Dark', language: 'Russian', liked_ids: [], followed_user_ids: [], quick_access: [], inbox: [], mono: false, balance: 0, eq_enabled: false, eq_preamp_db: 0, eq_gains_db: Array(10).fill(0), startup_page: 'Home', main_window_bounds: null, close_to_tray: true, memory_profile: 'Balanced', reduced_motion: false, accent_rgb: [255, 85, 25], background_image: null, interface_font: null, discord_client_id: '', discord_presence: false, background_opacity: .25, background_dim: 0, background_blur: 0, background_overlay: .8, panel_rgb: null, panel_opacity: .85, panel_blur: 12, heading_opacity: null, text_rgb: null, muted_text_rgb: null, interface_text_scale: 1, interface_scale: 1, lyrics_scale: 1, lyrics_blur_past: true, lyrics_auto_scroll: true, show_track_numbers: true, soundcloud_profile_url: null, audio_cache_limit_mb: 2048, eq_auto: false, mini_player_style: 'Airwave', winamp_window: false, winamp_on_top: false, winamp_skin: null, winamp_shade: false, winamp_eq_window: false, winamp_eq_shade: false, winamp_pl_window: false, winamp_pl_shade: false, winamp_pl_rows: 8, winamp_scale: 2 }
 const previewText = (ru: string, en: string) => previewSettings.language === 'English' ? en : ru
 const previewComments: Comment[] = []
 const previewReposts = new Set<number>()
@@ -62,7 +62,42 @@ function downloadJson(value: unknown, name: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 10_000)
 }
 
+const previewCollections: PersonalCollections = { folders: {}, smartPlaylists: {}, syncStatus: 'demo' }
+const previewQueueHistory: PlayerState[] = []
+let previewSleepUntil: number | null = null
+const previewLikedAt = new Map<number, number>()
+
 export const api = {
+  personalCollections: () => preview ? Promise.resolve({ ...previewCollections }) : invoke<PersonalCollections>('personal_collections'),
+  listeningStatistics: () => preview ? Promise.resolve<ListeningStatistics>({ totals: { ms: 0, plays: 0 }, daily: [], tracks: [], syncStatus: 'demo' }) : invoke<ListeningStatistics>('listening_statistics'),
+  updatePersonalCollection: async (section: 'folders' | 'smartPlaylists', id: string, value: unknown) => {
+    if (!preview) return invoke<void>('update_personal_collection', { section, id, value })
+    if (value === null) delete previewCollections[section][id]
+    else Object.assign(previewCollections[section], { [id]: value })
+  },
+  smartPlaylistTracks: (id: string) => {
+    if (!preview) return invoke<Data<Track[]>>('smart_playlist_tracks', { id })
+    const rule = previewCollections.smartPlaylists[id] as SmartPlaylist | undefined
+    if (!rule) return Promise.resolve<Data<Track[]>>({ status: 'failed', data: 'Smart playlist not found' })
+    const now = Date.now() / 1000
+    return Promise.resolve<Data<Track[]>>({ status: 'ready', data: demo.filter(track => previewLikes.has(track.id) && (!rule.genre || track.genre?.toLowerCase().includes(rule.genre.toLowerCase())) && (!rule.addedDays || (previewLikedAt.get(track.id) || 0) >= now - rule.addedDays * 86400)).slice(0, rule.limit) })
+  },
+  sleepTimer: async (seconds: number | null, afterTrack: boolean) => {
+    if (!preview) return invoke<void>('sleep_timer', { seconds, afterTrack })
+    previewSleepUntil = seconds == null ? null : Date.now() + seconds * 1000
+    previewPlayer.sleepAfterTrack = afterTrack
+  },
+  syncPersonalData: () => preview ? Promise.resolve() : invoke<void>('sync_personal_data'),
+  settingsBackup: async (action: 'export' | 'import'): Promise<Settings> => {
+    if (preview) {
+      if (action === 'import') throw new Error(previewText('Импорт резервной копии доступен в установленном приложении.', 'Backup import is available in the installed app.'))
+      downloadJson({ version: 1, preferences: { ...captureTheme(previewSettings, 'Backup').values, language: previewSettings.language, music_taste: previewSettings.music_taste, theme_presets: previewSettings.theme_presets, quick_access: previewSettings.quick_access, normalization: previewSettings.normalization, crossfade_ms: previewSettings.crossfade_ms, gapless: previewSettings.gapless, autoplay: previewSettings.autoplay, compact_rows: previewSettings.compact_rows, show_track_numbers: previewSettings.show_track_numbers, lyrics_auto_scroll: previewSettings.lyrics_auto_scroll }, folders: previewCollections.folders, smartPlaylists: previewCollections.smartPlaylists }, 'fastcloud-settings.json')
+      return { ...previewSettings }
+    }
+    const selected = action === 'export' ? await save({ defaultPath: 'fastcloud-settings.json', filters: [{ name: 'JSON', extensions: ['json'] }] }) : await open({ multiple: false, filters: [{ name: 'JSON', extensions: ['json'] }] })
+    if (typeof selected !== 'string') return api.settings()
+    return invoke<Settings>('settings_backup', { action, path: selected })
+  },
   themeAction: async (action: 'apply' | 'save' | 'delete' | 'export' | 'import', name?: string, preset?: ThemePreset): Promise<Settings> => {
     let path: string | null = null
     if (action === 'export') {
@@ -113,7 +148,11 @@ export const api = {
   },
   myProfile: () => preview ? Promise.resolve<Data<Me>>({ status: 'ready', data: { id: 1, username: 'SoundCloud Demo', followers_count: 0 } }) : cachedLibraryData('profile', () => invoke<Data<Me>>('my_profile')),
   takePendingLink: () => preview ? Promise.resolve<string | null>(null) : invoke<string | null>('take_pending_link'),
-  player: () => preview ? Promise.resolve({ ...previewPlayer }) : playerState(),
+  player: () => {
+    if (!preview) return playerState()
+    if (previewSleepUntil !== null && previewSleepUntil <= Date.now()) { previewPlayer.isPlaying = false; previewSleepUntil = null }
+    return Promise.resolve({ ...previewPlayer, canUndoQueue: previewQueueHistory.length > 0, sleepRemainingMs: previewSleepUntil === null ? null : Math.max(0, previewSleepUntil - Date.now()) })
+  },
   imageData: (url: string) => preview ? Promise.resolve(url) : invoke<string>('image_data', { url }),
   waveformSamples: (url: string) => preview ? Promise.reject<WaveformSamples>(new Error('Waveform unavailable in preview')) : invoke<WaveformSamples>('waveform_samples', { url }),
   offlineTracks: () => preview ? Promise.resolve([...previewOffline.values()].sort((a, b) => {
@@ -287,6 +326,17 @@ export const api = {
   },
   transport: (action: string, value?: number, index?: number, target?: number) => {
     if (!preview) return invoke<void>('transport', { action, value, index, target })
+    if (['remove', 'move', 'clear_played', 'clear_upcoming', 'clear_queue'].includes(action)) {
+      previewQueueHistory.push(structuredClone(previewPlayer)); if (previewQueueHistory.length > 5) previewQueueHistory.shift()
+    }
+    if (action === 'undo_queue') {
+      const saved = previewQueueHistory.pop()
+      if (saved) {
+        const id = previewPlayer.queue[previewPlayer.current ?? -1]?.id
+        const current = saved.queue.findIndex(track => track.id === id)
+        previewPlayer = current >= 0 ? { ...previewPlayer, queue: saved.queue, current } : saved
+      }
+    }
     const moveTo = (next: number) => {
       previewPlayer.current = previewPlayer.queue[next] ? next : null
       previewPlayer.positionMs = 0
@@ -384,7 +434,7 @@ export const api = {
   saveStorefront: (input: { id: number; title: string; kind: string; link: string; linkTitle: string; description: string; price: string }) => preview ? Promise.reject<void>(new Error(previewText('Витрина доступна после входа в SoundCloud', 'Storefront is available after signing in to SoundCloud'))) : invoke<void>('save_storefront', input),
   setLiked: (trackId: number, liked: boolean) => {
     if (!preview) return afterChange(invoke<void>('set_liked', { trackId, liked }), 'tracks:likes')
-    if (liked) previewLikes.add(trackId); else previewLikes.delete(trackId)
+    if (liked) { previewLikes.add(trackId); previewLikedAt.set(trackId, Date.now() / 1000) } else previewLikes.delete(trackId)
     return Promise.resolve()
   },
   connect: async () => { if (!preview) { clearLibraryCache(); await invoke<void>('connect_account') } },

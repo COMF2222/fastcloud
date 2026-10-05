@@ -12,6 +12,15 @@ use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
+use std::collections::VecDeque;
+
+#[derive(Clone)]
+struct QueueSnapshot { queue: Vec<Track>, order: Vec<usize>, current: Option<usize>, position: u64, playing: bool, shuffle: bool }
+#[derive(Default)]
+struct AudioPreferences { crossfade_ms: u32, gapless: bool }
+struct SleepTimer { deadline: Option<Instant>, track_id: Option<u64> }
+struct PreparedTrack { track: Track, decoder: DecoderSlot, samples: Vec<f32>, rate: u32, duration: u64, bitrate: u32, channels: u16 }
+struct PendingNext { generation: u64, id: u64, prepared: Option<PreparedTrack> }
 
 /// Decode enough before starting the audio device that network and scheduler
 /// jitter cannot turn one MP3 packet into a burst followed by silence.
@@ -184,6 +193,10 @@ enum DecodeAction {
 
 /// Player engine: fetch HLS streams, decode in background, drive AudioOutput.
 pub struct Player {
+    audio_preferences: Mutex<AudioPreferences>,
+    sleep_timer: Mutex<Option<SleepTimer>>,
+    queue_history: Mutex<VecDeque<QueueSnapshot>>,
+    next_track: Mutex<Option<PendingNext>>,
     recovery: Mutex<RecoveryBudget>,
     pub state: Mutex<PlayerState>,
     pub output: Arc<AudioOutput>,
@@ -270,6 +283,8 @@ impl Player {
         rt: tokio::runtime::Handle,
     ) -> Self {
         Self {
+            audio_preferences: Mutex::new(AudioPreferences { crossfade_ms: 0, gapless: true }),
+            sleep_timer: Mutex::new(None), queue_history: Mutex::new(VecDeque::new()), next_track: Mutex::new(None),
             recovery: Mutex::new(RecoveryBudget::default()),
             state: Mutex::new(PlayerState::default()),
             output,
@@ -321,6 +336,162 @@ impl Player {
     /// Autoplay similar tracks when the queue runs out (demo only).
     pub fn set_autoplay(&self, autoplay: bool) {
         *self.autoplay.lock() = autoplay;
+    }
+
+    pub fn set_audio_preferences(&self, normalization: bool, crossfade_ms: u32, gapless: bool) {
+        self.output.set_normalization(normalization);
+        *self.audio_preferences.lock() = AudioPreferences { crossfade_ms: crossfade_ms.min(8000), gapless };
+    }
+
+    pub fn set_sleep_timer(&self, seconds: Option<u64>, after_track: bool) -> Result<()> {
+        let track_id = if after_track { Some(self.current_track().context("Start a track before setting this timer")?.id) } else { None };
+        if let Some(seconds) = seconds { anyhow::ensure!((1..=7200).contains(&seconds), "Timer must be within 120 minutes"); }
+        *self.sleep_timer.lock() = if seconds.is_some() || after_track { Some(SleepTimer { deadline: seconds.map(|seconds| Instant::now() + Duration::from_secs(seconds)), track_id }) } else { None };
+        self.output.set_sleep_gain(1.0);
+        Ok(())
+    }
+
+    pub fn sleep_view(&self) -> (Option<u64>, bool) {
+        let timer = self.sleep_timer.lock();
+        (timer.as_ref().and_then(|timer| timer.deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()).as_millis() as u64)), timer.as_ref().is_some_and(|timer| timer.track_id.is_some()))
+    }
+
+    fn update_sleep_timer(&self) {
+        let (remaining, after_track) = self.sleep_view();
+        if remaining == Some(0) {
+            self.pause(); *self.sleep_timer.lock() = None; self.output.set_sleep_gain(1.0);
+        } else {
+            let remaining = remaining.or_else(|| after_track.then(|| self.state.lock().duration_ms.saturating_sub(self.output.position_ms())));
+            self.output.set_sleep_gain(remaining.map_or(1.0, |ms| (ms as f32 / 10000.0).min(1.0)));
+        }
+    }
+
+    fn finish_sleep_track(&self) -> bool {
+        let current = self.current_track().map(|track| track.id);
+        let finish = self.sleep_timer.lock().as_ref().is_some_and(|timer| timer.track_id.is_some() && timer.track_id == current);
+        if finish { self.pause(); *self.sleep_timer.lock() = None; self.output.set_sleep_gain(1.0); }
+        finish
+    }
+
+    pub fn checkpoint_queue(&self) {
+        let state = self.state.lock();
+        let snapshot = QueueSnapshot { queue: state.queue.clone(), order: state.order.clone(), current: state.current, position: state.position_ms, playing: state.is_playing, shuffle: state.shuffle };
+        drop(state);
+        let mut history = self.queue_history.lock(); history.push_back(snapshot);
+        while history.len() > 5 || (history.len() > 1 && history.iter().map(|item| item.queue.len()).sum::<usize>() > 10000) { history.pop_front(); }
+    }
+
+    pub fn can_undo_queue(&self) -> bool { !self.queue_history.lock().is_empty() }
+
+    pub fn undo_queue(&self) -> bool {
+        let Some(snapshot) = self.queue_history.lock().pop_back() else { return false; };
+        let mut state = self.state.lock();
+        let running_id = state.current.and_then(|index| state.queue.get(index)).map(|track| track.id);
+        let preserved = running_id.and_then(|id| snapshot.queue.iter().position(|track| track.id == id));
+        state.queue = snapshot.queue; state.order = snapshot.order; state.shuffle = snapshot.shuffle;
+        state.queue_revision = state.queue_revision.wrapping_add(1);
+        state.current = preserved.or(snapshot.current);
+        if preserved.is_some() { drop(state); self.save_session(); return true; }
+        state.position_ms = snapshot.position; state.is_playing = snapshot.playing;
+        let track = state.current.and_then(|index| state.queue.get(index)).cloned();
+        drop(state);
+        if let Some(track) = track { self.load_track(track,snapshot.position); if !snapshot.playing { self.pause(); } }
+        else {
+            self.stop();
+            let mut state = self.state.lock();
+            state.position_ms = 0; state.duration_ms = 0; state.loading = false;
+            state.error = None; state.preview_fallback = false;
+        }
+        self.save_session(); true
+    }
+
+    fn transition_candidate(&self) -> Option<(u64, usize, Track, u64, u32)> {
+        let preferences = self.audio_preferences.lock();
+        if !preferences.gapless && preferences.crossfade_ms == 0 { return None; }
+        let state = self.state.lock();
+        if !state.is_playing || state.loading || state.preview_fallback || state.repeat == RepeatMode::One || state.ab_start_ms.is_some() || self.sleep_view().1 { return None; }
+        let current = state.current?;
+        let at = state.order.iter().position(|&index| index == current)?;
+        let next = state.order.get(at + 1).copied().or_else(|| (state.repeat == RepeatMode::All).then(|| state.order.first().copied()).flatten())?;
+        if next == current { return None; }
+        let remaining = state.duration_ms.saturating_sub(self.output.position_ms());
+        let fade = preferences.crossfade_ms.min((state.duration_ms / 2).min(8000) as u32);
+        Some((self.load_generation.load(Ordering::Acquire), next, state.queue.get(next)?.clone(), remaining, fade))
+    }
+
+    async fn prepare_next(&self, track: Track, fade: u32) -> Result<PreparedTrack> {
+        if *self.demo.lock() && offline_playlist_url(track.id).is_none() {
+            let (samples,rate) = crate::demo::pcm_window(&track,0);
+            return Ok(PreparedTrack { duration: track.effective_duration_ms(), track, decoder: DecoderSlot::new(), samples, rate, bitrate: 0, channels: 2 });
+        }
+        let urn = track.urn();
+        let (url,bitrate) = if let Some(url) = offline_playlist_url(track.id) { (url,160) }
+            else { let streams = self.client.playback_streams(&urn).await?; let (url,rate) = streams.best_full_with_bitrate().context("No full stream for transition")?; (url.to_owned(),rate) };
+        self.hls.set_oauth(self.client.oauth_token());
+        let playlist = self.hls.playlist(&url).await?;
+        let duration = playlist.duration_ms().context("Empty transition stream")?;
+        anyhow::ensure!(duration.saturating_add(10000) >= track.effective_duration_ms(), "Transition stream is a preview");
+        let mut decoder = DecoderSlot::new(); decoder.urn = urn.clone(); decoder.stream_url = Some(url);
+        decoder.reset_decoder(Some(if playlist.init_uri.is_some() { "audio/mp4".into() } else { "audio/mpeg".into() }));
+        if let Some(init) = &playlist.init_uri { decoder.feed(&self.hls.init_segment(&urn,init).await?); }
+        let mut samples = Vec::new();
+        let target = u64::from(fade).saturating_add(START_BUFFER_MS).max(START_BUFFER_MS);
+        'segments: for url in &playlist.segments {
+            decoder.feed(&self.hls.segment(&urn,url).await?); decoder.segments_fetched += 1;
+            loop {
+                if !decoder.inner.next_packet(&mut samples)? { break; }
+                if samples.len() as u64 / 2 * 1000 / u64::from(decoder.inner.rate().max(1)) >= target { break 'segments; }
+            }
+        }
+        anyhow::ensure!(!samples.is_empty(), "Transition stream has no audio");
+        let rate = decoder.inner.rate(); let channels = decoder.inner.channels();
+        decoder.prefetch = Some(self.hls.prefetch(urn, playlist.segments[decoder.segments_fetched..].to_vec(), &self.rt));
+        decoder.playlist = Some(playlist);
+        Ok(PreparedTrack { track, decoder, samples, rate, duration, bitrate, channels })
+    }
+
+    fn prepare_transition(&self) {
+        let Some((generation,_,track,remaining,fade)) = self.transition_candidate() else { self.next_track.lock().take(); return; };
+        if remaining > u64::from(fade) + 15000 { return; }
+        {
+            let mut pending = self.next_track.lock();
+            if pending.as_ref().is_some_and(|pending| pending.generation == generation && pending.id == track.id) { return; }
+            *pending = Some(PendingNext { generation, id: track.id, prepared: None });
+        }
+        let Some(me) = self.self_ref.lock().upgrade() else { return; };
+        self.rt.spawn(async move {
+            let id = track.id;
+            let result = tokio::time::timeout(Duration::from_secs(20),me.prepare_next(track,fade)).await;
+            if let Ok(Ok(prepared)) = result {
+                let mut pending = me.next_track.lock();
+                if let Some(pending) = pending.as_mut().filter(|pending| pending.id == id && pending.generation == generation && me.load_is_current(generation)) { pending.prepared = Some(prepared); }
+            }
+        });
+    }
+
+    fn transition_ready(&self, at_end: bool) -> bool {
+        let Some((generation,index,track,remaining,fade)) = self.transition_candidate() else { return false; };
+        if !at_end && (fade == 0 || remaining > u64::from(fade) || self.output.buffered_ms().saturating_add(100) < remaining) { return false; }
+        let prepared = {
+            let mut pending = self.next_track.lock();
+            let Some(pending) = pending.as_mut().filter(|pending| pending.id == track.id && pending.generation == generation) else { return false; };
+            let Some(prepared) = pending.prepared.take() else { return false; }; prepared
+        };
+        let mut decoder = self.decoder.lock();
+        let mut state = self.state.lock();
+        // Manual navigation, pause, shuffle and queue edits always win.
+        let ordered_next = state.current.and_then(|current| state.order.iter().position(|&row| row == current)).and_then(|at| state.order.get(at+1).copied().or_else(|| (state.repeat == RepeatMode::All).then(|| state.order.first().copied()).flatten()));
+        if !self.load_is_current(generation) || !state.is_playing || state.loading || ordered_next != Some(index)
+            || state.repeat == RepeatMode::One || state.ab_start_ms.is_some() || self.sleep_view().1
+            || state.queue.get(index).is_none_or(|row| row.id != prepared.track.id) { return false; }
+        self.load_generation.fetch_add(1,Ordering::AcqRel);
+        *decoder = prepared.decoder;
+        state.current = Some(index); state.position_ms = 0; state.duration_ms = prepared.duration;
+        state.sample_rate = prepared.rate; state.bitrate_kbps = prepared.bitrate; state.channels = prepared.channels;
+        state.error = None; state.preview_fallback = false;
+        if at_end { self.output.start_track(prepared.samples,prepared.rate,true,0); }
+        else { self.output.start_crossfade(prepared.samples,prepared.rate,remaining.min(u64::from(fade))); }
+        drop(state); drop(decoder); self.save_session(); true
     }
 
     /// Register a shared self-reference so spawned threads can drive playback.
@@ -573,6 +744,8 @@ impl Player {
     }
 
     pub fn stop(&self) {
+        *self.sleep_timer.lock() = None;
+        self.output.set_sleep_gain(1.0);
         self.load_generation.fetch_add(1, Ordering::AcqRel);
         *self.decoder.lock() = DecoderSlot::new();
         let mut st = self.state.lock();
@@ -986,6 +1159,13 @@ impl Player {
             let mut st = self.state.lock();
             if expected.is_some_and(|generation| !self.load_is_current(generation) || !st.is_playing) { return false; }
             let generation = self.load_generation.fetch_add(1, Ordering::AcqRel) + 1;
+            // A deadline continues across skips; an "after this track" timer
+            // is cancelled when the listener chooses another song.
+            let mut timer = self.sleep_timer.lock();
+            if timer.as_ref().is_some_and(|timer| timer.track_id.is_some_and(|id| id != track.id)) {
+                *timer = None;
+                self.output.set_sleep_gain(1.0);
+            }
             st.loading = true;
             st.is_playing = true;
             st.error = None;
@@ -1325,6 +1505,9 @@ impl Player {
                 return;
             }
             self.flush_control_save();
+            self.update_sleep_timer();
+            self.prepare_transition();
+            if self.transition_ready(false) { continue; }
             let buffered = self.output.buffered_ms();
             // `load_track_async` owns the decoder while it builds the initial
             // buffer. Pulling here at the same time can steal the first packets
@@ -1431,6 +1614,8 @@ impl Player {
                         }
                     }
                     DecodeAction::TrackEnd => {
+                        if self.finish_sleep_track() { continue; }
+                        if self.transition_ready(true) { continue; }
                         let st = self.state.lock();
                         // A restored queue is paused with an empty decoder. It
                         // must not fetch the next track before sign-in resumes.
@@ -1508,10 +1693,12 @@ impl Player {
         let duration = track.effective_duration_ms();
         let from = self.output.buffered_until_ms();
         if from >= duration {
+            if self.output.buffered_ms() == 0 && self.finish_sleep_track() { return; }
+            if self.output.buffered_ms() == 0 && self.transition_ready(true) { return; }
             // The pad has played out: same end-of-track handling as a stream.
             let (nextable, repeat) = {
                 let st = self.state.lock();
-                (st.current.is_some(), st.repeat)
+                (st.current.is_some() && st.is_playing, st.repeat)
             };
             if !nextable || !should_advance_after_decode_end(self.output.buffered_ms()) {
                 return;
@@ -1727,6 +1914,66 @@ fn url_encode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn improved_player_fixture(runtime: &tokio::runtime::Runtime, path: std::path::PathBuf) -> Arc<Player> {
+        let player = Arc::new(Player::new(Arc::new(AudioOutput::silent([0.0;10],0.8)),Arc::new(crate::api::ApiClient::demo()),Arc::new(AudioCache::disabled()),path,runtime.handle().clone()));
+        player.attach(); player.set_demo(true);
+        { let mut state = player.state.lock(); state.queue = crate::demo::demo_tracks().into_iter().take(3).collect(); state.order = vec![2,0,1]; state.current = Some(0); state.shuffle = true; state.position_ms = 42000; state.is_playing = false; state.duration_ms = state.queue[0].effective_duration_ms(); }
+        player
+    }
+    #[test]
+    fn undo_restores_queue_and_shuffle_without_interrupting_the_current_track() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap(); let dir = tempfile::tempdir().unwrap();
+        let player = improved_player_fixture(&runtime,dir.path().join("settings.json"));
+        player.checkpoint_queue(); player.clear_upcoming(); assert_eq!(player.state.lock().queue.len(),1);
+        assert!(player.undo_queue());
+        let state = player.state.lock(); assert_eq!(state.order,vec![2,0,1]); assert_eq!(state.queue.len(),3); assert_eq!(state.current,Some(0)); assert_eq!(state.position_ms,42000); assert!(!state.is_playing);
+    }
+    #[test]
+    fn expired_sleep_timer_pauses_without_changing_saved_volume() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap(); let dir = tempfile::tempdir().unwrap();
+        let player = improved_player_fixture(&runtime,dir.path().join("settings.json"));
+        player.state.lock().is_playing = true;
+        *player.sleep_timer.lock() = Some(SleepTimer { deadline: Some(Instant::now()-Duration::from_secs(1)), track_id: None });
+        player.update_sleep_timer(); assert!(!player.state.lock().is_playing); assert_eq!(player.state.lock().volume,0.8); assert_eq!(player.sleep_view(),(None,false));
+        assert!(player.set_sleep_timer(Some(8000),false).is_err());
+    }
+    #[test]
+    fn choosing_another_track_cancels_only_the_after_track_timer() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap(); let dir = tempfile::tempdir().unwrap();
+        let player = improved_player_fixture(&runtime,dir.path().join("settings.json"));
+        player.set_sleep_timer(None,true).unwrap();
+        assert!(player.next()); assert_eq!(player.sleep_view(),(None,false));
+        player.set_sleep_timer(Some(900),false).unwrap();
+        assert!(player.prev()); assert!(player.sleep_view().0.is_some());
+        player.stop(); assert_eq!(player.sleep_view(),(None,false));
+    }
+    #[test]
+    fn transition_uses_shuffle_order_and_respects_pause_repeat_and_sleep() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap(); let dir = tempfile::tempdir().unwrap();
+        let player = improved_player_fixture(&runtime,dir.path().join("settings.json"));
+        player.set_audio_preferences(false,4000,true); player.state.lock().is_playing = true;
+        assert_eq!(player.transition_candidate().unwrap().1,1);
+        player.state.lock().is_playing = false; assert!(player.transition_candidate().is_none());
+        player.state.lock().is_playing = true; player.state.lock().repeat = RepeatMode::One; assert!(player.transition_candidate().is_none());
+        player.state.lock().repeat = RepeatMode::Off; player.set_sleep_timer(None,true).unwrap(); assert!(player.transition_candidate().is_none());
+        assert!(player.finish_sleep_track()); assert!(!player.state.lock().is_playing);
+    }
+    #[test]
+    fn prepared_transition_commits_the_next_track_but_stale_preparation_cannot_take_over() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap(); let dir = tempfile::tempdir().unwrap();
+        let player = improved_player_fixture(&runtime,dir.path().join("settings.json"));
+        player.set_audio_preferences(false,4000,true);
+        { let mut state = player.state.lock(); state.is_playing = true; state.duration_ms = 10000; }
+        player.output.start_track(vec![0.2;48000*2],48000,true,9000);
+        let next = player.state.lock().queue[1].clone();
+        *player.next_track.lock() = Some(PendingNext { generation:0,id:next.id,prepared:Some(PreparedTrack { duration: next.effective_duration_ms(), track: next.clone(),decoder:DecoderSlot::new(),samples:vec![0.3;48000*2*3],rate:48000,bitrate:160,channels:2 }) });
+        player.load_generation.store(1,Ordering::Release);
+        assert!(!player.transition_ready(false)); assert_eq!(player.state.lock().current,Some(0));
+        player.load_generation.store(0,Ordering::Release);
+        assert!(player.transition_ready(false));
+        let state = player.state.lock(); assert_eq!(state.current,Some(1)); assert_eq!(state.duration_ms,next.effective_duration_ms()); assert_eq!(state.position_ms,0); assert!(state.is_playing);
+    }
 
     #[test]
     fn recovery_is_bounded_and_permanent_failures_are_not_retried() {

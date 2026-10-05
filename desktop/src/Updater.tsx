@@ -237,7 +237,7 @@ function ComponentStatusCard({ english }: { english: boolean }) {
     refetchInterval: query => ['checking', 'downloading'].includes(query.state.data?.state || '') ? 1000 : 10_000,
     retry: false })
   const [retrying, setRetrying] = useState(false)
-  if (!data || data.state === 'unavailable') return null
+  if (!data || data.state === 'unavailable' || data.state === 'ready') return null
   const preparing = data.state === 'checking' || data.state === 'downloading'
   const retry = async () => {
     setRetrying(true)
@@ -245,9 +245,7 @@ function ComponentStatusCard({ english }: { english: boolean }) {
     finally { setRetrying(false); void refetch() }
   }
   return <div className="component-status" role="status">
-    <p>{data.state === 'ready'
-      ? english ? 'Recommendation model is ready. Unchanged files are reused between updates.' : 'Модель рекомендаций готова. Неизменившиеся файлы сохраняются между обновлениями.'
-      : preparing
+    <p>{preparing
         ? `${english ? 'Preparing recommendation model' : 'Подготовка модели рекомендаций'}: ${data.completedFiles}/${data.totalFiles}`
         : english ? 'Could not prepare the recommendation model. Music playback remains available.' : 'Не удалось подготовить модель рекомендаций. Музыку по-прежнему можно слушать.'}</p>
     {data.state === 'error' && <button className="secondary-button" disabled={retrying} onClick={() => void retry()}>

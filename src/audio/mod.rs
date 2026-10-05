@@ -3,3 +3,4 @@ pub mod decode;
 pub mod dsp;
 pub mod hls;
 pub mod output;
+pub mod level;
