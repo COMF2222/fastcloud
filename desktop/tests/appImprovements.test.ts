@@ -1,7 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { queueRows, queuePlaylistIds } from '../src/queue.ts'
-import { builtInThemes, captureTheme, savedThemes, validateTheme } from '../src/themePresets.ts'
+import { builtInThemes, captureTheme, savedThemes, themeIsActive, validateTheme } from '../src/themePresets.ts'
+import { contrast, panelPalette, readableAccent } from '../src/theme.ts'
 import { playbackError } from '../src/playbackErrors.ts'
 import type { Settings, Track } from '../src/types.ts'
 
@@ -38,6 +39,27 @@ test('playback errors have localized actions without exposing technical payloads
 test('damaged saved themes do not hide valid themes or break Appearance', () => {
   assert.deepEqual(savedThemes([null, { name: { invalid: true } }, builtInThemes[0], builtInThemes[0], builtInThemes[1]]), builtInThemes.slice(0, 2))
   assert.deepEqual(savedThemes(null), [])
+})
+
+test('ready-made palettes preserve user sizes and selection tolerates native float precision', () => {
+  const settings = { ...builtInThemes[3].values, panel_opacity: .85000002384, interface_text_scale: 1.25 } as Settings
+  assert.ok(themeIsActive(settings, builtInThemes[3]))
+  for (const preset of builtInThemes) {
+    assert.equal(preset.values.interface_text_scale, undefined)
+    assert.equal(preset.values.interface_scale, undefined)
+  }
+})
+
+test('opaque coloured panels retain readable automatic text and separate surface shades', () => {
+  for (const color of [[181, 156, 225], [244, 237, 222], [23, 20, 34], [117, 117, 117], [255, 0, 0]]) {
+    const palette = panelPalette(color, 1, false)
+    assert.ok(contrast(color, palette.text) >= 4.5)
+    assert.ok(contrast(color, palette.muted) >= 4.5)
+    assert.ok(contrast(color, readableAccent([184, 156, 255], color, palette.text)) >= 4.5)
+    assert.equal(palette.alpha, 1)
+    assert.notDeepEqual(palette.nav, palette.raised)
+  }
+  assert.equal(panelPalette([23, 20, 34], 0, false).alpha, 0)
 })
 
 test('account cache can reset when WebView storage is unavailable', async () => {

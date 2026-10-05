@@ -3,12 +3,22 @@ import type { Settings } from './types'
 export const themeFields = ['theme', 'accent_rgb', 'panel_rgb', 'panel_opacity', 'panel_blur', 'heading_opacity', 'text_rgb', 'muted_text_rgb', 'interface_text_scale', 'interface_scale', 'background_opacity', 'background_dim', 'background_blur', 'background_overlay', 'lyrics_scale', 'lyrics_blur_past', 'reduced_motion'] as const
 export type ThemePreset = { version: 1; name: string; values: Partial<Pick<Settings, typeof themeFields[number]>> }
 export const captureTheme = (settings: Settings, name: string): ThemePreset => ({ version: 1, name, values: Object.fromEntries(themeFields.map(key => [key, settings[key]])) })
-const base = { panel_rgb: null, panel_opacity: .9, panel_blur: 12, heading_opacity: null, text_rgb: null, muted_text_rgb: null, interface_text_scale: 1, interface_scale: 1, reduced_motion: false }
+const base = { panel_rgb: null, panel_opacity: .85, panel_blur: 12, heading_opacity: null, text_rgb: null, muted_text_rgb: null }
 export const builtInThemes: ThemePreset[] = [
   { version: 1, name: 'Midnight', values: { ...base, theme: 'Dark', accent_rgb: [255, 85, 25] } },
   { version: 1, name: 'Daylight', values: { ...base, theme: 'Light', accent_rgb: [30, 100, 220] } },
   { version: 1, name: 'Lavender', values: { ...base, theme: 'Dark', accent_rgb: [184, 156, 255], panel_rgb: [23, 20, 34], text_rgb: [243, 239, 255], muted_text_rgb: [187, 180, 209] } },
+  { version: 1, name: 'Ocean', values: { ...base, theme: 'Dark', accent_rgb: [93, 188, 238], panel_rgb: [17, 29, 40] } },
+  { version: 1, name: 'Forest', values: { ...base, theme: 'Dark', accent_rgb: [121, 199, 158], panel_rgb: [20, 32, 28] } },
+  { version: 1, name: 'Rose', values: { ...base, theme: 'Dark', accent_rgb: [236, 148, 177], panel_rgb: [35, 23, 30] } },
+  { version: 1, name: 'Sand', values: { ...base, theme: 'Light', accent_rgb: [157, 101, 42], panel_rgb: [244, 237, 222] } },
+  { version: 1, name: 'Graphite', values: { ...base, theme: 'Dark', accent_rgb: [195, 201, 211], panel_rgb: [26, 28, 32], panel_blur: 0 } },
 ]
+
+export const themeIsActive = (settings: Settings, preset: ThemePreset) => Object.entries(preset.values).every(([key, value]) => {
+  const current = settings[key as keyof Settings]
+  return typeof value === 'number' && typeof current === 'number' ? Math.abs(current - value) < .00001 : JSON.stringify(current) === JSON.stringify(value)
+})
 
 export function validateTheme(input: unknown): ThemePreset {
   if (!input || typeof input !== 'object') throw new Error('Invalid theme file')

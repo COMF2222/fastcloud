@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Settings } from './types'
-import { applyThemeCustomization, colorHex, colorRgb, headingSurfaceOpacity, interfaceLimits, themeDefaults } from './theme'
+import { applyThemeCustomization, colorHex, colorRgb, headingSurfaceOpacity, interfaceLimits, panelPalette, themeDefaults } from './theme'
 import { ColorPicker } from './ColorPicker'
 
 type Update = (key: string, value: unknown) => Promise<void>
@@ -70,6 +70,7 @@ export function ThemeSettings({ settings, update }: { settings: Settings; update
   const [resetting, setResetting] = useState(false)
   const t = (ru: string, en: string) => settings.language === 'English' ? en : ru
   const light = document.documentElement.dataset.theme === 'light'
+  const automaticPanel = settings.panel_rgb ? panelPalette(settings.panel_rgb, settings.panel_opacity, light) : null
   const reset = async () => {
     setResetting(true)
     try { for (const [key, value] of Object.entries(themeDefaults)) await update(key, value) }
@@ -80,7 +81,7 @@ export function ThemeSettings({ settings, update }: { settings: Settings; update
       <p className="muted">{t('Во время перетаскивания размер виден на примере. Интерфейс изменится, когда отпустишь ползунок.', 'Preview the size while dragging. The interface updates when you release the slider.')}</p>
       <div className="form-grid theme-size-controls"><RangeSetting field="interface_text_scale" label={t('Размер текста интерфейса', 'Interface text size')} min={interfaceLimits.interface_text_scale[0]} max={interfaceLimits.interface_text_scale[1]} step={.01} settings={settings} update={update} /><RangeSetting field="interface_scale" label={t('Размер элементов', 'Element size')} min={interfaceLimits.interface_scale[0]} max={interfaceLimits.interface_scale[1]} step={.01} settings={settings} update={update} /></div>
       <div className="form-grid theme-text-colors">
-        <ColorSetting field="text_rgb" label={t('Основной текст', 'Primary text')} fallback={light ? [32, 36, 49] : [241, 241, 244]} settings={settings} update={update} /><ColorSetting field="muted_text_rgb" label={t('Вторичный текст', 'Secondary text')} fallback={light ? [85, 93, 110] : [189, 193, 205]} settings={settings} update={update} /></div>
+        <ColorSetting field="text_rgb" label={t('Основной текст', 'Primary text')} fallback={automaticPanel?.text ?? (light ? [32, 36, 49] : [241, 241, 244])} settings={settings} update={update} /><ColorSetting field="muted_text_rgb" label={t('Вторичный текст', 'Secondary text')} fallback={automaticPanel?.muted ?? (light ? [85, 93, 110] : [189, 193, 205])} settings={settings} update={update} /></div>
     </div>
     <div className="settings-card"><h3>{t('Подложки', 'Surfaces')}</h3><p>{t('Сайдбар, навигация настроек, панели, списки, меню и плеер используют общий цвет. Непрозрачность подложек не меняет затемнение обоев.', 'The sidebar, settings navigation, panels, lists, menus and player share this colour. Surface opacity is independent of wallpaper dimming.')}</p>
       <label className="setting-row"><span><strong>{t('Свои подложки', 'Custom surfaces')}</strong><small>{t('Выключи, чтобы вернуть подложки выбранной темы.', 'Turn off to use the selected theme’s surfaces.')}</small></span><input type="checkbox" checked={!!settings.panel_rgb} onChange={event => void update('panel_rgb', event.target.checked ? light ? [249, 250, 245] : [18, 20, 29] : null)} /></label>

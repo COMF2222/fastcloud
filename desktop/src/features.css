@@ -262,15 +262,31 @@ html[data-theme="light"] .app-shell .cards > .card, html[data-theme="light"] .ap
 @media (max-width: 650px) { .admin-user { grid-template-columns: minmax(0, 1fr) auto; } .admin-user-usage { grid-column: 1 / -1; } }
 /* Controls added in 0.3: allow large interface text without clipping labels. */
 .improvement-card { display: grid; gap: 14px; }
+.improvement-card > h3, .improvement-card > p { margin: 0; }
+.improvement-card > .secondary-button { justify-self: start; min-height: 34px; padding: 7px 12px; font-size: calc(12px * var(--interface-text-scale)); }
+.preference-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: calc(12px * var(--interface-text-scale)); }
+.preference-heading small { color: var(--text-muted); white-space: nowrap; }
 .preference-range { display: grid; grid-template-columns: minmax(0, 1fr) minmax(120px, 40%); align-items: center; gap: 20px; }
 .preference-range span { display: flex; flex-wrap: wrap; gap: 8px; }
 .preference-range input { width: 100%; min-width: 0; accent-color: var(--accent); }
 .preference-genres { display: flex; flex-wrap: wrap; gap: 8px; }
-.preference-genres button { padding: 8px 12px; border: 1px solid var(--line); border-radius: 12px; }
+.preference-genres button { padding: 5px 9px; min-height: 30px; border: 1px solid var(--line); border-radius: 8px; font-size: calc(11px * var(--interface-text-scale)); background: transparent; color: var(--text-muted); }
 .preference-genres button[aria-pressed=true] { box-shadow: inset 0 0 0 1px var(--accent); }
+.preference-genres button[aria-pressed=true] { color: var(--text); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.theme-preset-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+.theme-preset-choice { display: flex; align-items: center; gap: 10px; min-width: 0; min-height: 38px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--text); text-align: left; font-size: calc(12px * var(--interface-text-scale)); }
+.theme-preset-choice:hover, .theme-preset-choice[aria-pressed=true] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.theme-preset-swatches { display: flex; flex: none; }
+.theme-preset-swatches i { display: block; width: 16px; height: 16px; border: 1px solid rgb(128 128 128 / .35); border-radius: 50%; }
+.theme-preset-swatches i + i { margin-left: -5px; }
+.theme-preset-custom { border-top: 1px solid var(--line); padding-top: 12px; font-size: calc(12px * var(--interface-text-scale)); }
+.theme-preset-custom summary { cursor: pointer; color: var(--text-muted); width: fit-content; }
+.theme-preset-custom[open] > :not(summary) { margin-top: 12px; }
+.theme-preset-custom .inline-form input { font-size: inherit; padding: 8px 10px; min-width: 100px; }
+.preset-action { padding: 6px 10px; min-height: 32px; border: 1px solid var(--line); border-radius: 8px; font-size: inherit; color: var(--text); background: transparent; }
+.theme-preset-files { display: flex; flex-wrap: wrap; gap: 8px; }
 .saved-theme { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.report-dialog { position: fixed; z-index: 90; top: 50%; left: 50%; transform: translate(-50%, -50%); width: min(580px, 92vw); max-height: 85vh; overflow: auto; border: 1px solid var(--line); border-radius: 20px; padding: 24px; background: var(--surface-card); color: var(--text); }
-.report-dialog pre { padding: 16px; overflow: auto; font-size: 13px; background: rgb(0 0 0 / .08); border-radius: 12px; }
+.saved-theme > .preset-action { min-width: 0; overflow-wrap: anywhere; text-align: left; }
 .queue-search { width: calc(100% - 40px); min-height: 38px; margin: 12px 20px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-card); color: var(--text); }
 .queue-save { width: calc(100% - 40px); margin: 12px 20px; display: flex; gap: 8px; min-width: 0; }
 .queue-save input { flex: 1 1 0; min-width: 0; width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-card); color: var(--text); }

@@ -14,7 +14,7 @@ import { api } from './api'
 import { ArtistCredits } from './ArtistCredits'
 import { ArtistPage, CatalogPage, LibraryExtra, LibraryOverview, PlaylistPage, RepostsPage, TrackComments, TrackCreatorTools } from './ExtraPages'
 import { QueuePanel } from './QueuePanel'
-import { PlaybackError, ProblemReportCard, TasteSettings } from './AppImprovements'
+import { PlaybackError, TasteSettings } from './AppImprovements'
 import { SettingsSections, type SettingsSection } from './SettingsSections'
 import { NowPlaying } from './NowPlaying'
 import { LyricsSidePanel } from './LyricsSidePanel'
@@ -853,7 +853,7 @@ function SettingsPage() {
       </div>)}</div>
       {mediaStats && <div className="server-media-stats"><h3>{english ? 'Server audio cache' : 'Серверный кеш музыки'}</h3><p>{english ? 'Cache' : 'Кеш'}: {(mediaStats.cache_bytes / 1024 ** 3).toFixed(2)} / {(mediaStats.cache_limit_bytes / 1024 ** 3).toFixed(0)} GiB · {english ? 'Active downloads' : 'Загружается'}: {mediaStats.active_downloads}</p><p>{english ? 'Audio delivered this month' : 'Отдано аудио за месяц'} ({mediaStats.traffic_month}): {(mediaStats.month_served_bytes / 1024 ** 3).toFixed(2)} GiB</p></div>}
     </div>}
-    {section === 'general' && <><UpdateSettingsCard english={english} />{data && <TasteSettings settings={data} update={update} />}<ProblemReportCard english={!!english} /></>}
+    {section === 'general' && <><UpdateSettingsCard english={english} />{data && <TasteSettings settings={data} update={update} />}</>}
     {data && <SettingsSections section={section} settings={data} update={update} showDeveloperSettings={isAdmin} />}
     {section === 'sound' && data && <Equalizer settings={data} update={update} />}
     {error && <p className="error-text">{error}</p>}</div></div></div>

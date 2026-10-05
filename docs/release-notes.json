@@ -2,6 +2,29 @@
   "schema": 1,
   "releases": [
     {
+      "version": "0.3.1",
+      "ru": {
+        "title": "Удобнее настройки вкуса и оформления",
+        "changes": [
+          "Выбор предпочитаемых жанров расширен до 32 вариантов. Счётчик показывает до 12 выбранных жанров; уже выбранные можно снять без потери остальных.",
+          "Добавлены восемь готовых палитр с образцами цветов. Готовые палитры сохраняют выбранные размеры текста и элементов, а сохранение и импорт своих тем находятся в раскрывающемся разделе.",
+          "Кнопки настроек музыкального вкуса и оформления стали компактнее и лучше согласованы с остальным интерфейсом.",
+          "У пользовательских подложек появились отдельные оттенки для навигации, карточек и вложенных элементов, включая непрозрачность 100%. В режиме «Авто» текст и акцентные надписи подбираются по контрасту; ручные цвета текста сохраняются.",
+          "Из настроек убран блок «Помощь с проблемой»."
+        ]
+      },
+      "en": {
+        "title": "Refined taste and appearance settings",
+        "changes": [
+          "Preferred genres now offer 32 choices. A counter shows up to 12 selected genres; selections can be removed without losing the others.",
+          "Eight ready-made palettes include colour samples and preserve your text and element sizes. Saving and importing custom themes are grouped in an expandable section.",
+          "Musical taste and appearance controls are more compact and consistent with the rest of the interface.",
+          "Custom surfaces use distinct shades for navigation, cards and nested elements, including at 100% opacity. Automatic text and accent labels adapt for contrast, while manually chosen text colours are preserved.",
+          "The Troubleshooting card has been removed from Settings."
+        ]
+      }
+    },
+    {
       "version": "0.3.0",
       "ru": {
         "title": "Больше контроля над музыкой и оформлением",

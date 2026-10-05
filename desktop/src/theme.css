@@ -4,12 +4,13 @@
 :root[data-custom-muted-text="true"], :root[data-custom-muted-text="true"] :is(.detail-page, .search-welcome, .catalog-hero, .catalog-feature, .now-playing) { --text-muted: var(--user-text-muted); }
 :root[data-custom-text="true"] :is(.page-kicker, .my-wave-copy small) { color: var(--text); }
 :root[data-custom-panels="true"] {
-  --surface-nav: var(--panel-fill); --surface-card: var(--panel-fill); --surface-raised: var(--panel-fill);
+  --surface-nav: var(--panel-nav-fill); --surface-card: var(--panel-fill); --surface-raised: var(--panel-raised-fill);
 }
 /* These are explicit user overrides. Their priority also covers older wallpaper
    and light-theme rules without changing the default appearance when disabled. */
-:root[data-custom-panels="true"] :is(
+:root[data-custom-panels="true"] :where(
   .sidebar, .topbar, .player-bar, .settings-card, .settings-nav, .track-list,
+  .my-wave, .card, .artist-card, .profile-hero, .library-stats > button, .comment,
   .lyrics-panel-header, .search-box, .account-card, .search-start,
   .search-welcome, .catalog-hero, .catalog-feature, .page-intro, .section-title,
   .detail-hero, .detail-content-panel, .detail-owner, .detail-metrics > span,
@@ -22,11 +23,17 @@
   .now-playing-side, .now-playing-header, .now-playing-comment-form,
   .storage-breakdown, .storage-paths, .storage-stats > div,
   .login-card, .color-picker-popover
-) { background: var(--panel-fill) !important; backdrop-filter: blur(var(--panel-blur)) !important; border-color: var(--line); }
+) { background: var(--panel-fill) !important; backdrop-filter: blur(var(--panel-blur)) !important; --text: var(--panel-text); --text-muted: var(--panel-muted); --user-text: var(--panel-text); --user-text-muted: var(--panel-muted); --accent-readable: var(--panel-accent); --line: var(--panel-line); color: var(--text); border-color: var(--line); }
+/* Separate navigation, cards and controls even when every surface is opaque.
+   Each keeps the chosen alpha; nested decoration does not add a second fill. */
+:root[data-custom-panels="true"] :is(.sidebar, .topbar, .player-bar, .settings-nav, .now-playing-header) { background: var(--panel-nav-fill) !important; }
+:root[data-custom-panels="true"] :is(.row-menu, .artist-credit-menu, .quick-access-sort-menu, .queue-panel, .selection-playlists, .shortcuts-panel, .sound-controls-panel, .login-card, .color-picker-popover, .account-card, .search-box, .settings-search, .theme-preview) { background: var(--panel-raised-fill) !important; }
+:root[data-custom-panels="true"] :is(.storage-breakdown, .storage-paths, .detail-metrics > span, .track-liner-stats > span) { background: transparent !important; backdrop-filter: none !important; }
+:root[data-custom-panels="true"][data-transparent-headings="true"] :is(.section-title, .page-intro) { --text: var(--page-text); --text-muted: var(--page-muted); --user-text: var(--page-text); --user-text-muted: var(--page-muted); }
 :root[data-custom-panels="true"] :is(.track-row, .queue-item):not(:hover):not(.selected):not(.is-current):not(.playing) { background: transparent !important; }
 /* The lyrics header shares the topbar's single surface. Tint the body separately
    so the header never composites a second copy of the user's panel colour. */
-:root[data-custom-panels="true"] .lyrics-panel { background: transparent !important; backdrop-filter: none !important; }
+:root[data-custom-panels="true"] .lyrics-panel { background: transparent !important; backdrop-filter: none !important; --text: var(--panel-text); --text-muted: var(--panel-muted); --user-text: var(--panel-text); --user-text-muted: var(--panel-muted); }
 :root[data-custom-panels="true"] .lyrics-panel::before { content: ''; position: absolute; inset: 77px 0 0; pointer-events: none; background: var(--panel-fill); backdrop-filter: blur(var(--panel-blur)); }
 :root[data-custom-panels="true"] .lyrics-panel > * { position: relative; z-index: 1; }
 :root[data-custom-panels="true"] .app-shell.has-wallpaper > .lyrics-panel::before { background: linear-gradient(var(--panel-fill), var(--panel-fill)), rgb(var(--wallpaper-content-rgb) / var(--wallpaper-overlay, .8)); }
@@ -35,7 +42,7 @@
 /* The closed control sits on its parent's surface. Native option popups need a
    solid theme background; using the custom RGB here discards its opacity. */
 :root[data-custom-panels="true"] select { background-color: transparent; color: var(--text); }
-:root select option { background-color: var(--surface-base); color: var(--text); }
+:root select option { background-color: var(--surface-base); color: var(--page-text, var(--text)); }
 
 /* Headings can opt out of the shared panel opacity without fading their text. */
 :root { --heading-rgb: 18 20 29; }
@@ -157,7 +164,7 @@ html[data-theme="light"] { --heading-rgb: 249 250 245; }
 .color-picker-presets button { height: 24px; border: 1px solid #ffffff40; border-radius: 6px; }
 .color-picker-presets button:hover { outline: 2px solid var(--text); outline-offset: 2px; }
 .color-picker-hex-label { display: flex; align-items: center; gap: 10px; margin-top: 15px; font-size: calc(11px * var(--interface-text-scale)); color: var(--text-muted); }
-.color-picker-hex-label input { flex: 1; width: 100%; min-width: 0; padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-base); color: var(--text); font-size: calc(12px * var(--interface-text-scale)); font-variant-numeric: tabular-nums; }
+.color-picker-hex-label input { flex: 1; width: 100%; min-width: 0; padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-raised); color: var(--text); font-size: calc(12px * var(--interface-text-scale)); font-variant-numeric: tabular-nums; }
 /* Keep the player and pages mounted while showing only the existing wallpaper. */
 .app-shell.wallpaper-only > :not(.wallpaper-restore),
 .app-shell.wallpaper-only > :not(.wallpaper-restore) *,
