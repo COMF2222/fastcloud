@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
-import { open } from '@tauri-apps/plugin-dialog'
-import type { Comment, Connection, Data, LyricsRecord, LyricTrackMatch, Me, OfflineEntry, PlayerState, Playlist, QuickAccessShortcut, Settings, StorageReport, Track, User, VisualiserFrame, WaveformSamples, WebProfile } from './types'
+import { open, save } from '@tauri-apps/plugin-dialog'
+import { captureTheme, validateTheme, type ThemePreset } from './themePresets'
+import type { ProblemReport, OfflineCapacity, Comment, Connection, Data, LyricsRecord, LyricTrackMatch, Me, OfflineEntry, PlayerState, Playlist, QuickAccessShortcut, Settings, StorageReport, Track, User, VisualiserFrame, WaveformSamples, WebProfile } from './types'
 import { cachedLibraryData, clearLibraryCache, forgetLibraryEntry, setCacheConnection } from './libraryCache'
 import { emptySpotifyImport, type SpotifyImportSelection, type SpotifyImportView } from './spotifyImportTypes'
 import { releaseNotesUrl } from './releaseNotes'
@@ -48,14 +49,63 @@ const previewPlaylists: Playlist[] = ['Neon Nights', 'Low Tide Radio', 'Concrete
 const previewPlaylistTracks = new Map<number, number[]>()
 const previewFollowed = new Set<number>()
 const previewUsers: User[] = [{ id: 1, username: 'SoundCloud Demo', full_name: 'Fastcloud Preview', description: 'Здесь можно посмотреть, как будут выглядеть треки, альбомы и плейлисты твоего профиля.', followers_count: 0, track_count: demo.length, public_playlists_count: previewPlaylists.length }]
-const previewSettings: Settings = { autoplay: true, compact_rows: false, visualiser: 'Spectrum', theme: 'Dark', language: 'Russian', liked_ids: [], followed_user_ids: [], quick_access: [], inbox: [], mono: false, balance: 0, eq_enabled: false, eq_preamp_db: 0, eq_gains_db: Array(10).fill(0), startup_page: 'Home', main_window_bounds: null, close_to_tray: true, memory_profile: 'Balanced', reduced_motion: false, accent_rgb: [255, 85, 25], background_image: null, interface_font: null, discord_client_id: '', discord_presence: false, background_opacity: .25, background_dim: 0, background_blur: 0, background_overlay: .8, panel_rgb: null, panel_opacity: .85, panel_blur: 12, heading_opacity: null, text_rgb: null, muted_text_rgb: null, interface_text_scale: 1, interface_scale: 1, lyrics_scale: 1, lyrics_blur_past: true, lyrics_auto_scroll: true, show_track_numbers: true, soundcloud_profile_url: null, audio_cache_limit_mb: 2048, eq_auto: false, mini_player_style: 'Airwave', winamp_window: false, winamp_on_top: false, winamp_skin: null, winamp_shade: false, winamp_eq_window: false, winamp_eq_shade: false, winamp_pl_window: false, winamp_pl_shade: false, winamp_pl_rows: 8, winamp_scale: 2 }
+const previewSettings: Settings = { settings_version: 2, music_taste: { discovery: .5, diversity: .5, repeat_days: 2, genres: [] }, theme_presets: [], offline_limit_mb: 0, autoplay: true, compact_rows: false, visualiser: 'Spectrum', theme: 'Dark', language: 'Russian', liked_ids: [], followed_user_ids: [], quick_access: [], inbox: [], mono: false, balance: 0, eq_enabled: false, eq_preamp_db: 0, eq_gains_db: Array(10).fill(0), startup_page: 'Home', main_window_bounds: null, close_to_tray: true, memory_profile: 'Balanced', reduced_motion: false, accent_rgb: [255, 85, 25], background_image: null, interface_font: null, discord_client_id: '', discord_presence: false, background_opacity: .25, background_dim: 0, background_blur: 0, background_overlay: .8, panel_rgb: null, panel_opacity: .85, panel_blur: 12, heading_opacity: null, text_rgb: null, muted_text_rgb: null, interface_text_scale: 1, interface_scale: 1, lyrics_scale: 1, lyrics_blur_past: true, lyrics_auto_scroll: true, show_track_numbers: true, soundcloud_profile_url: null, audio_cache_limit_mb: 2048, eq_auto: false, mini_player_style: 'Airwave', winamp_window: false, winamp_on_top: false, winamp_skin: null, winamp_shade: false, winamp_eq_window: false, winamp_eq_shade: false, winamp_pl_window: false, winamp_pl_shade: false, winamp_pl_rows: 8, winamp_scale: 2 }
 const previewText = (ru: string, en: string) => previewSettings.language === 'English' ? en : ru
 const previewComments: Comment[] = []
 const previewReposts = new Set<number>()
 const previewRepostedPlaylists = new Set<number>()
 const previewLikedPlaylists = new Set<number>()
 
+function downloadJson(value: unknown, name: string) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' }))
+  const link = document.createElement('a'); link.href = url; link.download = name; link.click()
+  window.setTimeout(() => URL.revokeObjectURL(url), 10_000)
+}
+
 export const api = {
+  themeAction: async (action: 'apply' | 'save' | 'delete' | 'export' | 'import', name?: string, preset?: ThemePreset): Promise<Settings> => {
+    let path: string | null = null
+    if (action === 'export') {
+      if (preview) { downloadJson(captureTheme(previewSettings, name || 'Fastcloud theme'), 'fastcloud-theme.json'); return { ...previewSettings } }
+      path = await save({ defaultPath: 'fastcloud-theme.json', filters: [{ name: 'JSON', extensions: ['json'] }] })
+      if (!path) return api.settings()
+    }
+    if (action === 'import') {
+      if (preview) throw new Error(previewText('Импорт файла доступен в установленном приложении.', 'File import is available in the installed app.'))
+      const chosen = await open({ multiple: false, filters: [{ name: 'Fastcloud theme', extensions: ['json'] }] })
+      path = typeof chosen === 'string' ? chosen : null
+      if (!path) return api.settings()
+    }
+    if (!preview) return invoke<Settings>('theme_action', { action, name, preset, path })
+    if (action === 'apply' && preset) Object.assign(previewSettings, validateTheme(preset).values)
+    if (action === 'save') {
+      const theme = validateTheme(captureTheme(previewSettings, name || ''))
+      const others = previewSettings.theme_presets.filter(item => item.name !== theme.name)
+      if (others.length >= 20) throw new Error('You can save up to 20 themes')
+      previewSettings.theme_presets = [...others, theme]
+    }
+    if (action === 'delete') previewSettings.theme_presets = previewSettings.theme_presets.filter(item => item.name !== name)
+    return { ...previewSettings }
+  },
+  problemReport: () => preview ? Promise.resolve<ProblemReport>({ version: '0.3.0', os: 'preview', architecture: 'browser', connection: 'demo', queueLength: previewPlayer.queue.length, playing: previewPlayer.isPlaying, loading: previewPlayer.loading, errorStage: 'none', sampleRate: previewPlayer.sampleRate, bitrateKbps: previewPlayer.bitrateKbps, settingsVersion: 2 }) : invoke<ProblemReport>('problem_report'),
+  saveProblemReport: async (report: ProblemReport) => {
+    if (preview) { downloadJson(report, 'fastcloud-report.json'); return }
+    const path = await save({ defaultPath: 'fastcloud-report.json', filters: [{ name: 'JSON', extensions: ['json'] }] })
+    if (path) await invoke('save_problem_report', { path, report })
+  },
+  offlineCapacity: () => preview ? Promise.resolve<OfflineCapacity>({ usedBytes: [...previewOffline.values()].reduce((sum, entry) => sum + entry.bytes, 0), freeBytes: 10 * 1024 ** 3, limitBytes: previewSettings.offline_limit_mb * 1048576 }) : invoke<OfflineCapacity>('offline_capacity'),
+  pinOfflineTrack: (trackId: number, pinned: boolean) => {
+    if (!preview) return invoke<void>('pin_offline_track', { trackId, pinned })
+    const entry = previewOffline.get(trackId)
+    if (entry) previewOffline.set(trackId, { ...entry, pinned })
+    return Promise.resolve()
+  },
+  clearUnpinnedTracks: () => {
+    if (!preview) return invoke<void>('clear_unpinned_tracks')
+    for (const [id, entry] of previewOffline) if (!entry.pinned && id !== previewPlayer.queue[previewPlayer.current ?? -1]?.id) previewOffline.delete(id)
+    return Promise.resolve()
+  },
+
   connection: async () => {
     const value = preview ? { status: 'demo' } as Connection : await invoke<Connection>('connection')
     setCacheConnection(value.status)
@@ -102,7 +152,7 @@ export const api = {
   },
   downloadOfflineTrack: (track: Track) => {
     if (!preview) return invoke<OfflineEntry>('download_offline_track', { track })
-    const entry = { track, bytes: 4_000_000 }
+    const entry = { track, bytes: 4_000_000, pinned: false }
     previewOffline.set(track.id, entry)
     return Promise.resolve(entry)
   },
@@ -174,6 +224,12 @@ export const api = {
     if (!preview) return invoke<void>('set_followed', { userId, followed })
     if (followed) previewFollowed.add(userId); else previewFollowed.delete(userId)
     return Promise.resolve()
+  },
+  saveQueuePlaylist: async (title: string, trackIds: number[]) => {
+    if (!preview) return afterChange(invoke<Playlist>('create_playlist', { title, trackIds }), 'playlists:mine')
+    const item = await api.createPlaylist(title)
+    await api.addTracksToPlaylist(item.id, trackIds)
+    return item
   },
   createPlaylist: (title: string, trackId?: number) => {
     if (!preview) return afterChange(invoke<Playlist>('create_playlist', { title, trackId }), 'playlists:mine')
@@ -261,7 +317,9 @@ export const api = {
       else if (previewPlayer.current != null && index < target && previewPlayer.current > index && previewPlayer.current <= target) previewPlayer.current--
       else if (previewPlayer.current != null && index > target && previewPlayer.current >= target && previewPlayer.current < index) previewPlayer.current++
     }
-    if (action === 'clear_upcoming' && previewPlayer.current != null) previewPlayer.queue = previewPlayer.queue.slice(0, previewPlayer.current + 1)
+    if (action === 'retry') { previewPlayer.error = null; previewPlayer.isPlaying = true }
+    if (action === 'clear_played' && previewPlayer.current != null) { previewPlayer.queue = previewPlayer.queue.slice(previewPlayer.current); previewPlayer.current = 0 }
+    if (action === 'clear_upcoming' && previewPlayer.current != null) { previewPlayer.queue = [previewPlayer.queue[previewPlayer.current]]; previewPlayer.current = 0 }
     if (action === 'clear_queue') previewPlayer = { ...previewPlayer, queue: [], current: null, isPlaying: false }
     if (action === 'stop') previewPlayer.isPlaying = false
     return Promise.resolve()

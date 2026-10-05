@@ -3,6 +3,9 @@ import { create } from 'zustand'
 export type Page = 'home' | 'discover' | 'catalog' | 'search' | 'feed' | 'library' | 'offline' | 'likes' | 'history' | 'reposts' | 'inbox' | 'settings' | 'playlist' | 'artist' | 'track'
 type Location = { page: Page; search: string; searchKind: 'tracks' | 'artists'; playlistId: number | null; playlistTitle: string; artistId: number | null; artistName: string; trackId: number | null; trackTitle: string }
 type AppStore = Location & {
+  accountSettingsRequested: boolean
+  openAccountSettings: () => void
+  clearAccountSettingsRequest: () => void
   artistLookup: string | null
   queueOpen: boolean
   uploadPath: string | null
@@ -62,6 +65,9 @@ const navigate = (state: AppStore, next: Location) => ({
 })
 
 export const useApp = create<AppStore>((set) => ({
+  accountSettingsRequested: false,
+  openAccountSettings: () => set(state => ({ ...navigate(state, { ...location(state), page: 'settings' }), accountSettingsRequested: true })),
+  clearAccountSettingsRequest: () => set({ accountSettingsRequested: false }),
   ...initial, artistLookup: null, queueOpen: false, uploadPath: null, libraryTab: restored?.libraryTab || 'tracks', history: [initial], historyIndex: 0,
   setPage: page => set(state => state.page === page ? state : navigate(state, { ...location(state), page })),
   setSearch: search => set(state => {

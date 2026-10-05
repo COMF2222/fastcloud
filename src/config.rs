@@ -44,6 +44,10 @@ impl Default for MainWindowBounds {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    pub settings_version: u8,
+    pub music_taste: MusicTaste,
+    pub theme_presets: Vec<serde_json::Value>,
+    pub offline_limit_mb: u64,
     pub theme: ThemeMode,
     /// Language used by the application interface.
     #[serde(default)]
@@ -226,9 +230,40 @@ pub struct Settings {
     pub quick_access: Vec<QuickAccessShortcut>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MusicTaste {
+    pub discovery: f32,
+    pub diversity: f32,
+    pub repeat_days: u8,
+    pub genres: Vec<String>,
+}
+
+impl Default for MusicTaste {
+    fn default() -> Self {
+        Self { discovery: 0.5, diversity: 0.5, repeat_days: 2, genres: Vec::new() }
+    }
+}
+
+impl MusicTaste {
+    pub fn normalize(&mut self) {
+        self.discovery = self.discovery.clamp(0.0, 1.0);
+        self.diversity = self.diversity.clamp(0.0, 1.0);
+        self.repeat_days = self.repeat_days.min(7);
+        self.genres = self.genres.iter().map(|g| g.trim().chars().take(48).collect::<String>())
+            .filter(|g| !g.is_empty()).take(12).collect();
+        self.genres.sort();
+        self.genres.dedup();
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            settings_version: 2,
+            music_taste: MusicTaste::default(),
+            theme_presets: Vec::new(),
+            offline_limit_mb: 0,
             theme: ThemeMode::Dark,
             language: Language::English,
             memory_profile: MemoryProfile::Balanced,
@@ -525,9 +560,25 @@ impl Settings {
     }
 
     fn decode(raw: &str) -> Result<Self> {
-        let value: serde_json::Value = serde_json::from_str(raw)?;
+        let mut value: serde_json::Value = serde_json::from_str(raw)?;
+        anyhow::ensure!(value.is_object(), "Settings must be an object");
         let legacy_wallpaper = value.get("background_style_version").is_none();
+        // Repair incompatible fields individually. Old installations retain all
+        // valid preferences and their paused queue instead of reverting everything.
+        let defaults = serde_json::to_value(Self::default())?;
+        for (key, fallback) in defaults.as_object().expect("settings object") {
+            if let Some(saved) = value.get(key) {
+                let probe = serde_json::json!({key: saved});
+                if serde_json::from_value::<Self>(probe).is_err() {
+                    value[key] = fallback.clone();
+                }
+            }
+        }
         let mut settings: Self = serde_json::from_value(value)?;
+        settings.music_taste.normalize();
+        settings.theme_presets.truncate(20);
+        settings.offline_limit_mb = settings.offline_limit_mb.min(102_400);
+        settings.settings_version = 2;
         settings.interface_text_scale = settings.interface_text_scale
             .clamp(INTERFACE_TEXT_SCALE_MIN, INTERFACE_TEXT_SCALE_MAX);
         settings.interface_scale = settings.interface_scale
@@ -638,6 +689,16 @@ pub fn settings_path() -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn migration_repairs_one_invalid_field_without_resetting_valid_preferences() {
+        let settings = super::Settings::decode(r#"{"language":"Russian","volume":0.37,"interface_scale":"legacy","liked_ids":[42],"last_position_ms":12345}"#).unwrap();
+        assert_eq!(settings.language, super::Language::Russian);
+        assert_eq!(settings.liked_ids, vec![42]);
+        assert_eq!(settings.last_position_ms, Some(12345));
+        assert_eq!(settings.volume, 0.37);
+        assert_eq!(settings.interface_scale, 1.0);
+        assert_eq!(settings.settings_version, 2);
+    }
     #[test]
     fn saved_interface_sizes_are_limited_without_resetting_other_preferences() {
         let settings = Settings::decode(

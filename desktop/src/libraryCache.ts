@@ -1,11 +1,14 @@
 import type { Connection, Data, Me } from './types'
 
-const storageKey = 'fastcloud:library-snapshot:v1'
+const storageKey = 'fastcloud:library-snapshot:v2'
+// Rebuild derived API snapshots on upgrade. Sessions, playlists, preferences and
+// downloads are owned by the native app and are not stored in this cache.
+try { localStorage.removeItem('fastcloud:library-snapshot:v1') } catch { /* Storage can be unavailable. */ }
 type Snapshot = { accountId: number; entries: Record<string, Data<unknown>> }
 let snapshot: Snapshot | null = (() => {
   try {
     const value = JSON.parse(localStorage.getItem(storageKey) || 'null') as Snapshot | null
-    return value && Number.isSafeInteger(value.accountId) && value.entries && typeof value.entries === 'object' ? value : null
+    return value && Number.isSafeInteger(value.accountId) && value.entries && typeof value.entries === 'object' && !Array.isArray(value.entries) && (value.entries.profile?.status !== 'ready' || (value.entries.profile.data as Me)?.id === value.accountId) ? value : null
   } catch { return null }
 })()
 let connection: Connection['status'] = 'connecting'
@@ -22,7 +25,8 @@ export function clearLibraryCache() {
   generation++
   snapshot = null
   pending.clear()
-  localStorage.removeItem(storageKey)
+  try { localStorage.removeItem(storageKey) }
+  catch { /* Clearing the in-memory account cache must also work without storage. */ }
 }
 
 export function forgetLibraryEntry(key: string) {

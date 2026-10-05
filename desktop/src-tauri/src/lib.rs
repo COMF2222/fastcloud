@@ -18,6 +18,8 @@ mod import_yandex;
 mod link;
 mod media;
 mod offline;
+mod appearance;
+mod diagnostics;
 mod wave;
 #[path = "../../../src/player/mod.rs"]
 mod player;
@@ -356,6 +358,7 @@ impl AppState {
         ));
         let store = Store::new(client.clone(), rt.handle().clone());
         let wave = Arc::new(wave::Engine::new(config::app_paths()?.root.join("my-wave-profile.json")));
+        wave.set_preferences(settings.music_taste.clone());
         if settings.last_wave_active && !demo {
             let previous_id = settings.last_queue_idx.and_then(|index| settings.last_queue.get(index)).map(|track| track.id);
             settings.last_queue_idx = wave.with_dislike_filter(|dislikes|
@@ -800,9 +803,26 @@ async fn download_offline_track(
     state: tauri::State<'_, AppState>,
     track: Track,
 ) -> Result<offline::OfflineEntry, String> {
-    offline::download(state.client.clone(), track)
+    let limit_mb = state.settings.lock().offline_limit_mb;
+    offline::download(state.client.clone(), track, limit_mb)
         .await
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn offline_capacity(state: tauri::State<'_, AppState>) -> Result<offline::Capacity, String> {
+    offline::capacity(state.settings.lock().offline_limit_mb).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn pin_offline_track(track_id: u64, pinned: bool) -> Result<(), String> {
+    offline::set_pinned(track_id, pinned).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn clear_unpinned_tracks(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let current = state.player.as_ref().and_then(|p| p.current_track()).map(|t| t.id);
+    offline::clear_unpinned(current).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1704,12 +1724,16 @@ async fn create_playlist(
     state: tauri::State<'_, AppState>,
     title: String,
     track_id: Option<u64>,
+    track_ids: Option<Vec<u64>>,
 ) -> Result<Playlist, String> {
     let title = title.trim();
     if title.is_empty() {
         return Err("Enter a playlist name".into());
     }
-    let ids: Vec<u64> = track_id.into_iter().collect();
+    let private = track_ids.is_some();
+    let mut seen = std::collections::HashSet::new();
+    let ids: Vec<u64> = track_ids.unwrap_or_default().into_iter().chain(track_id).filter(|id| *id > 0 && seen.insert(*id)).collect();
+    if ids.len() > 1000 || title.chars().count() > 128 { return Err("Playlist is too large".into()); }
     if state.client.is_demo() {
         let mut settings = state.settings.lock();
         let id = settings
@@ -1749,7 +1773,7 @@ async fn create_playlist(
     if !state.store.signed_in() {
         return Err("Sign in to create playlists".into());
     }
-    let result = api::endpoints::create_playlist(&state.client, title, true, &ids)
+    let result = api::endpoints::create_playlist(&state.client, title, !private, &ids)
         .await
         .map_err(|error| error.to_string())?;
     state.store.invalidate(&Key::MyPlaylists);
@@ -2005,6 +2029,8 @@ fn transport(
                 target.ok_or("Missing target index")?,
             );
         }
+        "retry" => player.retry_current(),
+        "clear_played" => { player.clear_played(); },
         "clear_upcoming" => {
             *state.wave_session.lock() = None;
             state.persist_wave_active(false);
@@ -2115,6 +2141,90 @@ async fn set_liked(
         }
     }
     Ok(())
+}
+
+#[tauri::command]
+fn theme_action(state: tauri::State<'_, AppState>, action: String, name: Option<String>, preset: Option<appearance::Preset>, path: Option<String>) -> Result<config::Settings, String> {
+    let mut settings = state.settings.lock();
+    match action.as_str() {
+        "apply" => {
+            let next = appearance::apply(&settings, &preset.ok_or("Choose a theme")?).map_err(|e| e.to_string())?;
+            next.save().map_err(|e| e.to_string())?;
+            *settings = next;
+        }
+        "save" => {
+            let preset = appearance::capture(&settings, name.ok_or("Enter a theme name")?).map_err(|e| e.to_string())?;
+            let mut next = settings.clone();
+            next.theme_presets.retain(|saved| saved["name"].as_str() != Some(&preset.name));
+            if next.theme_presets.len() >= 20 { return Err("You can save up to 20 themes".into()); }
+            next.theme_presets.push(serde_json::to_value(preset).map_err(|e| e.to_string())?);
+            next.save().map_err(|e| e.to_string())?;
+            *settings = next;
+        }
+        "delete" => {
+            let name = name.ok_or("Choose a saved theme")?;
+            let mut next = settings.clone();
+            next.theme_presets.retain(|preset| preset["name"].as_str() != Some(&name));
+            next.save().map_err(|e| e.to_string())?;
+            *settings = next;
+        }
+        "import" => {
+            let preset = appearance::read(std::path::Path::new(&path.ok_or("Choose a file")?)).map_err(|e| e.to_string())?;
+            let mut next = appearance::apply(&settings, &preset).map_err(|e| e.to_string())?;
+            next.theme_presets.retain(|saved| saved["name"].as_str() != Some(&preset.name));
+            if next.theme_presets.len() >= 20 { return Err("You can save up to 20 themes".into()); }
+            next.theme_presets.push(serde_json::to_value(preset).map_err(|e| e.to_string())?);
+            next.save().map_err(|e| e.to_string())?;
+            *settings = next;
+        }
+        "export" => {
+            let preset = appearance::capture(&settings, name.filter(|value| !value.trim().is_empty()).unwrap_or_else(|| "Fastcloud theme".into())).map_err(|e| e.to_string())?;
+            let path = path.ok_or("Choose where to save the theme")?;
+            if !path.to_lowercase().ends_with(".json") { return Err("Use a .json theme file".into()); }
+            std::fs::write(path, serde_json::to_vec_pretty(&preset).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        }
+        _ => return Err("Unknown theme action".into()),
+    }
+    Ok(settings.clone())
+}
+
+#[tauri::command]
+fn problem_report(state: tauri::State<'_, AppState>) -> Result<diagnostics::Report, String> {
+    let connection = match &*state.connection.lock() {
+        Connection::SignedIn => "signed_in", Connection::Demo => "demo", Connection::Public => "public",
+        Connection::Error { .. } => "error", _ => "connecting",
+    }.to_owned();
+    let mut report = diagnostics::Report {
+        version: env!("CARGO_PKG_VERSION"), os: std::env::consts::OS, architecture: std::env::consts::ARCH,
+        connection, queue_length: 0, playing: false, loading: false, error_stage: "none", sample_rate: 0,
+        bitrate_kbps: 0, settings_version: state.settings.lock().settings_version,
+    };
+    if let Some(player) = &state.player {
+        let player = player.state.lock();
+        report.queue_length = player.queue.len(); report.playing = player.is_playing; report.loading = player.loading;
+        report.error_stage = diagnostics::error_stage(player.error.as_deref());
+        report.sample_rate = player.sample_rate; report.bitrate_kbps = player.bitrate_kbps;
+    }
+    Ok(report)
+}
+
+#[tauri::command]
+fn save_problem_report(path: String, report: serde_json::Value) -> Result<(), String> {
+    // Export only the exact report reviewed by the user. Accept a strict schema
+    // and enumerated states, never arbitrary error logs or account objects.
+    let object = report.as_object().ok_or("Invalid report")?;
+    let allowed = ["version", "os", "architecture", "connection", "queueLength", "playing", "loading", "errorStage", "sampleRate", "bitrateKbps", "settingsVersion"];
+    if object.len() != allowed.len() || object.keys().any(|key| !allowed.contains(&key.as_str())) { return Err("Invalid report fields".into()); }
+    for key in ["version", "os", "architecture", "connection", "errorStage"] {
+        let value = object[key].as_str().ok_or("Invalid report value")?;
+        if value.len() > 48 || !value.chars().all(|c| c.is_ascii_alphanumeric() || ".-_".contains(c)) { return Err("Invalid report value".into()); }
+    }
+    for key in ["queueLength", "sampleRate", "bitrateKbps", "settingsVersion"] {
+        if object[key].as_u64().is_none() { return Err("Invalid report number".into()); }
+    }
+    if object["playing"].as_bool().is_none() || object["loading"].as_bool().is_none() { return Err("Invalid report state".into()); }
+    if !path.to_lowercase().ends_with(".json") { return Err("Use a .json report file".into()); }
+    std::fs::write(path, serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2326,6 +2436,13 @@ fn set_setting(
 ) -> Result<(), String> {
     let mut settings = state.settings.lock();
     match key.as_str() {
+        "music_taste" => {
+            let mut taste: config::MusicTaste = serde_json::from_value(value).map_err(|e| e.to_string())?;
+            taste.normalize();
+            state.wave.set_preferences(taste.clone());
+            settings.music_taste = taste;
+        }
+        "offline_limit_mb" => settings.offline_limit_mb = value.as_u64().ok_or("Expected a storage limit")?.min(102_400),
         "autoplay" => {
             settings.autoplay = value.as_bool().ok_or("Expected true or false")?;
             if let Some(player) = &state.player {
@@ -3447,6 +3564,12 @@ pub fn run() {
             image_data,
             waveform_samples,
             offline_tracks,
+            offline_capacity,
+            pin_offline_track,
+            clear_unpinned_tracks,
+            theme_action,
+            problem_report,
+            save_problem_report,
             my_wave,
             wave_dislike,
             wave_disliked,

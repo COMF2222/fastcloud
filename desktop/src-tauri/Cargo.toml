@@ -1,6 +1,6 @@
 [package]
 name = "fastcloud-desktop"
-version = "0.2.16"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.95"
 build = "build.rs"
@@ -14,6 +14,7 @@ name = "fastcloud"
 path = "src/main.rs"
 
 [dependencies]
+fs2 = "0.4.3"
 tauri = { version = "2", features = ["tray-icon", "protocol-asset"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "fs"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "query", "form", "multipart", "stream"] }

@@ -2,6 +2,37 @@
   "schema": 1,
   "releases": [
     {
+      "version": "0.3.0",
+      "ru": {
+        "title": "Больше контроля над музыкой и оформлением",
+        "changes": [
+          "При временных сбоях аудиопотока плеер автоматически делает ограниченное число попыток восстановить тот же трек с текущей позиции. Пауза и переключение трека отменяют устаревшее восстановление.",
+          "Ошибки воспроизведения получили понятные сообщения на русском и английском, с повтором или переходом в настройки аккаунта, когда это помогает.",
+          "В настройках появился музыкальный вкус: доля знакомой и новой музыки, разнообразие исполнителей и предпочитаемые жанры для «Моей волны».",
+          "«Моя волна» реже повторяет недавно прослушанные записи, включая похожие перезаливы. Можно выбрать период от одного до семи дней; в небольшой медиатеке возможен возврат к знакомым трекам.",
+          "Добавлены три пресета оформления, сохранение своих тем и импорт/экспорт JSON. Фоновые изображения и файлы шрифтов выбираются отдельно.",
+          "В очереди появился поиск по треку и исполнителю, очистка прослушанного с сохранением текущей песни и сохранение всей очереди в приватный плейлист.",
+          "Офлайн-раздел показывает примерный объём загрузок и свободное место. Есть лимит хранилища, закрепление загрузок и очистка незакреплённых треков с сохранением текущего.",
+          "При загрузке старых настроек несовместимые поля восстанавливаются отдельно, сохраняя остальные предпочтения и очередь. Снимок медиатеки обновляется после перехода на новую версию.",
+          "В настройках можно подготовить технический отчёт, посмотреть его и сохранить файл. В нём нет токенов, локальных путей, данных аккаунта или названий треков; он не отправляется автоматически."
+        ]
+      },
+      "en": {
+        "title": "More control over music and appearance",
+        "changes": [
+          "After temporary audio failures, the player makes a limited number of attempts to recover the same track at its current position. Pausing or changing tracks prevents stale recovery from taking over.",
+          "Playback errors now have clear Russian and English messages with retry or Account settings actions where useful.",
+          "Musical taste settings control familiar versus new music, artist diversity and preferred genres in My Wave.",
+          "My Wave reduces recently played recording repeats, including similar reuploads. Choose a one-to-seven-day period; small libraries can fall back to familiar songs.",
+          "Three built-in theme presets, saved custom themes and JSON import/export are available. Wallpaper and font files are selected separately.",
+          "The queue now supports track and artist search, clearing played entries while keeping the current song, and saving the whole queue as a private playlist.",
+          "Offline storage shows estimated download size and free disk space, with a storage limit, pinned downloads and unpinned cleanup that preserves the current track.",
+          "Incompatible fields in older settings are repaired individually while other preferences and the queue remain. The derived library snapshot is refreshed after upgrading.",
+          "Prepare, review and save a technical report in Settings. It excludes tokens, local paths, account details and track titles, and is never sent automatically."
+        ]
+      }
+    },
+    {
       "version": "0.2.16",
       "ru": {
         "title": "Хотфикс клиента",

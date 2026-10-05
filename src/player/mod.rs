@@ -23,6 +23,36 @@ const TARGET_BUFFER_MS: u64 = 8_000;
 /// Coalesce slider events before serializing the queue and settings to disk.
 const CONTROL_SAVE_DELAY: Duration = Duration::from_millis(750);
 
+#[derive(Default)]
+struct RecoveryBudget { track_id: u64, attempts: u8, last_attempt: Option<Instant> }
+impl RecoveryBudget {
+    fn take(&mut self, track_id: u64, now: Instant) -> bool {
+        if self.track_id != track_id || self.last_attempt.is_some_and(|last| now.duration_since(last) > Duration::from_secs(60)) {
+            *self = Self { track_id, ..Self::default() };
+        }
+        if self.attempts >= 3 { return false; }
+        self.attempts += 1;
+        self.last_attempt = Some(now);
+        true
+    }
+}
+
+fn retryable_playback_error(error: &anyhow::Error) -> bool {
+    use crate::api::error::ApiError;
+    if let Some(api) = error.downcast_ref::<ApiError>() {
+        return matches!(api, ApiError::Network(_) | ApiError::Json(_) | ApiError::Http { status: 500..=599, .. });
+    }
+    if let Some(http) = error.downcast_ref::<reqwest::Error>() {
+        return http.is_timeout() || http.is_connect() || http.is_body()
+            || http.status().is_some_and(|status| status.is_server_error());
+    }
+    let message = format!("{error:#}").to_lowercase();
+    !["401", "403", "404", "429", "no stream url", "blocked", "unavailable", "permission denied"]
+        .iter().any(|permanent| message.contains(permanent))
+        && ["stream", "decode", "probe", "timeout", "segment", "connect", "audio"]
+            .iter().any(|stage| message.contains(stage))
+}
+
 fn offline_playlist_url(track_id: u64) -> Option<String> {
     let path = crate::config::app_paths()
         .ok()?
@@ -154,6 +184,7 @@ enum DecodeAction {
 
 /// Player engine: fetch HLS streams, decode in background, drive AudioOutput.
 pub struct Player {
+    recovery: Mutex<RecoveryBudget>,
     pub state: Mutex<PlayerState>,
     pub output: Arc<AudioOutput>,
     client: Arc<crate::api::ApiClient>,
@@ -239,6 +270,7 @@ impl Player {
         rt: tokio::runtime::Handle,
     ) -> Self {
         Self {
+            recovery: Mutex::new(RecoveryBudget::default()),
             state: Mutex::new(PlayerState::default()),
             output,
             client,
@@ -777,6 +809,49 @@ impl Player {
         removed
     }
 
+    pub fn clear_played(&self) -> usize {
+        let removed = clear_played_state(&mut self.state.lock());
+        if removed > 0 { self.save_session(); }
+        removed
+    }
+
+    pub fn retry_current(&self) {
+        if let Some(track) = self.current_track() {
+            *self.recovery.lock() = RecoveryBudget::default();
+            let position = self.state.lock().position_ms;
+            self.load_track(track, position);
+        }
+    }
+
+    fn recover_stream(&self, generation: u64, error: &anyhow::Error) -> bool {
+        if !self.load_is_current(generation) || !retryable_playback_error(error) { return false; }
+        let (track, position) = {
+            let state = self.state.lock();
+            if !state.is_playing { return false; }
+            let Some(track) = state.current.and_then(|index| state.queue.get(index)).cloned() else { return false; };
+            (track, visible_position_ms(self.output.position_ms(), state.duration_ms))
+        };
+        if !self.recovery.lock().take(track.id, Instant::now()) { return false; }
+        // A decoder failure can be caused by a bad cached response that passed
+        // the superficial transport check. Re-fetch that recording on recovery.
+        let message = format!("{error:#}").to_lowercase();
+        if message.contains("probe") || message.contains("decode") {
+            self.hls.cache.evict_track(&track.urn());
+        }
+        self.load_track_guarded(track, position, Some(generation))
+    }
+
+    fn fail_current_load(&self, generation: u64, message: String) {
+        let mut state = self.state.lock();
+        if !self.load_is_current(generation) { return; }
+        state.is_playing = false;
+        state.loading = false;
+        state.error = Some(message);
+        self.output.set_playing(false);
+        drop(state);
+        self.save_session();
+    }
+
     /// Stop playback and remove every queued track, including the persisted
     /// session. Keeping this mutation inside `Player` prevents the UI from
     /// clearing memory after `stop()` has already saved the old queue.
@@ -902,24 +977,33 @@ impl Player {
     // ===== Stream loading =====
 
     fn load_track(&self, track: Track, start_ms: u64) {
-        let generation = self.load_generation.fetch_add(1, Ordering::AcqRel) + 1;
-        self.decoder.lock().prefetch.take();
-        {
+        self.load_track_guarded(track, start_ms, None);
+    }
+
+    fn load_track_guarded(&self, track: Track, start_ms: u64, expected: Option<u64>) -> bool {
+        let mut decoder = self.decoder.lock();
+        let generation = {
             let mut st = self.state.lock();
+            if expected.is_some_and(|generation| !self.load_is_current(generation) || !st.is_playing) { return false; }
+            let generation = self.load_generation.fetch_add(1, Ordering::AcqRel) + 1;
             st.loading = true;
+            st.is_playing = true;
             st.error = None;
             st.position_ms = start_ms;
             st.preview_fallback = false;
             st.duration_ms = track.effective_duration_ms();
-        }
+            self.output.start_track(Vec::new(), self.output.device_sample_rate().max(1), false, start_ms);
+            generation
+        };
+        decoder.prefetch.take();
+        drop(decoder);
         // A manual Next/Previous must take effect audibly at once. Leaving the
         // old output running while the new stream resolves made the button
         // feel delayed and could leak a few seconds of the previous song.
-        self.output.set_playing(false);
         // Clone via the shared self-reference installed in attach().
         let Some(me) = self.self_ref.lock().upgrade() else {
             log::warn!("player not attached; cannot start loader");
-            return;
+            return false;
         };
         // Demo mode: instant local synthesis, no network. Only the stretch
         // being played is synthesized (see `demo::pcm_window`), so a long
@@ -930,10 +1014,10 @@ impl Player {
                 if !me.load_is_current(generation) {
                     return;
                 }
-                me.output.start_track(pcm, rate, true, start_ms);
                 let mut st = me.state.lock();
+                if !me.load_is_current(generation) { return; }
+                me.output.start_track(pcm, rate, st.is_playing, start_ms);
                 st.loading = false;
-                st.is_playing = true;
                 st.sample_rate = rate;
                 // Synthesized f32, so nothing was ever compressed. The
                 // readout stays blank rather than inventing a bitrate.
@@ -941,12 +1025,27 @@ impl Player {
                 // `demo::pcm_window` writes interleaved pairs.
                 st.channels = 2;
             });
-            return;
+            return true;
         }
         me.rt.clone().spawn(async move {
-            if let Err(e) = me.load_track_async(track, start_ms, generation).await
-                && me.load_is_current(generation)
-            {
+            let mut attempt = 0;
+            loop {
+                let result = me.load_track_async(track.clone(), start_ms, generation).await;
+                let Err(e) = result else { break; };
+                if !me.load_is_current(generation) { break; }
+                if attempt < 3 && me.state.lock().is_playing && retryable_playback_error(&e)
+                    && me.recovery.lock().take(track.id, Instant::now()) {
+                    let message = format!("{e:#}").to_lowercase();
+                    if message.contains("probe") || message.contains("decode") { me.hls.cache.evict_track(&track.urn()); }
+                    attempt += 1;
+                    tokio::time::sleep(Duration::from_secs(attempt * 2)).await;
+                    if !me.load_is_current(generation) { break; }
+                    if !me.state.lock().is_playing {
+                        me.state.lock().loading = false;
+                        break;
+                    }
+                    continue;
+                }
                 let mut slot = me.decoder.lock();
                 if !me.load_is_current(generation) {
                     return;
@@ -956,10 +1055,14 @@ impl Player {
                 slot.exhausted = true;
                 drop(slot);
                 let mut st = me.state.lock();
+                if !me.load_is_current(generation) { break; }
                 st.error = Some(playback_error_message(&e));
                 st.loading = false;
+                st.is_playing = false;
+                break;
             }
         });
+        true
     }
 
     fn load_is_current(&self, generation: u64) -> bool {
@@ -1152,12 +1255,11 @@ impl Player {
             return Ok(());
         }
 
-        self.output
-            .start_track(first_samples, source_rate, true, output_start_ms);
         {
             let mut st = self.state.lock();
+            if !self.load_is_current(generation) { return Ok(()); }
+            self.output.start_track(first_samples, source_rate, st.is_playing, output_start_ms);
             st.loading = false;
-            st.is_playing = true;
             st.preview_fallback = is_preview;
             st.duration_ms = available_duration_ms;
             st.position_ms = output_start_ms;
@@ -1314,15 +1416,16 @@ impl Player {
                         match self.fetch_and_append(cycle_generation, false).await {
                             Ok(()) => {},
                             Err(e) if self.load_is_current(cycle_generation) => {
+                                if self.recover_stream(cycle_generation, &e) { continue; }
                                 // The download task has already retried transient
                                 // failures; preserve the original terminal error.
                                 let mut slot = self.decoder.lock();
+                                if !self.load_is_current(cycle_generation) { continue; }
                                 slot.failed = true;
                                 slot.exhausted = true;
                                 slot.prefetch.take();
                                 drop(slot);
-                                self.pause();
-                                self.state.lock().error = Some(format!("Audio stream interrupted: {e}"));
+                                self.fail_current_load(cycle_generation, format!("Audio stream interrupted: {e}"));
                             }
                             Err(_) => {}
                         }
@@ -1350,8 +1453,8 @@ impl Player {
                         }
                     }
                     DecodeAction::Fatal(why) => {
-                        self.pause();
-                        self.state.lock().error = Some(format!("Playback stopped: {why}"));
+                        if self.recover_stream(cycle_generation, &anyhow::anyhow!(why.clone())) { continue; }
+                        self.fail_current_load(cycle_generation, format!("Playback stopped: {why}"));
                     }
                 }
             }
@@ -1589,6 +1692,25 @@ fn drop_bookkeeping(
     (order, current)
 }
 
+fn clear_played_state(state: &mut PlayerState) -> usize {
+    let Some(current) = state.current else { return 0; };
+    let Some(position) = state.order.iter().position(|&index| index == current) else { return 0; };
+    let removed: std::collections::HashSet<_> = state.order[..position].iter().copied().collect();
+    if removed.is_empty() { return 0; }
+    let mut mapping = std::collections::HashMap::new();
+    let mut old_index = 0;
+    let mut kept = 0;
+    state.queue.retain(|_| {
+        let index = old_index;
+        old_index += 1;
+        if removed.contains(&index) { false } else { mapping.insert(index, kept); kept += 1; true }
+    });
+    state.current = mapping.get(&current).copied();
+    state.order = state.order.iter().filter_map(|index| mapping.get(index).copied()).collect();
+    state.queue_revision = state.queue_revision.wrapping_add(1);
+    removed.len()
+}
+
 fn url_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
@@ -1605,6 +1727,58 @@ fn url_encode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_is_bounded_and_permanent_failures_are_not_retried() {
+        let mut budget = RecoveryBudget::default();
+        let now = Instant::now();
+        for _ in 0..3 { assert!(budget.take(1, now)); }
+        assert!(!budget.take(1, now));
+        assert!(budget.take(2, now));
+        assert!(retryable_playback_error(&anyhow::anyhow!("probe audio stream")));
+        assert!(!retryable_playback_error(&crate::api::error::ApiError::Unauthorized.into()));
+        assert!(!retryable_playback_error(&anyhow::anyhow!("HTTP 403 stream")));
+    }
+
+    #[test]
+    fn clear_played_preserves_shuffled_upcoming_and_current_position() {
+        let mut state = PlayerState { queue: crate::demo::demo_tracks().into_iter().take(4).collect(),
+            current: Some(1), order: vec![3, 1, 0, 2], position_ms: 42_000, ..Default::default() };
+        let current = state.queue[1].id;
+        assert_eq!(clear_played_state(&mut state), 1);
+        assert_eq!(state.queue[state.current.unwrap()].id, current);
+        assert_eq!(state.order, vec![1, 0, 2]);
+        assert_eq!(state.position_ms, 42_000);
+        assert_eq!(clear_played_state(&mut state), 0);
+    }
+
+    #[tokio::test]
+    async fn recovery_cannot_restart_after_pause_or_overwrite_a_newer_track() {
+        let folder = tempfile::tempdir().unwrap();
+        let player = Player::new(Arc::new(AudioOutput::silent([0.0; 10], 0.8)),
+            Arc::new(crate::api::ApiClient::demo()), Arc::new(AudioCache::disabled()),
+            folder.path().join("settings.json"), tokio::runtime::Handle::current());
+        player.load_generation.store(1, Ordering::Release);
+        let tracks = crate::demo::demo_tracks();
+        {
+            let mut state = player.state.lock();
+            state.queue = tracks[..2].to_vec(); state.current = Some(0); state.position_ms = 42_000;
+            state.is_playing = false;
+        }
+        assert!(!player.recover_stream(1, &anyhow::anyhow!("probe audio stream")));
+        assert!(!player.load_track_guarded(tracks[0].clone(), 42_000, Some(1)));
+        {
+            let mut state = player.state.lock(); state.current = Some(1); state.is_playing = true;
+            player.load_generation.store(2, Ordering::Release);
+        }
+        assert!(!player.recover_stream(1, &anyhow::anyhow!("probe audio stream")));
+        assert!(!player.load_track_guarded(tracks[0].clone(), 42_000, Some(1)));
+        assert_eq!(player.state.lock().current, Some(1));
+        assert!(!player.state.lock().loading);
+        player.fail_current_load(1, "stale error".into());
+        assert!(player.state.lock().is_playing);
+        assert!(player.state.lock().error.is_none());
+    }
 
     #[tokio::test]
     async fn delayed_audio_download_does_not_block_the_player_loop() {
