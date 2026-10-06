@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Fastcloud FAQ
+    url: https://fastcloud.comf.workers.dev/faq
+    about: Common questions and troubleshooting / Частые вопросы
+  - name: Service status / Статус сервиса
+    url: https://fastcloud.comf.workers.dev/status
+    about: Check service availability / Проверить доступность сервера

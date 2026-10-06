@@ -68,6 +68,8 @@ let previewSleepUntil: number | null = null
 const previewLikedAt = new Map<number, number>()
 
 export const api = {
+  serverOperations: (serverUrl: string, settings?: Record<string, number>) => preview ? Promise.resolve<import('./ServerOperations').OperationsSnapshot | null>(null) : invoke<import('./ServerOperations').OperationsSnapshot>('server_operations', { serverUrl, settings: settings ?? null }),
+  serverIncident: (serverUrl: string, body: Record<string, string | number>) => invoke<unknown>('server_incident', { serverUrl, body }),
   personalCollections: () => preview ? Promise.resolve({ ...previewCollections }) : invoke<PersonalCollections>('personal_collections'),
   listeningStatistics: () => preview ? Promise.resolve<ListeningStatistics>({ totals: { ms: 0, plays: 0 }, daily: [], tracks: [], syncStatus: 'demo' }) : invoke<ListeningStatistics>('listening_statistics'),
   updatePersonalCollection: async (section: 'folders' | 'smartPlaylists', id: string, value: unknown) => {

@@ -64,6 +64,12 @@ export function readableAccent(accent: readonly number[], background: readonly n
   return [...text]
 }
 
+// Floating controls must cover the page behind them, including at 0% panel
+// opacity. Calculate their contrast against their own solid material.
+export function popupPalette(settings: Pick<Settings, 'panel_rgb'>, light: boolean) {
+  return panelPalette(settings.panel_rgb ?? (light ? [247, 248, 250] : [26, 29, 37]), 1, light)
+}
+
 // Shared by saved settings and live slider/colour previews. Wallpaper dimming and
 // lyric size are deliberately independent from reading surfaces and UI text.
 export function applyThemeCustomization(settings: Settings) {
@@ -81,6 +87,13 @@ export function applyThemeCustomization(settings: Settings) {
   const light = root.dataset.theme === 'light'
   const palette = settings.panel_rgb ? panelPalette(settings.panel_rgb, settings.panel_opacity ?? .85, light) : null
   const headingPalette = settings.panel_rgb ? panelPalette(settings.panel_rgb, headingSurfaceOpacity(settings), light) : null
+  const popup = popupPalette(settings, light)
+  property('--popup-fill', rgb(popup.raised))
+  property('--popup-card', rgb(popup.surface))
+  property('--popup-text', rgb(settings.text_rgb ?? popup.text))
+  property('--popup-muted', rgb(settings.muted_text_rgb ?? popup.muted))
+  property('--popup-line', rgb(popup.controlLine))
+  property('--popup-accent', rgb(readableAccent(settings.accent_rgb, popup.raised, popup.text)))
   property('--panel-fill', palette ? `rgb(${palette.surface.join(' ')} / ${palette.alpha})` : null)
   property('--panel-nav-fill', palette ? `rgb(${palette.nav.join(' ')} / ${palette.alpha})` : null)
   property('--panel-raised-fill', palette ? `rgb(${palette.raised.join(' ')} / ${palette.alpha})` : null)

@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { queueRows, queuePlaylistIds } from '../src/queue.ts'
 import { builtInThemes, captureTheme, savedThemes, themeIsActive, validateTheme } from '../src/themePresets.ts'
-import { contrast, headingSurfaceOpacity, luminance, panelPalette, readableAccent } from '../src/theme.ts'
+import { applyThemeCustomization, contrast, headingSurfaceOpacity, luminance, panelPalette, popupPalette, readableAccent } from '../src/theme.ts'
 import { playbackError } from '../src/playbackErrors.ts'
 import type { Settings, Track } from '../src/types.ts'
 
@@ -84,6 +84,42 @@ test('surface tint changes continuously and automatic headings avoid a second pa
       assert.ok(surface.every((value,i) => Math.abs(value - previous[i]) <= 4))
       previous = surface
     }
+  }
+})
+
+test('popup materials stay solid and readable when main panels are transparent', () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'document')
+  const properties = new Map<string, string>()
+  const root = { dataset: { theme: 'dark' }, style: {
+    setProperty(name: string, value: string) { properties.set(name, value) },
+    removeProperty(name: string) { properties.delete(name) },
+  } }
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: { documentElement: root } })
+  try {
+    for (const light of [false, true]) for (const color of [null, [181,156,225], [0,255,0], [255,255,255], [0,0,0]]) {
+      root.dataset.theme = light ? 'light' : 'dark'
+      const settings = { panel_rgb: color, accent_rgb: [255,85,25] } as Settings
+      const popup = popupPalette(settings, light)
+      assert.equal(popup.alpha, 1)
+      for (const background of popup.backgrounds) {
+        assert.ok(contrast(background, popup.text) >= 4.5)
+        assert.ok(contrast(background, popup.muted) >= 4.5)
+      }
+      let solid = ''
+      for (const opacity of [0, .05, .5, 1]) {
+        applyThemeCustomization({ ...settings, panel_opacity: opacity })
+        const fill = properties.get('--popup-fill')!
+        assert.ok(!fill.includes('/'))
+        if (solid) assert.equal(fill, solid)
+        solid = fill
+        if (color) assert.ok(properties.get('--panel-fill')!.endsWith(`/ ${opacity})`))
+      }
+      applyThemeCustomization({ ...settings, text_rgb: [132,164,237] })
+      assert.equal(properties.get('--popup-text'), 'rgb(132 164 237)')
+    }
+  } finally {
+    if (previous) Object.defineProperty(globalThis, 'document', previous)
+    else Reflect.deleteProperty(globalThis, 'document')
   }
 })
 

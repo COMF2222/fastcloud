@@ -2,6 +2,23 @@
   "schema": 1,
   "releases": [
     {
+      "version": "0.4.1",
+      "ru": {
+        "title": "Техническое обновление",
+        "changes": [
+          "Добавлена поддержка обновлённого сервера Fastcloud.",
+          "Таймер сна, настройки звука и другие всплывающие панели теперь всегда имеют непрозрачный фон, независимо от прозрачности основных подложек."
+        ]
+      },
+      "en": {
+        "title": "Maintenance update",
+        "changes": [
+          "Added support for the updated Fastcloud server.",
+          "The sleep timer, sound controls and other popups now always have an opaque background, independent of the main surfaces' opacity."
+        ]
+      }
+    },
+    {
       "version": "0.4.0",
       "ru": {
         "title": "Твоя музыка и настройки между устройствами",

@@ -11,6 +11,7 @@ import {
   Play, Plus, Repeat2, Search, Settings2, Shuffle, SkipBack, SkipForward, Volume1, Volume2, VolumeX, X, Minimize2, Maximize2, ArrowUp, ArrowDown, Pin, Download, Languages, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, ThumbsDown,
 } from 'lucide-react'
 import { api } from './api'
+import { ServerOperations } from './ServerOperations'
 import { ArtistCredits } from './ArtistCredits'
 import { ArtistPage, CatalogPage, LibraryExtra, LibraryOverview, PlaylistPage, RepostsPage, TrackComments, TrackCreatorTools } from './ExtraPages'
 import { QueuePanel } from './QueuePanel'
@@ -856,6 +857,7 @@ function SettingsPage() {
         {user.id !== ownerId && <div className="approval-actions"><button className="secondary-button" disabled={accountBusy || user.status === 'approved'} onClick={() => void setApproval(user.id, 'approved')}>{english ? 'Allow access' : 'Разрешить доступ'}</button><button className="secondary-button" disabled={accountBusy || user.status === 'denied'} onClick={() => void setApproval(user.id, 'denied')}>{english ? 'Block' : 'Заблокировать'}</button></div>}
       </div>)}</div>
       {mediaStats && <div className="server-media-stats"><h3>{english ? 'Server audio cache' : 'Серверный кеш музыки'}</h3><p>{english ? 'Cache' : 'Кеш'}: {(mediaStats.cache_bytes / 1024 ** 3).toFixed(2)} / {(mediaStats.cache_limit_bytes / 1024 ** 3).toFixed(0)} GiB · {english ? 'Active downloads' : 'Загружается'}: {mediaStats.active_downloads}</p><p>{english ? 'Audio delivered this month' : 'Отдано аудио за месяц'} ({mediaStats.traffic_month}): {(mediaStats.month_served_bytes / 1024 ** 3).toFixed(2)} GiB</p></div>}
+      <ServerOperations english={!!english} serverUrl={FASTCLOUD_SERVER_URL} accountId={ownerId} />
     </div>}
     {section === 'general' && <><UpdateSettingsCard english={english} /><BackupSettings english={!!english} />{data && <TasteSettings settings={data} update={update} />}</>}
     {data && <SettingsSections section={section} settings={data} update={update} showDeveloperSettings={isAdmin} />}
@@ -1138,6 +1140,7 @@ export default function App() {
       queryClient.removeQueries({ queryKey: ['approval-users'] })
       queryClient.removeQueries({ queryKey: ['approval-settings'] })
       queryClient.removeQueries({ queryKey: ['approval-media'] })
+      queryClient.removeQueries({ queryKey: ['server-operations'] })
     }
     if (previous && previous !== status && ['demo', 'public', 'signed_in'].includes(status)) {
       if (status === 'signed_in') void queryClient.invalidateQueries({ predicate: query => query.queryKey[0] !== 'connection' })
