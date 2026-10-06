@@ -453,7 +453,11 @@ impl Player {
         anyhow::ensure!(duration.saturating_add(10000) >= track.effective_duration_ms(), "Transition stream is a preview");
         let mut decoder = DecoderSlot::new(); decoder.urn = urn.clone(); decoder.stream_url = Some(url);
         decoder.reset_decoder(Some(if playlist.init_uri.is_some() { "audio/mp4".into() } else { "audio/mpeg".into() }));
-        if let Some(init) = &playlist.init_uri { decoder.feed(&self.hls.init_segment(&urn,init).await?); }
+        if let Some(init) = &playlist.init_uri {
+            // Every independently decoded fMP4 fragment needs the same init
+            // header, including fragments fetched after the fade starts.
+            decoder.inner.set_init_segment(self.hls.init_segment(&urn, init).await?);
+        }
         let mut samples = Vec::new();
         let target = u64::from(fade).saturating_add(START_BUFFER_MS).max(START_BUFFER_MS);
         'segments: for url in &playlist.segments {
@@ -1936,6 +1940,9 @@ fn clear_played_state(state: &mut PlayerState) -> usize {
     state.queue_revision = state.queue_revision.wrapping_add(1);
     removed.len()
 }
+
+#[cfg(test)]
+mod transition_tests;
 
 fn url_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());

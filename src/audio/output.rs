@@ -510,6 +510,17 @@ impl AudioOutput {
     pub fn device_sample_rate(&self) -> u32 {
         self.device_sample_rate
     }
+
+    #[cfg(test)]
+    pub(crate) fn render_test_audio(&self, frames: usize) -> Vec<f32> {
+        let mut state = self.state.lock();
+        let mut samples = Vec::with_capacity(frames * 2);
+        for _ in 0..frames {
+            let frame = if state.playing { mixed_frame(&mut state, self.device_sample_rate) } else { (0.0, 0.0) };
+            samples.extend_from_slice(&[frame.0, frame.1]);
+        }
+        samples
+    }
 }
 
 /// Drop fully-consumed frames from the front of the buffer.

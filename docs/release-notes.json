@@ -2,6 +2,21 @@
   "schema": 1,
   "releases": [
     {
+      "version": "0.4.3",
+      "ru": {
+        "title": "Исправление плавного перехода",
+        "changes": [
+          "Исправлена подготовка следующего трека в формате AAC: плавный переход теперь работает при автоматической смене таких треков."
+        ]
+      },
+      "en": {
+        "title": "Crossfade fix",
+        "changes": [
+          "Fixed preparation of the next AAC track so crossfade works when these tracks advance automatically."
+        ]
+      }
+    },
+    {
       "version": "0.4.2",
       "ru": {
         "title": "Плавные переходы и понятные настройки",
