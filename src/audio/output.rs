@@ -579,6 +579,26 @@ mod tests {
     }
 
     #[test]
+    fn eight_second_crossfade_keeps_both_tracks_audible_and_finishes_on_the_incoming_track() {
+        let output = AudioOutput::silent([0.0; 10], 1.0);
+        let outgoing: Vec<f32> = (0..44100 * 10).flat_map(|_| [0.4, 0.0]).collect();
+        let incoming: Vec<f32> = (0..48000 * 11).flat_map(|_| [0.0, 0.6]).collect();
+        output.start_track(outgoing, 44100, true, 0);
+        output.seek_ms(2000);
+        output.start_crossfade(incoming, 48000, 8000);
+        let mut state = output.state.lock();
+        let first = mixed_frame(&mut state, 48000);
+        assert!((first.0 - 0.4).abs() < 0.0001 && first.1.abs() < 0.0001);
+        for _ in 1..48000 * 4 { mixed_frame(&mut state, 48000); }
+        let middle = mixed_frame(&mut state, 48000);
+        assert!((middle.0 - 0.2).abs() < 0.0001 && (middle.1 - 0.3).abs() < 0.0001);
+        for _ in 48000 * 4 + 1..48000 * 8 { mixed_frame(&mut state, 48000); }
+        let last = mixed_frame(&mut state, 48000);
+        assert!(last.0.abs() < 0.0001 && (last.1 - 0.6).abs() < 0.0001);
+        assert!(state.tail.is_none());
+    }
+
+    #[test]
     fn state_defaults() {
         let s = OutputState::default();
         assert_eq!(s.eq_gains.len(), 10);

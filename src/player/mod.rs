@@ -20,7 +20,10 @@ struct QueueSnapshot { queue: Vec<Track>, order: Vec<usize>, current: Option<usi
 struct AudioPreferences { crossfade_ms: u32, gapless: bool }
 struct SleepTimer { deadline: Option<Instant>, track_id: Option<u64> }
 struct PreparedTrack { track: Track, decoder: DecoderSlot, samples: Vec<f32>, rate: u32, duration: u64, bitrate: u32, channels: u16 }
-struct PendingNext { generation: u64, id: u64, prepared: Option<PreparedTrack> }
+struct PendingNext {
+    generation: u64, id: u64, fade: u32, prepared: Option<PreparedTrack>,
+    attempts: u8, retry_at: Option<Instant>,
+}
 
 /// Decode enough before starting the audio device that network and scheduler
 /// jitter cannot turn one MP3 packet into a burst followed by silence.
@@ -29,6 +32,9 @@ const START_BUFFER_MS: u64 = 3_000;
 const DECODE_BATCH_MS: u64 = 2_000;
 /// Refill before the audio device gets close enough to the end to underrun.
 const TARGET_BUFFER_MS: u64 = 8_000;
+// Two bounded preparation attempts must fit before the requested fade begins.
+const TRANSITION_PREPARE_LEAD_MS: u64 = 45_000;
+const TRANSITION_RETRY_DELAY: Duration = Duration::from_secs(1);
 /// Coalesce slider events before serializing the queue and settings to disk.
 const CONTROL_SAVE_DELAY: Duration = Duration::from_millis(750);
 
@@ -56,7 +62,7 @@ fn retryable_playback_error(error: &anyhow::Error) -> bool {
             || http.status().is_some_and(|status| status.is_server_error());
     }
     let message = format!("{error:#}").to_lowercase();
-    !["401", "403", "404", "429", "no stream url", "blocked", "unavailable", "permission denied"]
+    !["401", "403", "404", "429", "no stream url", "no full stream", "stream is a preview", "stream has no audio", "blocked", "unavailable", "permission denied"]
         .iter().any(|permanent| message.contains(permanent))
         && ["stream", "decode", "probe", "timeout", "segment", "connect", "audio"]
             .iter().any(|stage| message.contains(stage))
@@ -94,8 +100,11 @@ fn playback_error_message(error: &anyhow::Error) -> String {
     error.to_string()
 }
 
-fn should_decode_more(buffered_ms: u64, loading: bool) -> bool {
-    !loading && buffered_ms < TARGET_BUFFER_MS
+fn should_decode_more(buffered_ms: u64, loading: bool, crossfade_ms: u32) -> bool {
+    // Decode through the fade boundary early enough to discover the real EOF,
+    // rather than relying on the playlist's rounded duration.
+    let target = TARGET_BUFFER_MS.max(u64::from(crossfade_ms) + DECODE_BATCH_MS);
+    !loading && buffered_ms < target
 }
 
 /// Decoder EOF means no more samples can be appended; it does not mean the
@@ -416,7 +425,18 @@ impl Player {
         if next == current { return None; }
         let remaining = state.duration_ms.saturating_sub(self.output.position_ms());
         let fade = preferences.crossfade_ms.min((state.duration_ms / 2).min(8000) as u32);
-        Some((self.load_generation.load(Ordering::Acquire), next, state.queue.get(next)?.clone(), remaining, fade))
+        let generation = self.load_generation.load(Ordering::Acquire);
+        let track = state.queue.get(next)?.clone();
+        drop(state);
+        drop(preferences);
+        // The decoder lock comes before the player-state lock elsewhere. Do
+        // not hold state while checking EOF. Generation is rechecked at commit.
+        let decoded_end = {
+            let decoder = self.decoder.lock();
+            decoder.exhausted && !decoder.failed
+        };
+        let remaining = if decoded_end && !*self.demo.lock() { self.output.buffered_ms() } else { remaining };
+        Some((generation, next, track, remaining, fade))
     }
 
     async fn prepare_next(&self, track: Track, fade: u32) -> Result<PreparedTrack> {
@@ -452,19 +472,37 @@ impl Player {
 
     fn prepare_transition(&self) {
         let Some((generation,_,track,remaining,fade)) = self.transition_candidate() else { self.next_track.lock().take(); return; };
-        if remaining > u64::from(fade) + 15000 { return; }
+        if remaining > u64::from(fade) + TRANSITION_PREPARE_LEAD_MS { return; }
         {
             let mut pending = self.next_track.lock();
-            if pending.as_ref().is_some_and(|pending| pending.generation == generation && pending.id == track.id) { return; }
-            *pending = Some(PendingNext { generation, id: track.id, prepared: None });
+            if let Some(pending) = pending.as_mut().filter(|pending| pending.generation == generation && pending.id == track.id && pending.fade == fade) {
+                if pending.prepared.is_some() || pending.attempts >= 2 || pending.retry_at.is_none_or(|at| Instant::now() < at) { return; }
+                pending.attempts += 1;
+                pending.retry_at = None;
+            } else {
+                *pending = Some(PendingNext { generation, id: track.id, fade, prepared: None, attempts: 1, retry_at: None });
+            }
         }
         let Some(me) = self.self_ref.lock().upgrade() else { return; };
         self.rt.spawn(async move {
             let id = track.id;
             let result = tokio::time::timeout(Duration::from_secs(20),me.prepare_next(track,fade)).await;
-            if let Ok(Ok(prepared)) = result {
-                let mut pending = me.next_track.lock();
-                if let Some(pending) = pending.as_mut().filter(|pending| pending.id == id && pending.generation == generation && me.load_is_current(generation)) { pending.prepared = Some(prepared); }
+            let mut pending = me.next_track.lock();
+            if let Some(pending) = pending.as_mut().filter(|pending| pending.id == id && pending.generation == generation && pending.fade == fade && me.load_is_current(generation)) {
+                match result {
+                    Ok(Ok(prepared)) => pending.prepared = Some(prepared),
+                    failure => {
+                        let retryable = match failure {
+                            Ok(Err(error)) => retryable_playback_error(&error),
+                            Err(_) => true,
+                            Ok(Ok(_)) => false,
+                        };
+                        if retryable && pending.attempts < 2 {
+                            pending.retry_at = Some(Instant::now() + TRANSITION_RETRY_DELAY);
+                        }
+                        log::debug!("Next-track preparation failed; scheduled retry: {}", pending.retry_at.is_some());
+                    }
+                }
             }
         });
     }
@@ -474,7 +512,7 @@ impl Player {
         if !at_end && (fade == 0 || remaining > u64::from(fade) || self.output.buffered_ms().saturating_add(100) < remaining) { return false; }
         let prepared = {
             let mut pending = self.next_track.lock();
-            let Some(pending) = pending.as_mut().filter(|pending| pending.id == track.id && pending.generation == generation) else { return false; };
+            let Some(pending) = pending.as_mut().filter(|pending| pending.id == track.id && pending.generation == generation && pending.fade == fade) else { return false; };
             let Some(prepared) = pending.prepared.take() else { return false; }; prepared
         };
         let mut decoder = self.decoder.lock();
@@ -1513,17 +1551,18 @@ impl Player {
             // buffer. Pulling here at the same time can steal the first packets
             // and append them to the output of the previous track.
             let loading = self.state.lock().loading;
+            let crossfade_ms = self.audio_preferences.lock().crossfade_ms;
             // Demo mode synthesizes its own audio in windows; there is no
             // decoder to pull from.
             if *self.demo.lock() {
-                if should_decode_more(buffered, loading) {
+                if should_decode_more(buffered, loading, crossfade_ms) {
                     self.top_up_demo();
                 }
                 self.publish_position();
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 continue;
             }
-            if should_decode_more(buffered, loading) {
+            if should_decode_more(buffered, loading, crossfade_ms) {
                 let cycle_generation = self.load_generation.load(Ordering::Acquire);
                 let action = {
                     let mut slot = self.decoder.lock();
@@ -1967,12 +2006,99 @@ mod tests {
         { let mut state = player.state.lock(); state.is_playing = true; state.duration_ms = 10000; }
         player.output.start_track(vec![0.2;48000*2],48000,true,9000);
         let next = player.state.lock().queue[1].clone();
-        *player.next_track.lock() = Some(PendingNext { generation:0,id:next.id,prepared:Some(PreparedTrack { duration: next.effective_duration_ms(), track: next.clone(),decoder:DecoderSlot::new(),samples:vec![0.3;48000*2*3],rate:48000,bitrate:160,channels:2 }) });
+        *player.next_track.lock() = Some(PendingNext { generation:0,id:next.id,fade:4000,attempts:1,retry_at:None,prepared:Some(PreparedTrack { duration: next.effective_duration_ms(), track: next.clone(),decoder:DecoderSlot::new(),samples:vec![0.3;48000*2*3],rate:48000,bitrate:160,channels:2 }) });
         player.load_generation.store(1,Ordering::Release);
         assert!(!player.transition_ready(false)); assert_eq!(player.state.lock().current,Some(0));
         player.load_generation.store(0,Ordering::Release);
         assert!(player.transition_ready(false));
         let state = player.state.lock(); assert_eq!(state.current,Some(1)); assert_eq!(state.duration_ms,next.effective_duration_ms()); assert_eq!(state.position_ms,0); assert!(state.is_playing);
+    }
+
+    #[test]
+    fn eight_second_transition_uses_decoded_tail_when_playlist_duration_is_inaccurate() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        for duration in [30_500, 29_500] {
+            let player = improved_player_fixture(&runtime, dir.path().join("settings.json"));
+            player.set_demo(false);
+            player.set_audio_preferences(false, 8000, false);
+            { let mut state = player.state.lock(); state.is_playing = true; state.duration_ms = duration; }
+            // All remaining audio is decoded: eight seconds after position 22s.
+            player.output.start_track(vec![0.2; 48000 * 2 * 8], 48000, true, 22000);
+            let next = player.state.lock().queue[1].clone();
+            *player.next_track.lock() = Some(PendingNext { generation: 0, id: next.id, fade: 8000, attempts: 1, retry_at: None,
+                prepared: Some(PreparedTrack { duration: next.effective_duration_ms(), track: next,
+                    decoder: DecoderSlot::new(), samples: vec![0.3; 48000 * 2 * 11], rate: 48000,
+                    bitrate: 160, channels: 2 }) });
+            assert!(player.transition_ready(false), "playlist duration {duration} must not suppress the fade");
+            assert_eq!(player.state.lock().current, Some(1));
+        }
+    }
+
+    #[test]
+    fn eight_second_transition_waits_for_the_outgoing_audio_to_be_buffered() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let player = improved_player_fixture(&runtime, dir.path().join("settings.json"));
+        player.set_demo(false);
+        player.set_audio_preferences(false, 8000, false);
+        { let mut state = player.state.lock(); state.is_playing = true; state.duration_ms = 30000; }
+        player.decoder.lock().exhausted = false;
+        player.output.start_track(vec![0.2; 48000 * 2 * 4], 48000, true, 22000);
+        let next = player.state.lock().queue[1].clone();
+        *player.next_track.lock() = Some(PendingNext { generation: 0, id: next.id, fade: 8000,
+            attempts: 1, retry_at: None, prepared: Some(PreparedTrack {
+                duration: next.effective_duration_ms(), track: next, decoder: DecoderSlot::new(),
+                samples: vec![0.3; 48000 * 2 * 11], rate: 48000, bitrate: 160, channels: 2 }) });
+        assert!(!player.transition_ready(false));
+        assert_eq!(player.state.lock().current, Some(0));
+        player.output.append_samples(&vec![0.2; 48000 * 2 * 4], 48000);
+        assert!(player.transition_ready(false));
+    }
+
+    #[test]
+    fn transition_preparation_retries_once_then_uses_the_prepared_track() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let player = improved_player_fixture(&runtime, dir.path().join("settings.json"));
+        player.set_audio_preferences(false, 8000, false);
+        { let mut state = player.state.lock(); state.is_playing = true; state.duration_ms = 30000; }
+        player.output.start_track(vec![0.2; 48000 * 2 * 8], 48000, true, 22000);
+        let next = player.state.lock().queue[1].clone();
+        *player.next_track.lock() = Some(PendingNext { generation: 0, id: next.id, fade: 8000,
+            prepared: None, attempts: 1, retry_at: Some(Instant::now() - Duration::from_secs(1)) });
+        player.prepare_transition();
+        runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    if player.next_track.lock().as_ref().is_some_and(|next| next.prepared.is_some()) { break; }
+                    tokio::task::yield_now().await;
+                }
+            }).await.unwrap();
+        });
+        assert_eq!(player.next_track.lock().as_ref().unwrap().attempts, 2);
+        assert!(player.transition_ready(false));
+        assert_eq!(player.state.lock().current, Some(1));
+    }
+
+    #[test]
+    fn transition_preparation_does_not_retry_while_loading_or_after_two_attempts() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        for (attempts, retry_at) in [(1, None), (2, Some(Instant::now() - Duration::from_secs(1)))] {
+            let player = improved_player_fixture(&runtime, dir.path().join("settings.json"));
+            player.set_audio_preferences(false, 8000, false);
+            { let mut state = player.state.lock(); state.is_playing = true; state.duration_ms = 30000; }
+            let next = player.state.lock().queue[1].clone();
+            *player.next_track.lock() = Some(PendingNext { generation: 0, id: next.id, fade: 8000,
+                prepared: None, attempts, retry_at });
+            player.prepare_transition();
+            runtime.block_on(async { tokio::task::yield_now().await; });
+            let pending = player.next_track.lock();
+            let pending = pending.as_ref().unwrap();
+            assert_eq!(pending.attempts, attempts);
+            assert!(pending.prepared.is_none());
+        }
     }
 
     #[test]
@@ -2123,17 +2249,25 @@ mod tests {
 
     #[test]
     fn decode_top_up_is_blocked_while_track_load_owns_decoder() {
-        assert!(!should_decode_more(0, true));
+        assert!(!should_decode_more(0, true, 0));
     }
 
     #[test]
     fn decode_top_up_starts_below_target_buffer() {
-        assert!(should_decode_more(TARGET_BUFFER_MS - 1, false));
+        assert!(should_decode_more(TARGET_BUFFER_MS - 1, false, 0));
     }
 
     #[test]
     fn decode_top_up_waits_at_target_buffer() {
-        assert!(!should_decode_more(TARGET_BUFFER_MS, false));
+        assert!(!should_decode_more(TARGET_BUFFER_MS, false, 0));
+    }
+
+    #[test]
+    fn eight_second_crossfade_decodes_past_the_fade_boundary_to_discover_eof() {
+        assert!(should_decode_more(8000, false, 8000));
+        assert!(should_decode_more(9999, false, 8000));
+        assert!(!should_decode_more(10000, false, 8000));
+        assert!(!should_decode_more(8000, true, 8000));
     }
 
     #[test]

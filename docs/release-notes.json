@@ -2,6 +2,23 @@
   "schema": 1,
   "releases": [
     {
+      "version": "0.4.2",
+      "ru": {
+        "title": "Плавные переходы и понятные настройки",
+        "changes": [
+          "Исправлен плавный переход при автоматической смене треков, в том числе с длительностью 8 секунд.",
+          "Упрощены подсказки в настройках, статистике, папках и таймере сна на русском и английском."
+        ]
+      },
+      "en": {
+        "title": "Crossfade fixes and clearer settings",
+        "changes": [
+          "Fixed crossfade when tracks advance automatically, including the 8-second setting.",
+          "Simplified Russian and English descriptions in settings, statistics, folders and the sleep timer."
+        ]
+      }
+    },
+    {
       "version": "0.4.1",
       "ru": {
         "title": "Техническое обновление",

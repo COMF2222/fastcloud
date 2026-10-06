@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Fastcloud",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "identifier": "app.fastcloud.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -10,16 +10,54 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [{ "title": "Fastcloud", "width": 1280, "height": 800, "minWidth": 850, "minHeight": 580 }],
-    "security": { "assetProtocol": { "enable": true, "scope": ["$APPDATA/background.*", "$APPDATA/interface-font.*"] }, "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost https: data:; font-src 'self' asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost http://127.0.0.1:1420 ws://127.0.0.1:1420" }
-  },
-  "plugins": {
-    "deep-link": { "desktop": { "schemes": ["fastcloud"] } },
-    "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEMxMTlDRThFNkZEOTU5QUUKUldTdVdkbHZqczRad1o1b0RWUlJuRWJzd2VBTDFUbzl6RUJ0Vk5zSjlpRldRbzlXbkFJTzdKelgK",
-      "endpoints": ["https://github.com/COMF2222/fastcloud/releases/latest/download/latest-light.json"],
-      "windows": { "installMode": "passive" }
+    "windows": [
+      {
+        "title": "Fastcloud",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 850,
+        "minHeight": 580
+      }
+    ],
+    "security": {
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$APPDATA/background.*",
+          "$APPDATA/interface-font.*"
+        ]
+      },
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost https: data:; font-src 'self' asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost http://127.0.0.1:1420 ws://127.0.0.1:1420"
     }
   },
-  "bundle": { "active": true, "targets": "all", "createUpdaterArtifacts": true, "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"] }
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "fastcloud"
+        ]
+      }
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEMxMTlDRThFNkZEOTU5QUUKUldTdVdkbHZqczRad1o1b0RWUlJuRWJzd2VBTDFUbzl6RUJ0Vk5zSjlpRldRbzlXbkFJTzdKelgK",
+      "endpoints": [
+        "https://github.com/COMF2222/fastcloud/releases/latest/download/latest-light.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "createUpdaterArtifacts": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
 }
