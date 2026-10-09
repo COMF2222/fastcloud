@@ -2,6 +2,25 @@
   "schema": 1,
   "releases": [
     {
+      "version": "0.4.8",
+      "ru": {
+        "title": "Удобный ввод сообщений",
+        "changes": [
+          "При открытии диалога курсор сразу появляется в поле сообщения.",
+          "После отправки через Enter или кнопку можно сразу писать следующее сообщение.",
+          "После закрытия выбора музыки фокус возвращается к сообщению; обновления диалога не мешают вводу в поиске."
+        ]
+      },
+      "en": {
+        "title": "Smoother message input",
+        "changes": [
+          "Opening a conversation automatically focuses the message field.",
+          "After sending with Enter or the Send button, you can immediately type your next message.",
+          "Closing the music picker returns focus to the message field; conversation updates do not interrupt search input."
+        ]
+      }
+    },
+    {
       "version": "0.4.7",
       "ru": {
         "title": "Друзья и оформление сообщений",

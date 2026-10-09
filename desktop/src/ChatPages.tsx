@@ -146,11 +146,27 @@ export function MessagesPage() {
   const cursor = useRef({ owner: 0, thread: null as number | null, after: 0 })
   const scroller = useRef<HTMLDivElement>(null), stick = useRef(true), prepend = useRef<number | null>(null)
   const read = useRef(0)
+  const composer = useRef<HTMLTextAreaElement>(null), composerFocusPending = useRef(true)
   const page = useQuery({ queryKey: ['chat', session.id, 'messages', threadId], enabled: session.ready && !!threadId, retry: 1,
     queryFn: async () => {
       const after = cursor.current.owner === session.id && cursor.current.thread === threadId ? cursor.current.after : 0
       return { page: await api.chat<ChatPage>('messages', { threadId, after }), initial: after === 0, owner: session.id, thread: threadId }
     }, refetchInterval: () => document.visibilityState === 'visible' ? 3000 : false })
+  useEffect(() => { composerFocusPending.current = true }, [threadId, session.id])
+  useEffect(() => {
+    if (!composerFocusPending.current || !threadId || !session.ready || !page.data?.page.canSend || sending || musicOpen || reportOpen) return
+    const frame = requestAnimationFrame(() => {
+      const element = composer.current
+      if (!element || element.disabled || document.visibilityState !== 'visible') return
+      composerFocusPending.current = false
+      // A user who started typing in search while the conversation loaded
+      // keeps that focus. Polling never takes focus back from another control.
+      const focused = document.activeElement
+      if (focused !== element && focused?.matches('input, textarea, [contenteditable="true"]')) return
+      element.focus({ preventScroll: true })
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [threadId, session.id, session.ready, page.data?.page.canSend, sending, musicOpen, reportOpen])
   useEffect(() => { setIssue(''); stick.current = true; read.current = 0 }, [threadId, session.id])
   useEffect(() => { setSending(false); setOlderBusy(false) }, [session.id])
   useEffect(() => {
@@ -182,9 +198,14 @@ export function MessagesPage() {
   const peer = page.data?.page.peer || inbox.data?.conversations.find(item => item.id === threadId)?.peer
   const selfBlocked = !!peer && contacts.data?.blocked.some(item => item.id === peer.id)
   const invalidate = () => Promise.all(['inbox', 'messages', 'contacts'].map(section => queryClient.invalidateQueries({ queryKey: ['chat', session.id, section] })))
+  const selectConversation = (next: number) => {
+    const same = useChat.getState().threadId === next
+    useChat.getState().select(next)
+    if (same) composer.current?.focus({ preventScroll: true })
+  }
   const choose = async (person: ChatPerson) => {
     setIssue('')
-    try { const next = await api.chat<{ id: number }>('open', { peerId: person.id }); if (useChat.getState().ownerId !== session.id) return; useChat.getState().select(next.id); await invalidate() }
+    try { const next = await api.chat<{ id: number }>('open', { peerId: person.id }); if (useChat.getState().ownerId !== session.id) return; selectConversation(next.id); await invalidate() }
     catch (cause) { setIssue(chatError(cause, !!english)) }
   }
   const send = async () => {
@@ -198,7 +219,10 @@ export function MessagesPage() {
       stick.current = true
       setFeed(previous => previous.thread === target && previous.owner === session.id ? { ...previous, rows: mergeChatMessages(previous.rows, [message]) } : previous)
       await invalidate()
-    } catch (cause) { setIssue(chatError(cause, !!english)) } finally { setSending(false) }
+    } catch (cause) { setIssue(chatError(cause, !!english)) } finally {
+      if (useChat.getState().ownerId === session.id && useChat.getState().threadId === target) composerFocusPending.current = true
+      setSending(false)
+    }
   }
   const older = async () => {
     if (!threadId || !rows.length || olderBusy) return
@@ -231,7 +255,7 @@ export function MessagesPage() {
   return <div className="page-content messages-page"><div className="messages-heading"><h1>{t('Сообщения', 'Messages')}</h1><p>{t('Чаты Fastcloud с друзьями по взаимной подписке SoundCloud.', 'Fastcloud chats with friends you mutually follow on SoundCloud.')}</p></div>
     {!session.ready && <div className="chat-empty">{session.error ? chatError(session.error, !!english) : session.enabled ? t('Подключаем сообщения…', 'Connecting messages…') : session.id ? t('Чаты временно недоступны. Попробуй ещё раз.', 'Chat is temporarily unavailable. Try again.') : t('Войди в аккаунт, чтобы открыть сообщения.', 'Sign in to open messages.')}</div>}
     {session.ready && <div className={`chat-layout ${active ? 'chat-selected' : ''}`}><aside className="chat-list"><input aria-label={t('Поиск диалогов и друзей', 'Search conversations and friends')} placeholder={t('Найти друга…', 'Find a friend…')} value={search} onChange={event => setSearch(event.target.value)} />
-      {inbox.error && <p role="alert">{chatError(inbox.error, !!english)}</p>}{visibleConversations.map(item => <button className={`chat-list-person ${item.id === threadId ? 'active' : ''}`} key={item.id} onClick={() => useChat.getState().select(item.id)}><Avatar person={item.peer} /><span><strong>{item.peer.username}</strong><small>{item.lastMessage?.text || item.lastMessage?.attachment?.title || t('Новый диалог', 'New conversation')}</small></span>{!!item.unread && <b className="chat-badge">{item.unread}</b>}</button>)}
+      {inbox.error && <p role="alert">{chatError(inbox.error, !!english)}</p>}{visibleConversations.map(item => <button className={`chat-list-person ${item.id === threadId ? 'active' : ''}`} key={item.id} onClick={() => selectConversation(item.id)}><Avatar person={item.peer} /><span><strong>{item.peer.username}</strong><small>{item.lastMessage?.text || item.lastMessage?.attachment?.title || t('Новый диалог', 'New conversation')}</small></span>{!!item.unread && <b className="chat-badge">{item.unread}</b>}</button>)}
       <h3>{t('Начать диалог', 'Start a conversation')}</h3>{contacts.isPending ? <LoaderCircle className="spin" /> : visibleContacts.map(person => <button className="chat-list-person" key={person.id} onClick={() => void choose(person)}><Avatar person={person} /><span><strong>{person.username}</strong><small>Fastcloud</small></span><Plus size={16} /></button>)}
       {!visibleContacts.length && !contacts.isPending && <p>{t('Здесь появятся друзья, с которыми вы взаимно подписаны в SoundCloud. Для переписки обоим нужен обновлённый Fastcloud.', 'Friends you mutually follow on SoundCloud will appear here. Both of you need an up-to-date Fastcloud app to chat.')}</p>}{(contacts.error || contacts.data?.degraded) && <button className="text-button" onClick={() => void contacts.refetch()}>{t('Не удалось проверить все подписки. Повторить', 'Could not check all follows. Retry')}</button>}
       {!!contacts.data?.blocked.length && <details><summary>{t('Заблокированные', 'Blocked users')}</summary>{contacts.data.blocked.map(person => <button key={person.id} className="text-button" onClick={() => void api.chat('block', { peerId: person.id, blocked: false }).then(invalidate).catch(cause => setIssue(chatError(cause, !!english)))}>{person.username} · {t('Разблокировать', 'Unblock')}</button>)}</details>}
@@ -241,9 +265,9 @@ export function MessagesPage() {
         {feed.hasOlder && rows.length > 0 && <button className="text-button chat-older" disabled={olderBusy} onClick={() => void older()}>{t('Ранние сообщения', 'Earlier messages')}</button>}{page.isPending && <LoaderCircle className="spin" />}{page.error && <p role="alert">{chatError(page.error, !!english)}</p>}
         {rows.map(row => <article key={row.id} className={`chat-message ${row.senderId === session.id ? 'mine' : ''}`}><div className="chat-bubble">{row.text && <ChatText text={row.text} english={!!english} />}{row.attachment && <MusicCard item={row.attachment} english={!!english} />}<small className="chat-message-time">{new Date(row.createdAt).toLocaleString(english ? 'en-US' : 'ru-RU', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}{row.senderId === session.id && <span title={row.id <= (page.data?.page.peerReadId || 0) ? t('Прочитано', 'Read') : t('Отправлено', 'Sent')}>{row.id <= (page.data?.page.peerReadId || 0) ? <CheckCheck size={13} /> : t('Отправлено', 'Sent')}</span>}</small></div></article>)}
       </div><form className="chat-compose" onSubmit={event => { event.preventDefault(); void send() }}>{draft.attachment && <div className="chat-draft-music"><Music2 size={17} /><strong>{draft.attachment.title}</strong><button type="button" className="icon-button" disabled={sending} aria-label={t('Убрать вложение', 'Remove attachment')} onClick={() => threadId && useChat.getState().edit(threadId, { attachment: null, nonce: null })}><X size={16} /></button></div>}
-        {page.data && !page.data.page.canSend && <p>{t('Чтобы отправлять сообщения, нужна взаимная подписка и доступ к чату.', 'Mutual following and chat access are required to send messages.')}</p>}<div className="chat-compose-row"><button type="button" className="icon-button" disabled={sending || !page.data?.page.canSend} aria-label={t('Добавить музыку', 'Add music')} title={t('Добавить музыку', 'Add music')} onClick={() => setMusicOpen(true)}><Music2 size={19} /></button><textarea disabled={sending || !page.data?.page.canSend} maxLength={4000} aria-label={t('Сообщение', 'Message')} placeholder={t('Напиши сообщение…', 'Write a message…')} value={draft.text} onChange={event => threadId && useChat.getState().edit(threadId, { text: event.target.value, nonce: null })} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send() } }} /><button className="primary-button" type="submit" disabled={sending || !page.data?.page.canSend || (!draft.text.trim() && !draft.attachment)} aria-label={t('Отправить', 'Send')}>{sending ? <LoaderCircle className="spin" size={18} /> : <Send size={18} />}</button></div></form>
+        {page.data && !page.data.page.canSend && <p>{t('Чтобы отправлять сообщения, нужна взаимная подписка и доступ к чату.', 'Mutual following and chat access are required to send messages.')}</p>}<div className="chat-compose-row"><button type="button" className="icon-button" disabled={sending || !page.data?.page.canSend} aria-label={t('Добавить музыку', 'Add music')} title={t('Добавить музыку', 'Add music')} onClick={() => setMusicOpen(true)}><Music2 size={19} /></button><textarea ref={composer} disabled={sending || !page.data?.page.canSend} maxLength={4000} aria-label={t('Сообщение', 'Message')} placeholder={t('Напиши сообщение…', 'Write a message…')} value={draft.text} onChange={event => threadId && useChat.getState().edit(threadId, { text: event.target.value, nonce: null })} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send() } }} /><button className="primary-button" type="submit" disabled={sending || !page.data?.page.canSend || (!draft.text.trim() && !draft.attachment)} aria-label={t('Отправить', 'Send')}>{sending ? <LoaderCircle className="spin" size={18} /> : <Send size={18} />}</button></div></form>
     </> : <div className="chat-empty"><MessageCircle size={38} /><p>{t('Выбери диалог или друга, чтобы начать общение.', 'Choose a conversation or a friend to start chatting.')}</p></div>}</section></div>}{issue && <p className="error-text" role="alert">{issue}</p>}
-    <Dialog.Root open={musicOpen} onOpenChange={setMusicOpen}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className="chat-share-dialog"><Dialog.Title>{t('Добавить музыку', 'Add music')}</Dialog.Title><Dialog.Description>{t('Твои лайки и загрузки', 'Your likes and uploads')}</Dialog.Description><input aria-label={t('Найти музыку для отправки', 'Find music to share')} value={musicSearch} onChange={event => setMusicSearch(event.target.value)} placeholder={t('Найти трек…', 'Find a track…')} /><div className="chat-music-picker">{music.slice(0, 100).map(track => <button key={track.id} onClick={() => attach(track)}><Music2 size={18} /><span><strong>{track.title}</strong><small>{artist(track)}</small></span><Plus size={16} /></button>)}{!music.length && <p>{t('Лайкни или загрузи трек — он появится здесь.', 'Like or upload a track to see it here.')}</p>}</div><Dialog.Close className="icon-button chat-dialog-close" aria-label={t('Закрыть', 'Close')}><X size={18} /></Dialog.Close></Dialog.Content></Dialog.Portal></Dialog.Root>
+    <Dialog.Root open={musicOpen} onOpenChange={setMusicOpen}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className="chat-share-dialog" onCloseAutoFocus={event => { event.preventDefault(); composer.current?.focus({ preventScroll: true }) }}><Dialog.Title>{t('Добавить музыку', 'Add music')}</Dialog.Title><Dialog.Description>{t('Твои лайки и загрузки', 'Your likes and uploads')}</Dialog.Description><input aria-label={t('Найти музыку для отправки', 'Find music to share')} value={musicSearch} onChange={event => setMusicSearch(event.target.value)} placeholder={t('Найти трек…', 'Find a track…')} /><div className="chat-music-picker">{music.slice(0, 100).map(track => <button key={track.id} onClick={() => attach(track)}><Music2 size={18} /><span><strong>{track.title}</strong><small>{artist(track)}</small></span><Plus size={16} /></button>)}{!music.length && <p>{t('Лайкни или загрузи трек — он появится здесь.', 'Like or upload a track to see it here.')}</p>}</div><Dialog.Close className="icon-button chat-dialog-close" aria-label={t('Закрыть', 'Close')}><X size={18} /></Dialog.Close></Dialog.Content></Dialog.Portal></Dialog.Root>
     <Dialog.Root open={reportOpen} onOpenChange={setReportOpen}><Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className="chat-share-dialog"><Dialog.Title>{t('Пожаловаться на диалог', 'Report conversation')}</Dialog.Title><Dialog.Description>{t('Собеседник будет заблокирован, а диалог убран в архив. Последние сообщения из диалога попадут в жалобу администратору Fastcloud.', 'The user will be blocked and the conversation archived. Recent messages will be included in the report to the Fastcloud administrator.')}</Dialog.Description><div className="chat-report-actions"><button className="secondary-button" onClick={() => void action('report', 'spam')}>{t('Спам', 'Spam')}</button><button className="secondary-button" onClick={() => void action('report', 'harassment')}>{t('Оскорбления', 'Harassment')}</button></div><Dialog.Close className="icon-button chat-dialog-close" aria-label={t('Закрыть', 'Close')}><X size={18} /></Dialog.Close></Dialog.Content></Dialog.Portal></Dialog.Root>
   </div>
 }
