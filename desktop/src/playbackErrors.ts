@@ -1,6 +1,7 @@
 export function playbackError(error: string, english: boolean): { message: string; action: 'retry' | 'account' | 'none' } {
   const text = error.toLowerCase()
   const t = (ru: string, en: string) => english ? en : ru
+  if (/audio link expired|playback session expired|\b410\b/.test(text)) return { message: t('Соединение с аудио прервалось. Можно продолжить с текущей позиции.', 'The audio connection was interrupted. Retry from the current position.'), action: 'retry' }
   if (/expired|unauthorized|401|sign in again/.test(text)) return { message: t('Сессия истекла. Войди снова в настройках аккаунта.', 'Your session expired. Sign in again in Account settings.'), action: 'account' }
   if (/429|limit was reached|rate limit/.test(text)) return { message: t('SoundCloud ограничил запросы. Попробуй немного позже.', 'SoundCloud limited requests. Try again later.'), action: 'none' }
   if (/403|404|no stream|blocked|no longer available|does not allow/.test(text)) return { message: t('SoundCloud не предоставляет этот трек для твоего аккаунта.', 'SoundCloud does not make this track available to your account.'), action: 'none' }

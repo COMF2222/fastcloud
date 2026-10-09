@@ -55,7 +55,7 @@ impl RecoveryBudget {
 fn retryable_playback_error(error: &anyhow::Error) -> bool {
     use crate::api::error::ApiError;
     if let Some(api) = error.downcast_ref::<ApiError>() {
-        return matches!(api, ApiError::Network(_) | ApiError::Json(_) | ApiError::Http { status: 500..=599, .. });
+        return matches!(api, ApiError::PlaybackLinkExpired | ApiError::Network(_) | ApiError::Json(_) | ApiError::Http { status: 500..=599, .. });
     }
     if let Some(http) = error.downcast_ref::<reqwest::Error>() {
         return http.is_timeout() || http.is_connect() || http.is_body()
@@ -2116,6 +2116,7 @@ mod tests {
         assert!(!budget.take(1, now));
         assert!(budget.take(2, now));
         assert!(retryable_playback_error(&anyhow::anyhow!("probe audio stream")));
+        assert!(retryable_playback_error(&crate::api::error::ApiError::PlaybackLinkExpired.into()));
         assert!(!retryable_playback_error(&crate::api::error::ApiError::Unauthorized.into()));
         assert!(!retryable_playback_error(&anyhow::anyhow!("HTTP 403 stream")));
     }

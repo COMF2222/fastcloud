@@ -2,6 +2,23 @@
   "schema": 1,
   "releases": [
     {
+      "version": "0.4.6",
+      "ru": {
+        "title": "Восстановление воспроизведения после перезапуска сервера",
+        "changes": [
+          "После краткого перезапуска сервера плеер автоматически обновляет ссылку на аудио и продолжает тот же трек с текущей позиции.",
+          "Исправлено ложное сообщение об истёкшей сессии при потере временной ссылки на аудио."
+        ]
+      },
+      "en": {
+        "title": "Playback recovery after a server restart",
+        "changes": [
+          "After a brief server restart, the player automatically renews the audio link and resumes the same track from the current position.",
+          "Fixed a false session-expired message when a temporary audio link is lost."
+        ]
+      }
+    },
+    {
       "version": "0.4.5",
       "ru": {
         "title": "Переписка внутри Fastcloud",

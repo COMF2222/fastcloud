@@ -12,6 +12,9 @@ pub enum ApiError {
     #[error("rate limited (HTTP 429), retry after {retry_after_ms:?}")]
     RateLimited { retry_after_ms: Option<u64> },
 
+    #[error("Audio link expired; start the track again")]
+    PlaybackLinkExpired,
+
     #[error("unauthorized: token expired or revoked (HTTP 401)")]
     Unauthorized,
 
@@ -31,6 +34,7 @@ pub enum ApiError {
 impl ApiError {
     pub fn user_message(&self) -> String {
         match self {
+            Self::PlaybackLinkExpired => "The audio connection was interrupted. Retry from the current position.".into(),
             Self::Unauthorized => {
                 "Your SoundCloud session expired. Sign in again in Settings → Account.".into()
             }

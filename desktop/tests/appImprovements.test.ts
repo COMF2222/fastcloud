@@ -150,3 +150,13 @@ test('account cache can reset when WebView storage is unavailable', async () => 
     else Reflect.deleteProperty(globalThis, 'localStorage')
   }
 })
+
+
+test('expired audio links offer playback retry rather than an account login', () => {
+  for (const english of [false, true]) {
+    for (const error of ['Audio link expired; start the track again', 'Playback session expired; start the track again', 'HTTP 410 audio stream']) {
+      assert.equal(playbackError(error, english).action, 'retry')
+    }
+    assert.equal(playbackError('Your SoundCloud session expired. Sign in again', english).action, 'account')
+  }
+})

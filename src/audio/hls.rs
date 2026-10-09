@@ -163,7 +163,8 @@ impl HlsDownloader {
                         && retry_segment(error)
                     {
                         attempts += 1;
-                        tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+                        // Keep the decoded buffer playing while a brief broker restart completes.
+                        tokio::time::sleep(std::time::Duration::from_secs(attempts)).await;
                         continue;
                     }
                     break result;
@@ -210,13 +211,8 @@ impl HlsDownloader {
             let text = std::fs::read_to_string(path)?;
             return parse(&text, url);
         }
-        let text = self
-            .request(url)
-            .send()
-            .await?
-            .error_for_status()?
-            .text()
-            .await?;
+        let response = self.request(url).send().await?;
+        let text = audio_response(response)?.text().await?;
         parse(&text, url)
     }
 
@@ -236,7 +232,7 @@ impl HlsDownloader {
         if let Some(hit) = cached {
             if validate_segment(&hit).is_ok() { return Ok(hit); }
         }
-        let resp = self.request(url).send().await?.error_for_status()?;
+        let resp = audio_response(self.request(url).send().await?)?;
         let status = resp.status();
         if !status.is_success() {
             anyhow::bail!("segment fetch {status}: {url}");
@@ -262,7 +258,7 @@ impl HlsDownloader {
         if let Some(hit) = cached {
             if validate_segment(&hit).is_ok() { return Ok(hit); }
         }
-        let resp = self.request(url).send().await?.error_for_status()?;
+        let resp = audio_response(self.request(url).send().await?)?;
         let bytes = read_segment(resp).await?;
         self.cache_segment(track_urn, url, &bytes).await;
         Ok(bytes)
@@ -276,6 +272,22 @@ impl HlsDownloader {
         let _ =
             tokio::task::spawn_blocking(move || cache.put_segment(&track_urn, &url, &bytes)).await;
     }
+}
+
+fn audio_response(response: reqwest::Response) -> Result<reqwest::Response> {
+    let status = response.status();
+    let path = response.url().path();
+    let ticket = |value: &str| value.len() == 43
+        && value.bytes().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, b'_' | b'-'));
+    let media = path.strip_prefix("/v1/media/").and_then(|rest| rest.split_once('/'))
+        .is_some_and(|(key, name)| ticket(key) && !name.is_empty() && !name.contains('/'));
+    let relay = path.strip_prefix("/v1/soundcloud/asset/").is_some_and(ticket);
+    // Older brokers used 401 for lost playback tickets. These GET endpoints
+    // use a capability, not the user's login; a fresh stream resolves a new one.
+    if (media && matches!(status.as_u16(), 401 | 410)) || (relay && status.as_u16() == 410) {
+        return Err(crate::api::error::ApiError::PlaybackLinkExpired.into());
+    }
+    Ok(response.error_for_status()?)
 }
 
 async fn read_segment(mut response: reqwest::Response) -> Result<Vec<u8>> {
@@ -337,6 +349,36 @@ fn needs_oauth(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn lost_playback_tickets_are_distinct_from_account_authentication() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let directory = tempfile::tempdir().unwrap();
+        let cache = Arc::new(super::super::cache::AudioCache::new(directory.path().to_path_buf(), 1024).unwrap());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for status in [401, 410, 401, 410, 401] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0; 4096];
+                socket.read(&mut request).await.unwrap();
+                socket.write_all(format!("HTTP/1.1 {status} Error\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}").as_bytes()).await.unwrap();
+            }
+        });
+        let downloader = HlsDownloader::new(reqwest::Client::new(), cache);
+        let path = format!("{origin}/v1/media/{}", "a".repeat(43));
+        let error = downloader.playlist(&format!("{path}/index.m3u8")).await.unwrap_err();
+        assert!(error.to_string().contains("Audio link"), "{error}");
+        let error = downloader.segment("track", &format!("{path}/part.seg")).await.unwrap_err();
+        assert!(error.to_string().contains("Audio link"), "{error}");
+        let error = downloader.init_segment("track", &format!("{path}/init.seg")).await.unwrap_err();
+        assert!(error.to_string().contains("Audio link"), "{error}");
+        let error = downloader.playlist(&format!("{origin}/v1/soundcloud/asset/{}", "b".repeat(43))).await.unwrap_err();
+        assert!(error.to_string().contains("Audio link"), "{error}");
+        let error = downloader.playlist(&format!("{origin}/v1/soundcloud/api/me")).await.unwrap_err();
+        assert_eq!(error.downcast_ref::<reqwest::Error>().unwrap().status(), Some(reqwest::StatusCode::UNAUTHORIZED));
+        server.await.unwrap();
+    }
 
     #[tokio::test]
     async fn cached_error_pages_are_refetched_and_http_200_errors_are_not_cached() {

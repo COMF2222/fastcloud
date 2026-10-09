@@ -6,6 +6,9 @@ struct AacFixture {
     _session: Arc<crate::auth::Session>,
     _directory: tempfile::TempDir,
     server: tokio::task::JoinHandle<()>,
+    restart_status: Arc<std::sync::atomic::AtomicU16>,
+    resolves: Arc<std::sync::atomic::AtomicUsize>,
+    lost_tickets: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Drop for AacFixture {
@@ -39,6 +42,12 @@ async fn aac_fixture() -> AacFixture {
         state.order = vec![0, 1]; state.current = Some(0);
         state.is_playing = true; state.duration_ms = 30000;
     }
+    let restart_status = Arc::new(std::sync::atomic::AtomicU16::new(0));
+    let resolves = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let lost_tickets = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let status = restart_status.clone();
+    let resolved = resolves.clone();
+    let lost = lost_tickets.clone();
     let server = tokio::spawn(async move {
         loop {
             let (mut socket, _) = listener.accept().await.unwrap();
@@ -56,10 +65,18 @@ async fn aac_fixture() -> AacFixture {
             // an HTTP request. It is not a failure of the audio path.
             let Some(line) = text.lines().next() else { continue; };
             let path = line.split_whitespace().nth(1).unwrap();
-            let resolve = format!(r#"{{"playlist_path":"/v1/media/{}/index.m3u8","bitrate_kbps":160}}"#, "a".repeat(43));
+            let restart = status.load(Ordering::Acquire);
+            if restart > 0 && path.starts_with(&format!("/v1/media/{}/", "a".repeat(43))) {
+                lost.fetch_add(1, Ordering::AcqRel);
+                let header = format!("HTTP/1.1 {restart} Expired\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}");
+                let _ = socket.write_all(header.as_bytes()).await;
+                continue;
+            }
+            let resolve = format!(r#"{{"playlist_path":"/v1/media/{}/index.m3u8","bitrate_kbps":160}}"#, if restart == 0 { "a".repeat(43) } else { "b".repeat(43) });
             let body: &[u8] = match path {
                 "/v1/media/resolve" => {
                     assert!(text.to_ascii_lowercase().contains("authorization: oauth test-user-token"));
+                    resolved.fetch_add(1, Ordering::AcqRel);
                     resolve.as_bytes()
                 }
                 path if path.ends_with("/index.m3u8") => include_bytes!("fixtures/aac-transition/index.m3u8"),
@@ -77,7 +94,7 @@ async fn aac_fixture() -> AacFixture {
             }
         }
     });
-    AacFixture { player, _session: session, _directory: directory, server }
+    AacFixture { player, _session: session, _directory: directory, server, restart_status, resolves, lost_tickets }
 }
 
 #[tokio::test]
@@ -173,4 +190,43 @@ async fn player_loop_automatically_crossfades_into_real_aac_audio_for_eight_seco
     player.shutdown();
     tokio::time::timeout(Duration::from_secs(2), runner).await.unwrap().unwrap();
     assert!(!fixture.server.is_finished(), "fixture server must not have panicked");
+}
+
+
+#[tokio::test]
+async fn broker_restart_renews_audio_and_resumes_the_same_track_without_sign_in() {
+    for status in [401, 410] {
+        let fixture = aac_fixture().await;
+        let player = &fixture.player;
+        player.set_audio_preferences(false, 0, false);
+        let track = player.state.lock().queue[0].clone();
+        player.load_track(track.clone(), 4000);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while player.state.lock().loading {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.unwrap();
+        assert!(player.state.lock().error.is_none());
+        fixture.restart_status.store(status, Ordering::Release);
+        let runner = tokio::spawn(player.clone().run());
+        tokio::time::timeout(Duration::from_secs(8), async {
+            loop {
+                let ready = fixture.resolves.load(Ordering::Acquire) >= 2 && !player.state.lock().loading;
+                if ready { break; }
+                player.output.render_test_audio(4800);
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+        }).await.expect("A lost playback ticket must resolve and resume automatically");
+        assert!(fixture.lost_tickets.load(Ordering::Acquire) > 0);
+        {
+            let state = player.state.lock();
+            assert_eq!(state.queue[state.current.unwrap()].id, track.id);
+            assert!(state.is_playing && state.error.is_none(), "{:?}", state.error);
+            assert!(state.position_ms >= 4000, "The track must resume rather than restart");
+        }
+        assert!(player.output.render_test_audio(4800).iter().any(|sample| sample.abs() > 0.05));
+        assert!(!fixture.server.is_finished());
+        player.shutdown();
+        tokio::time::timeout(Duration::from_secs(2), runner).await.unwrap().unwrap();
+    }
 }
