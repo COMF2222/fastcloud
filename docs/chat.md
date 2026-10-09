@@ -3,8 +3,12 @@
 These are Fastcloud conversations stored in the existing backend SQLite database.
 They do not import, read or send SoundCloud's own private messages. Both people
 must use a client supporting chat, sign in, and mutually follow each other on
-SoundCloud. The client activates chat on startup using its authenticated identity;
-names and avatar URLs come from SoundCloud rather than client-supplied profiles.
+SoundCloud. The client updates its chat profile on startup using its authenticated identity,
+and retries temporary registration failures every 15 seconds until successful.
+Approved Fastcloud accounts are discoverable before this registration, using the
+trusted account ID and username already stored during SoundCloud sign-in. Profile
+registration adds the current SoundCloud name and avatar. No client-supplied
+identity is accepted, and mutual follows and blocks still gate opening/sending.
 
 ## API
 

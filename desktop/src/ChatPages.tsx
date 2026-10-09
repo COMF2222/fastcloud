@@ -6,7 +6,7 @@ import { Archive, ArrowLeft, Ban, CheckCheck, Flag, LoaderCircle, MessageCircle,
 import { api } from './api'
 import { useApp } from './store'
 import { useChat } from './chatStore'
-import { chatError, chatTextParts, mergeChatMessages, messageNonce, type ChatAttachment, type ChatContacts, type ChatInbox, type ChatMessage, type ChatPage, type ChatPerson } from './chatTypes'
+import { chatActivationInterval, chatError, chatTextParts, mergeChatMessages, messageNonce, type ChatAttachment, type ChatContacts, type ChatInbox, type ChatMessage, type ChatPage, type ChatPerson } from './chatTypes'
 import { SoundCloudShareButton } from './ShareButton'
 import { RemoteImage } from './RemoteImage'
 import { artist, type Track } from './types'
@@ -19,7 +19,9 @@ export function useChatSession() {
   const { data: me } = useQuery({ queryKey: ['my-profile'], queryFn: api.myProfile, enabled })
   const retainIdentity = enabled || connection?.status === 'error' || connection?.status === 'connecting'
   const id = retainIdentity && me?.status === 'ready' ? me.data.id : 0
-  const activation = useQuery({ queryKey: ['chat', id, 'activate'], queryFn: () => api.chat<ChatPerson>('activate'), enabled: enabled && id > 0, staleTime: 10 * 60_000, retry: 1 })
+  const activation = useQuery({ queryKey: ['chat', id, 'activate'], queryFn: () => api.chat<ChatPerson>('activate'), enabled: enabled && id > 0, staleTime: 10 * 60_000, retry: 1,
+    refetchOnWindowFocus: true, refetchOnReconnect: true,
+    refetchInterval: query => chatActivationInterval(id, query.state.data?.id, query.state.error) })
   return { id, ready: enabled && id > 0 && activation.data?.id === id, error: activation.error, enabled }
 }
 
@@ -231,7 +233,7 @@ export function MessagesPage() {
     {session.ready && <div className={`chat-layout ${active ? 'chat-selected' : ''}`}><aside className="chat-list"><input aria-label={t('Поиск диалогов и друзей', 'Search conversations and friends')} placeholder={t('Найти друга…', 'Find a friend…')} value={search} onChange={event => setSearch(event.target.value)} />
       {inbox.error && <p role="alert">{chatError(inbox.error, !!english)}</p>}{visibleConversations.map(item => <button className={`chat-list-person ${item.id === threadId ? 'active' : ''}`} key={item.id} onClick={() => useChat.getState().select(item.id)}><Avatar person={item.peer} /><span><strong>{item.peer.username}</strong><small>{item.lastMessage?.text || item.lastMessage?.attachment?.title || t('Новый диалог', 'New conversation')}</small></span>{!!item.unread && <b className="chat-badge">{item.unread}</b>}</button>)}
       <h3>{t('Начать диалог', 'Start a conversation')}</h3>{contacts.isPending ? <LoaderCircle className="spin" /> : visibleContacts.map(person => <button className="chat-list-person" key={person.id} onClick={() => void choose(person)}><Avatar person={person} /><span><strong>{person.username}</strong><small>Fastcloud</small></span><Plus size={16} /></button>)}
-      {!visibleContacts.length && !contacts.isPending && <p>{t('Здесь появятся друзья с чатами Fastcloud и взаимной подпиской.', 'Friends using Fastcloud chat with mutual follows will appear here.')}</p>}{(contacts.error || contacts.data?.degraded) && <button className="text-button" onClick={() => void contacts.refetch()}>{t('Не удалось проверить все подписки. Повторить', 'Could not check all follows. Retry')}</button>}
+      {!visibleContacts.length && !contacts.isPending && <p>{t('Здесь появятся друзья, с которыми вы взаимно подписаны в SoundCloud. Для переписки обоим нужен обновлённый Fastcloud.', 'Friends you mutually follow on SoundCloud will appear here. Both of you need an up-to-date Fastcloud app to chat.')}</p>}{(contacts.error || contacts.data?.degraded) && <button className="text-button" onClick={() => void contacts.refetch()}>{t('Не удалось проверить все подписки. Повторить', 'Could not check all follows. Retry')}</button>}
       {!!contacts.data?.blocked.length && <details><summary>{t('Заблокированные', 'Blocked users')}</summary>{contacts.data.blocked.map(person => <button key={person.id} className="text-button" onClick={() => void api.chat('block', { peerId: person.id, blocked: false }).then(invalidate).catch(cause => setIssue(chatError(cause, !!english)))}>{person.username} · {t('Разблокировать', 'Unblock')}</button>)}</details>}
     </aside><section className="chat-conversation">{active ? <>
       <header className="chat-header"><button className="icon-button chat-back" aria-label={t('Все диалоги', 'All conversations')} onClick={() => useChat.getState().select(null)}><ArrowLeft size={17} /></button><button className="chat-peer" onClick={() => peer && useApp.getState().openArtist(peer.id, peer.username)}>{peer && <Avatar person={peer} />}<strong>{peer?.username || t('Диалог', 'Conversation')}</strong></button><div><button className="icon-button" title={t('Убрать диалог в архив', 'Archive conversation')} aria-label={t('Убрать диалог в архив', 'Archive conversation')} onClick={() => void action('archive')}><Archive size={17} /></button><button className="icon-button" title={selfBlocked ? t('Разблокировать', 'Unblock') : t('Заблокировать', 'Block')} aria-label={selfBlocked ? t('Разблокировать', 'Unblock') : t('Заблокировать', 'Block')} onClick={() => void action('block')}><Ban size={17} /></button><button className="icon-button" title={t('Пожаловаться', 'Report')} aria-label={t('Пожаловаться', 'Report')} onClick={() => setReportOpen(true)}><Flag size={17} /></button></div></header>

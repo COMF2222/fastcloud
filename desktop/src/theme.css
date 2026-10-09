@@ -210,7 +210,7 @@ body.wallpaper-only > :not(#root) * {
    and menu hover states independent of the main panels' transparency. */
 :root[data-custom-panels] :is(.sleep-dialog, .sound-controls-panel, .queue-panel, .shortcuts-panel,
   .row-menu, .artist-credit-menu, .quick-access-sort-menu, .selection-playlists,
-  .settings-search-results, .login-card, .color-picker-popover) {
+  .settings-search-results, .login-card, .color-picker-popover, .chat-share-dialog) {
   --surface-base: var(--popup-card); --surface-nav: var(--popup-card);
   --surface-card: var(--popup-card); --surface-raised: var(--popup-fill);
   --panel-fill: var(--popup-card); --panel-nav-fill: var(--popup-card);

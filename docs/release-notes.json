@@ -2,6 +2,27 @@
   "schema": 1,
   "releases": [
     {
+      "version": "0.4.7",
+      "ru": {
+        "title": "Друзья и оформление сообщений",
+        "changes": [
+          "Исправлено обнаружение друзей в сообщениях: существующие пользователи Fastcloud с взаимной подпиской SoundCloud появляются без отдельной регистрации в чатах.",
+          "После временной недоступности сервера подключение к чатам восстанавливается автоматически.",
+          "Подписи, счётчики, поиск и окна выбора музыки учитывают выбранный размер текста и оформление.",
+          "Исправлена вёрстка сообщений при увеличенном тексте и в узком окне: заголовок и поле ввода остаются видимыми."
+        ]
+      },
+      "en": {
+        "title": "Chat contacts and appearance",
+        "changes": [
+          "Fixed contact discovery: existing Fastcloud users with mutual SoundCloud follows appear without separate chat registration.",
+          "Chat registration now recovers automatically after temporary server unavailability.",
+          "Labels, counters, search and music selection dialogs follow your text size and appearance settings.",
+          "Fixed the chat layout with larger text and narrow windows so the heading and composer remain visible."
+        ]
+      }
+    },
+    {
       "version": "0.4.6",
       "ru": {
         "title": "Восстановление воспроизведения после перезапуска сервера",

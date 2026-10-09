@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mergeChatMessages, chatError, chatTextParts, type ChatMessage } from '../src/chatTypes.ts'
+import { chatActivationInterval, mergeChatMessages, chatError, chatTextParts, type ChatMessage } from '../src/chatTypes.ts'
 import { previewChat } from '../src/chatPreview.ts'
 import { useChat } from '../src/chatStore.ts'
 
@@ -44,4 +44,15 @@ test('SoundCloud links and profile mentions preserve text and never link unrelat
   assert.equal(parts.map(part => part.text).join(''), text)
   assert.deepEqual(parts.filter(part => part.url).map(part => part.url), ['https://soundcloud.com/artist', 'https://soundcloud.com/a/b'])
   assert.equal(chatTextParts('https://soundcloud.com.evil.test/a/b').filter(part => part.url).length, 0)
+})
+
+
+test('chat registration recovers after backend deployment without polling signed-out accounts', () => {
+  assert.equal(chatActivationInterval(1, undefined, 'upgrade_backend'), 15_000)
+  assert.equal(chatActivationInterval(1, undefined, 'network'), 15_000)
+  assert.equal(chatActivationInterval(1, 2, null), 15_000)
+  assert.equal(chatActivationInterval(1, 1, null), false)
+  assert.equal(chatActivationInterval(0, undefined, null), false)
+  assert.equal(chatActivationInterval(1, undefined, 'sign_in'), false)
+  assert.equal(chatActivationInterval(1, undefined, 'HTTP 403'), false)
 })

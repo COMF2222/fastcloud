@@ -12,6 +12,13 @@ export function mergeChatMessages(current: ChatMessage[], received: ChatMessage[
   return [...new Map([...current, ...received].map(message => [message.id, message])).values()].sort((a, b) => a.id - b.id)
 }
 
+// Retry initial registration after a backend rollout without requiring an
+// application restart. An authenticated success or a login denial ends polling.
+export function chatActivationInterval(id: number, registeredId: number | undefined, error: unknown): number | false {
+  if (!id || registeredId === id || /sign_in|blocked|mutual_required|\b403\b/.test(String(error))) return false
+  return 15_000
+}
+
 export function messageNonce(): string { return crypto.randomUUID().replaceAll('-', '') }
 
 export function chatTextParts(text: string): { text: string; url: string | null }[] {
