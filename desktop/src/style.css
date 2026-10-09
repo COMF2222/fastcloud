@@ -446,7 +446,7 @@ html[data-theme="light"] .search-box input, html[data-theme="light"] .setting-ro
 /* Keep the selected artwork visible throughout the app, including the sidebar
    and player. Content panels provide local contrast instead of masking it. */
 .app-shell.has-wallpaper { position: relative; isolation: isolate; background: #090b10; }
-.app-shell.has-wallpaper::before { content: ""; position: absolute; z-index: 0; inset: -24px; pointer-events: none; background: var(--wallpaper-image) center / cover no-repeat; filter: blur(var(--wallpaper-blur)); }
+.app-shell.has-wallpaper::before { content: ""; position: absolute; z-index: 0; inset: calc(var(--wallpaper-blur, 0px) * -2); pointer-events: none; background: var(--wallpaper-image) center / cover no-repeat; filter: blur(var(--wallpaper-blur)); }
 .app-shell.has-wallpaper::after { content: ""; position: absolute; z-index: 0; inset: 0; pointer-events: none; background: radial-gradient(ellipse at 53% 45%, transparent 25%, rgb(0 0 0 / var(--wallpaper-opacity)) 100%), linear-gradient(rgb(0 0 0 / var(--wallpaper-dim)), rgb(0 0 0 / var(--wallpaper-dim))); }
 .app-shell.has-wallpaper > .sidebar, .app-shell.has-wallpaper > .main, .app-shell.has-wallpaper > .player-bar { position: relative; z-index: 1; }
 .app-shell.has-wallpaper .main, .app-shell.has-wallpaper .scroll-area { background: transparent; }

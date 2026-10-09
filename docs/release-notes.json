@@ -2,6 +2,27 @@
   "schema": 1,
   "releases": [
     {
+      "version": "0.4.9",
+      "ru": {
+        "title": "Импорт больших библиотек и GIF-фоны",
+        "changes": [
+          "Исправлен импорт Яндекс-лайков: большие библиотеки сохраняются в приватные плейлисты по 500 треков.",
+          "Проверяется сохранение треков; пустой плейлист больше не считается успешным импортом. При ошибке сохраняются уже завершённые части.",
+          "Ошибки поиска не учитываются как отсутствующие треки, а библиотека обновляется после завершения импорта.",
+          "Убрано лишнее увеличение фоновых изображений и GIF в основном окне и большом плеере при выключенном размытии."
+        ]
+      },
+      "en": {
+        "title": "Large library imports and GIF wallpapers",
+        "changes": [
+          "Fixed Yandex liked-track imports: large libraries are saved as private playlists of up to 500 tracks.",
+          "Saved tracks are verified; empty playlists are no longer reported as successful imports. Completed parts are retained if a later part fails.",
+          "Search errors are no longer counted as missing songs, and the library refreshes after import finishes.",
+          "Removed unnecessary enlargement of images and GIF wallpapers in the main window and full-screen player when blur is disabled."
+        ]
+      }
+    },
+    {
       "version": "0.4.8",
       "ru": {
         "title": "Удобный ввод сообщений",

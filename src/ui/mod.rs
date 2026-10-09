@@ -1105,10 +1105,11 @@ impl App {
                             "Yandex import matched {} tracks ({not_found} not found); creating a playlist with {unique} unique tracks",
                             self.yandex_import.matched
                         ));
-                        self.create_playlist_with_tracks(
-                            "Yandex Music likes".to_owned(),
-                            track_ids,
-                        );
+                        for (part, chunk) in track_ids.chunks(crate::import_yandex::PLAYLIST_LIMIT).enumerate() {
+                            self.create_playlist_with_tracks(
+                                crate::import_yandex::playlist_name(part, unique), chunk.to_vec(),
+                            );
+                        }
                     }
                 }
                 crate::import_yandex::Event::Failed(why) => {

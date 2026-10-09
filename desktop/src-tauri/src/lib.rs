@@ -34,6 +34,7 @@ mod vibe;
 #[path = "../../../src/vis.rs"]
 mod vis;
 mod artwork;
+mod wallpaper;
 mod clap;
 mod components;
 mod lyrics;
@@ -2443,35 +2444,10 @@ async fn save_background(
     } else {
         std::path::PathBuf::from(path)
     };
-    let extension = source
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(str::to_ascii_lowercase)
-        .filter(|value| {
-            matches!(
-                value.as_str(),
-                "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp"
-            )
-        })
-        .ok_or("Choose a PNG, JPEG, WebP, GIF or BMP image")?;
-    let destination = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?
-        .join(format!("background.{extension}"));
+    let directory = app.path().app_data_dir().map_err(|error| error.to_string())?;
     let settings = state.settings.clone();
     tokio::task::spawn_blocking(move || {
-        let metadata = std::fs::metadata(&source).map_err(|error| error.to_string())?;
-        if !metadata.is_file() || metadata.len() > 25 * 1024 * 1024 {
-            return Err("Choose an image smaller than 25 MiB".to_owned());
-        }
-        if source != destination {
-            if let Some(parent) = destination.parent() {
-                std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-            }
-            std::fs::copy(&source, &destination).map_err(|error| error.to_string())?;
-        }
-        let stored = destination.to_string_lossy().into_owned();
+        let stored = wallpaper::save(&source, &directory)?.to_string_lossy().into_owned();
         let mut current = settings.lock();
         current.background_image = Some(stored.clone());
         current.save().map_err(|error| error.to_string())?;
@@ -3025,6 +3001,9 @@ fn start_yandex_import(state: tauri::State<'_, AppState>, token: String) -> Resu
     if !state.client.is_demo() && !state.store.signed_in() {
         return Err("Sign in to SoundCloud first".into());
     }
+    let original_session = state.session.lock().clone();
+    if !state.client.is_demo() && original_session.is_none() { return Err("No SoundCloud session".into()); }
+    let active_session = state.session.clone();
     {
         let mut status = state.import.lock();
         if status.running {
@@ -3038,10 +3017,19 @@ fn start_yandex_import(state: tauri::State<'_, AppState>, token: String) -> Resu
     }
     let status = state.import.clone();
     let settings = state.settings.clone();
-    let client = state.client.clone();
+    // Long imports must not change owner if the user signs into another account.
+    let client = Arc::new(api::ApiClient::new(state.settings.lock().client_id.clone(), state.client.is_demo()));
+    let import_session = original_session.as_ref().map(|session| session.for_client(client.clone()));
     let store = state.store.clone();
     let demo = client.is_demo();
     state.rt.spawn(async move {
+        let _import_session = import_session;
+        let check_account = || -> anyhow::Result<()> {
+            anyhow::ensure!(demo || (store.signed_in() && active_session.lock().as_ref()
+                .zip(original_session.as_ref()).is_some_and(|(active, original)| Arc::ptr_eq(active, original))),
+                "SoundCloud account changed; import stopped");
+            Ok(())
+        };
         let (tx, rx) = crossbeam_channel::unbounded();
         tokio::spawn(import_yandex::import_likes(token, client.clone(), tx));
         loop {
@@ -3052,23 +3040,36 @@ fn start_yandex_import(state: tauri::State<'_, AppState>, token: String) -> Resu
                 }
                 Ok(import_yandex::Event::Finished { track_ids, not_found }) => {
                     let count = track_ids.len();
-                    let result = if count == 0 { Ok(()) } else if demo {
-                        let mut settings = settings.lock();
-                        let id = settings.custom_playlists.iter().map(|item| item.id).max().unwrap_or(8999).max(8999) + 1;
-                        settings.custom_playlists.push(config::CustomPlaylist { id, title: "Yandex Music likes".into(), track_ids });
-                        settings.save().map_err(|error| error.to_string())
+                    status.lock().title = "Saving playlists…".into();
+                    let report = if demo {
+                        let mut report = import_yandex::SavedPlaylists::default();
+                        for (part, chunk) in track_ids.chunks(import_yandex::PLAYLIST_LIMIT).enumerate() {
+                            let mut settings = settings.lock();
+                            let id = settings.custom_playlists.iter().map(|item| item.id).max().unwrap_or(8999).max(8999) + 1;
+                            settings.custom_playlists.push(config::CustomPlaylist { id,
+                                title: import_yandex::playlist_name(part, count), track_ids: chunk.to_vec() });
+                            if let Err(error) = settings.save() { report.error = Some(error.to_string()); break; }
+                            report.added += chunk.len(); report.parts += 1;
+                        }
+                        report
                     } else {
-                        api::endpoints::create_playlist(&client, "Yandex Music likes", true, &track_ids).await
-                            .map(|_| ()).map_err(|error| error.to_string())
+                        import_yandex::save_playlists(&client, &track_ids, check_account, || store.invalidate(&Key::MyPlaylists)).await
                     };
                     store.invalidate(&Key::MyPlaylists);
+                    let english = settings.lock().language == config::Language::English;
                     let mut value = status.lock();
                     value.running = false;
-                    value.message = match result {
-                        Ok(()) if count == 0 && not_found == 0 => "No liked tracks found in Yandex Music".into(),
-                        Ok(()) if count == 0 => format!("No Yandex likes matched SoundCloud tracks ({not_found} not found); no playlist created"),
-                        Ok(()) => format!("Imported {count} tracks into Yandex Music likes ({not_found} not found)"),
-                        Err(error) => format!("Could not create playlist: {error}"),
+                    value.title.clear();
+                    value.message = if let Some(error) = report.error {
+                        if english { format!("Import stopped. Saved {} tracks in {} playlists. {error}", report.added, report.parts) }
+                        else { format!("Импорт остановлен. Сохранено {} треков в {} плейлистах. {error}", report.added, report.parts) }
+                    } else if count == 0 {
+                        if english { format!("No matching tracks found ({not_found} not found); no playlist created") }
+                        else { format!("Подходящие треки не найдены ({not_found} не найдено). Плейлист не создан") }
+                    } else if english {
+                        format!("Imported {} tracks into {} playlists ({not_found} not found)", report.added, report.parts)
+                    } else {
+                        format!("Импортировано {} треков в {} плейлистов ({not_found} не найдено)", report.added, report.parts)
                     };
                     break;
                 }

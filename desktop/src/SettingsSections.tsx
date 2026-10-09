@@ -23,6 +23,14 @@ export function SettingsSections({ section, settings, update, showDeveloperSetti
   const [accentDraft, setAccentDraft] = useState('')
   const lastAccentCommit = useRef('')
   const { data: importState } = useQuery({ queryKey: ['yandex-import'], queryFn: api.importStatus, enabled: section === 'integrations', refetchInterval: section === 'integrations' ? 1000 : false })
+  const importWasRunning = useRef(false)
+  useEffect(() => {
+    if (importWasRunning.current && !importState?.running) {
+      void queryClient.invalidateQueries({ queryKey: ['playlists'] })
+      void queryClient.invalidateQueries({ queryKey: ['settings'] })
+    }
+    importWasRunning.current = !!importState?.running
+  }, [importState?.running, queryClient])
   const { data: player } = useQuery({ queryKey: ['player'], queryFn: api.player, enabled: section === 'sound', refetchInterval: section === 'sound' ? 1000 : false })
   const { data: offline = [] } = useQuery({ queryKey: ['offline-tracks'], queryFn: api.offlineTracks, enabled: section === 'storage' })
   const { data: storage, refetch: refetchStorage } = useQuery({ queryKey: ['storage-report'], queryFn: api.storageReport, enabled: section === 'storage' })
