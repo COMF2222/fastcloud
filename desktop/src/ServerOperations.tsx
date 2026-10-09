@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from './api'
+import { ChatReports } from './ChatReports'
 
 type Summary = { requests: number; errors: number; limited: number; p95_ms: number | null }
 type Incident = { id: number; status: string; ru: string; en: string; started: number; resolved: number | null }
@@ -77,6 +78,7 @@ export function ServerOperations({ english, serverUrl, accountId }: { english: b
       </form>
       {data.incidents.filter(incident => !incident.resolved).map(incident => <div className="operations-incident" key={incident.id}><p>{english ? incident.en : incident.ru}</p><button className="secondary-button" disabled={busy} onClick={() => void run(() => api.serverIncident(serverUrl,{ resolve:incident.id }))}>{t('Отметить решённым', 'Mark resolved')}</button></div>)}
     </details>
+    <ChatReports english={english} />
     {message && <p role="status">{message}</p>}
   </section>
 }

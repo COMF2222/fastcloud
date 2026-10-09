@@ -21,6 +21,7 @@ mod offline;
 mod appearance;
 mod diagnostics;
 mod personal;
+mod chat;
 mod wave;
 #[path = "../../../src/player/mod.rs"]
 mod player;
@@ -2342,6 +2343,11 @@ fn sleep_timer(state: tauri::State<'_, AppState>, seconds: Option<u64>, after_tr
 }
 
 #[tauri::command]
+async fn chat_request(state: tauri::State<'_, AppState>, action: chat::Action, input: serde_json::Value) -> Result<serde_json::Value,String> {
+    chat::call(&state.client,action,input).await
+}
+
+#[tauri::command]
 async fn sync_personal_data(state: tauri::State<'_, AppState>) -> Result<(),String> {
     state.personal.sync(&state.client,&state.settings,state.player.as_ref(),&state.wave).await.map_err(|_| "Could not sync personal data; the local copy is kept".to_owned())?;
     state.wave.set_preferences(state.settings.lock().music_taste.clone());
@@ -3770,6 +3776,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            chat_request,
             personal_collections, listening_statistics, update_personal_collection, smart_playlist_tracks,
             sleep_timer, sync_personal_data, settings_backup,
             connection,

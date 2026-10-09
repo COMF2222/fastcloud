@@ -38,7 +38,8 @@ view with artwork and lyrics.
 | **Lyrics** | Search across LRCLIB, Genius and lyrics.ovh, with synchronized lines when available. Open lyrics in the sidebar or full player. |
 | **Your own style** | Colours, fonts, text sizes, panel opacity, custom images and animated backgrounds. Background-only mode hides the interface. |
 | **Sound and controls** | Equalizer, balance, playback speed, A–B repeat, queue editing, media keys and keyboard shortcuts. |
-| **Share music** | Share controls on tracks, albums, playlists and the player copy the link and open SoundCloud messages. Choose a conversation and paste the link. |
+| **Fastcloud chats** | Chat with mutual SoundCloud follows: text, music, unread messages, blocking and archiving. Both people need a Fastcloud version supporting chat. |
+| **Share music** | Share controls on tracks, albums, playlists and the player open a friend selector and add music to the conversation draft. |
 | **Imports and integrations** | Import Spotify likes and playlists, import from Yandex Music and share your listening activity with Discord Rich Presence. |
 | **Everyday convenience** | Airwave mini player, offline downloads, Russian and English UI, and in-app updates. |
 

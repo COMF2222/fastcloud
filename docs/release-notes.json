@@ -2,6 +2,27 @@
   "schema": 1,
   "releases": [
     {
+      "version": "0.4.5",
+      "ru": {
+        "title": "Переписка внутри Fastcloud",
+        "changes": [
+          "Добавлен раздел «Сообщения»: переписывайся с пользователями Fastcloud, с которыми вы взаимно подписаны друг на друга в SoundCloud.",
+          "Отправляй треки, альбомы и плейлисты через кнопку «Поделиться». Музыкальные карточки можно открыть и воспроизвести прямо из переписки.",
+          "Добавлены счётчик непрочитанных сообщений, отметки прочтения, поиск собеседников, архивирование диалогов, блокировка и жалобы.",
+          "История переписки хранится в Fastcloud и доступна после входа в аккаунт. Сообщения из SoundCloud не переносятся."
+        ]
+      },
+      "en": {
+        "title": "Messaging inside Fastcloud",
+        "changes": [
+          "Added Messages: chat with Fastcloud users when you follow each other on SoundCloud.",
+          "Send tracks, albums and playlists using Share. Open and play music cards directly from conversations.",
+          "Added unread counts, read receipts, contact search, conversation archiving, blocking and reports.",
+          "Conversation history is stored in Fastcloud and is available after signing in. SoundCloud messages are not imported."
+        ]
+      }
+    },
+    {
       "version": "0.4.4",
       "ru": {
         "title": "Дизлайки, автопродолжение и обмен музыкой",

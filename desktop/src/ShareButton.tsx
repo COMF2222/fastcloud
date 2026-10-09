@@ -3,17 +3,18 @@ import { createPortal } from 'react-dom'
 import { create } from 'zustand'
 import { LoaderCircle, Share2, X } from 'lucide-react'
 import { api } from './api'
+import { useChat } from './chatStore'
 import { shareSoundCloud, soundCloudMessagesUrl, type ShareItem, type ShareKind, type ShareOutcome } from './soundcloudShare'
 
 type Notice = { outcome: ShareOutcome; english: boolean }
 const useShare = create<{ busy: string | null; notice: Notice | null }>(() => ({ busy: null, notice: null }))
 
-export function ShareButton({ item, kind = 'track', english = false, label = false, className = '' }: {
+export function SoundCloudShareButton({ item, kind = 'track', english = false, label = false, className = '' }: {
   item: ShareItem; kind?: ShareKind; english?: boolean; label?: boolean; className?: string
 }) {
   const busy = useShare(state => state.busy)
   const key = `${kind}:${item.id}`
-  const text = english ? 'Share' : 'Поделиться'
+  const text = english ? 'SoundCloud messages ↗' : 'Сообщения SoundCloud ↗'
   const share = async () => {
     if (useShare.getState().busy) return
     useShare.setState({ busy: key, notice: null })
@@ -30,6 +31,14 @@ export function ShareButton({ item, kind = 'track', english = false, label = fal
     onClick={event => { event.stopPropagation(); void share() }}>
     {busy === key ? <LoaderCircle size={17} className="spin" /> : <Share2 size={17} />}{label && <span>{text}</span>}
   </button>
+}
+
+export function ShareButton({ item, kind = 'track', english = false, label = false, className = '' }: {
+  item: ShareItem; kind?: ShareKind; english?: boolean; label?: boolean; className?: string
+}) {
+  const text = english ? 'Share' : 'Поделиться'
+  return <button type="button" className={`${label ? 'secondary-button' : 'icon-button'} share-button ${className}`} aria-label={`${text}: ${item.title}`} title={text}
+    onClick={event => { event.stopPropagation(); useChat.getState().sharing({ id: item.id, kind, title: item.title }) }}><Share2 size={17} />{label && <span>{text}</span>}</button>
 }
 
 export function ShareNotice() {

@@ -105,15 +105,14 @@ The continuation is not labelled as My Wave. Turning autoplay off discards an
 in-flight continuation batch. If a new batch arrives after EOF, the decoder
 resumes it unless the user has paused playback.
 
-## Sharing
+## Sharing and messaging
 
-Share controls on tracks, album/playlist cards and lists, detail pages and the
-bottom player first copy the canonical public SoundCloud link, then open
-`https://soundcloud.com/messages` in the default browser. Missing links are
-resolved through the existing track/playlist detail API. A copy or browser error
-is shown explicitly with a recoverable link. No message is sent automatically.
-SoundCloud's public API has no messages endpoint or documented message-prefill
-URL; the user chooses a conversation and pastes the copied link.
+[Fastcloud chat](chat.md) stores direct conversations in the backend SQLite
+volume. Both accounts must activate chat and mutually follow each other on
+SoundCloud. Share controls open a Fastcloud recipient selector and fill a music
+draft; sending is an explicit action. The external SoundCloud copy-link flow
+remains an optional fallback. Messages are separate from portable settings and
+are not imported from SoundCloud's own messaging service.
 
 ## Rollout and verification
 

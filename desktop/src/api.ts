@@ -1,3 +1,5 @@
+import { previewChat } from './chatPreview'
+import type { ChatAction } from './chatTypes'
 import { invoke } from '@tauri-apps/api/core'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { captureTheme, validateTheme, type ThemePreset } from './themePresets'
@@ -70,6 +72,7 @@ let previewSleepUntil: number | null = null
 const previewLikedAt = new Map<number, number>()
 
 export const api = {
+  chat: <T>(action: ChatAction, input: Record<string, unknown> = {}) => preview ? previewChat<T>(action, input) : invoke<T>('chat_request', { action, input }),
   serverOperations: (serverUrl: string, settings?: Record<string, number>) => preview ? Promise.resolve<import('./ServerOperations').OperationsSnapshot | null>(null) : invoke<import('./ServerOperations').OperationsSnapshot>('server_operations', { serverUrl, settings: settings ?? null }),
   serverIncident: (serverUrl: string, body: Record<string, string | number>) => invoke<unknown>('server_incident', { serverUrl, body }),
   personalCollections: () => preview ? Promise.resolve({ ...previewCollections }) : invoke<PersonalCollections>('personal_collections'),

@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-export type Page = 'home' | 'discover' | 'catalog' | 'search' | 'feed' | 'library' | 'offline' | 'likes' | 'history' | 'reposts' | 'inbox' | 'settings' | 'playlist' | 'artist' | 'track' | 'statistics' | 'collections'
+export type Page = 'home' | 'discover' | 'catalog' | 'search' | 'feed' | 'library' | 'offline' | 'likes' | 'history' | 'reposts' | 'inbox' | 'settings' | 'playlist' | 'artist' | 'track' | 'statistics' | 'collections' | 'messages'
 type Location = { page: Page; search: string; searchKind: 'tracks' | 'artists'; playlistId: number | null; playlistTitle: string; artistId: number | null; artistName: string; trackId: number | null; trackTitle: string }
 type AppStore = Location & {
   accountSettingsRequested: boolean
@@ -29,7 +29,7 @@ type AppStore = Location & {
 
 const defaultLocation: Location = { page: 'home', search: '', searchKind: 'tracks', playlistId: null, playlistTitle: '', artistId: null, artistName: '', trackId: null, trackTitle: '' }
 const navigationKey = 'fastcloud:last-location:v1'
-const pages: Page[] = ['home', 'discover', 'catalog', 'search', 'feed', 'library', 'offline', 'likes', 'history', 'reposts', 'inbox', 'settings', 'playlist', 'artist', 'track', 'statistics', 'collections']
+const pages: Page[] = ['home', 'discover', 'catalog', 'search', 'feed', 'library', 'offline', 'likes', 'history', 'reposts', 'inbox', 'settings', 'playlist', 'artist', 'track', 'statistics', 'collections', 'messages']
 const libraryTabs: AppStore['libraryTab'][] = ['overview', 'tracks', 'playlists', 'liked_playlists', 'albums', 'uploads', 'stations', 'artists', 'history', 'dislikes']
 function savedNavigation(): { location: Location; libraryTab: AppStore['libraryTab'] } | null {
   try {
