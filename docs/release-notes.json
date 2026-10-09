@@ -2,6 +2,29 @@
   "schema": 1,
   "releases": [
     {
+      "version": "0.4.4",
+      "ru": {
+        "title": "Дизлайки, автопродолжение и обмен музыкой",
+        "changes": [
+          "Добавлен список дизлайков в библиотеке и своём профиле: дизлайк можно убрать или заменить лайком.",
+          "Дизлайки синхронизируются через аккаунт Fastcloud. Улучшено исключение треков и повторных загрузок из рекомендаций, в том числе из уже сформированной очереди.",
+          "При включённом автопродолжении после конца альбома или плейлиста играет похожая музыка.",
+          "В своём профиле можно посмотреть подписки и найти нужный аккаунт по имени.",
+          "На треках, альбомах, плейлистах и в нижнем плеере появилась кнопка «Поделиться»: ссылка копируется, открываются сообщения SoundCloud. Остаётся выбрать диалог и вставить ссылку."
+        ]
+      },
+      "en": {
+        "title": "Dislikes, autoplay and music sharing",
+        "changes": [
+          "Added a dislikes list in your library and profile. Remove a dislike or replace it with a like.",
+          "Dislikes now sync through your Fastcloud account. Improved filtering of disliked recordings and reuploads from recommendations, including tracks already queued.",
+          "When autoplay is enabled, similar music continues after an album or playlist ends.",
+          "View the accounts you follow in your own profile and search them by name.",
+          "Share controls on tracks, albums, playlists and the bottom player copy the link and open SoundCloud messages. Choose a conversation and paste the link."
+        ]
+      }
+    },
+    {
       "version": "0.4.3",
       "ru": {
         "title": "Исправление плавного перехода",

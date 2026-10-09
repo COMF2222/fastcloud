@@ -9,7 +9,7 @@ type AppStore = Location & {
   artistLookup: string | null
   queueOpen: boolean
   uploadPath: string | null
-  libraryTab: 'overview' | 'tracks' | 'playlists' | 'liked_playlists' | 'albums' | 'uploads' | 'stations' | 'artists' | 'history'
+  libraryTab: 'overview' | 'tracks' | 'playlists' | 'liked_playlists' | 'albums' | 'uploads' | 'stations' | 'artists' | 'history' | 'dislikes'
   history: Location[]
   historyIndex: number
   setPage: (page: Page) => void
@@ -24,13 +24,13 @@ type AppStore = Location & {
   goForward: () => void
   setQueueOpen: (open: boolean) => void
   setUploadPath: (path: string | null) => void
-  setLibraryTab: (tab: 'overview' | 'tracks' | 'playlists' | 'liked_playlists' | 'albums' | 'uploads' | 'stations' | 'artists' | 'history') => void
+  setLibraryTab: (tab: 'overview' | 'tracks' | 'playlists' | 'liked_playlists' | 'albums' | 'uploads' | 'stations' | 'artists' | 'history' | 'dislikes') => void
 }
 
 const defaultLocation: Location = { page: 'home', search: '', searchKind: 'tracks', playlistId: null, playlistTitle: '', artistId: null, artistName: '', trackId: null, trackTitle: '' }
 const navigationKey = 'fastcloud:last-location:v1'
 const pages: Page[] = ['home', 'discover', 'catalog', 'search', 'feed', 'library', 'offline', 'likes', 'history', 'reposts', 'inbox', 'settings', 'playlist', 'artist', 'track', 'statistics', 'collections']
-const libraryTabs: AppStore['libraryTab'][] = ['overview', 'tracks', 'playlists', 'liked_playlists', 'albums', 'uploads', 'stations', 'artists', 'history']
+const libraryTabs: AppStore['libraryTab'][] = ['overview', 'tracks', 'playlists', 'liked_playlists', 'albums', 'uploads', 'stations', 'artists', 'history', 'dislikes']
 function savedNavigation(): { location: Location; libraryTab: AppStore['libraryTab'] } | null {
   try {
     const saved = JSON.parse(localStorage.getItem(navigationKey) || 'null')

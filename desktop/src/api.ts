@@ -43,12 +43,14 @@ const demo: Track[] = [
 let previewPlayer: PlayerState = { canUndoQueue: false, sleepRemainingMs: null, sleepAfterTrack: false, queue: [...demo], current: null, waveActive: false, isPlaying: false, loading: false, positionMs: 0, durationMs: 0, previewFallback: false, volume: .8, playbackSpeed: 1, shuffle: false, repeat: 'Off', abStartMs: null, abEndMs: null, bitrateKbps: 0, sampleRate: 0, error: null }
 const previewLikes = new Set<number>()
 const previewWaveDislikes = new Set<number>()
+const previewFeedbackTracks = new Map<number, Track>()
 const previewOffline = new Map<number, OfflineEntry>()
 let previewOfflineLikeOrder: number[] = []
 const previewPlaylists: Playlist[] = ['Neon Nights', 'Low Tide Radio', 'Concrete Garden Mix'].map((title, i) => ({ id: 2001 + i, title, track_count: [4, 3, 5][i], is_album: i === 0, user: { id: 1, username: 'SoundCloud Demo' } }))
 const previewPlaylistTracks = new Map<number, number[]>()
 const previewFollowed = new Set<number>()
 const previewUsers: User[] = [{ id: 1, username: 'SoundCloud Demo', full_name: 'Fastcloud Preview', description: 'Здесь можно посмотреть, как будут выглядеть треки, альбомы и плейлисты твоего профиля.', followers_count: 0, track_count: demo.length, public_playlists_count: previewPlaylists.length }]
+previewUsers.push({ id: 2, username: 'Luna Waves', full_name: 'Luna', followers_count: 120, track_count: 4 }, { id: 3, username: 'Demo Listener', full_name: 'Алексей', followers_count: 0, track_count: 0 })
 const previewSettings: Settings = { normalization: false, crossfade_ms: 0, gapless: true, settings_version: 2, music_taste: { discovery: .5, diversity: .5, repeat_days: 2, genres: [] }, theme_presets: [], offline_limit_mb: 0, autoplay: true, compact_rows: false, visualiser: 'Spectrum', theme: 'Dark', language: 'Russian', liked_ids: [], followed_user_ids: [], quick_access: [], inbox: [], mono: false, balance: 0, eq_enabled: false, eq_preamp_db: 0, eq_gains_db: Array(10).fill(0), startup_page: 'Home', main_window_bounds: null, close_to_tray: true, memory_profile: 'Balanced', reduced_motion: false, accent_rgb: [255, 85, 25], background_image: null, interface_font: null, discord_client_id: '', discord_presence: false, background_opacity: .25, background_dim: 0, background_blur: 0, background_overlay: .8, panel_rgb: null, panel_opacity: .85, panel_blur: 12, heading_opacity: null, text_rgb: null, muted_text_rgb: null, interface_text_scale: 1, interface_scale: 1, lyrics_scale: 1, lyrics_blur_past: true, lyrics_auto_scroll: true, show_track_numbers: true, soundcloud_profile_url: null, audio_cache_limit_mb: 2048, eq_auto: false, mini_player_style: 'Airwave', winamp_window: false, winamp_on_top: false, winamp_skin: null, winamp_shade: false, winamp_eq_window: false, winamp_eq_shade: false, winamp_pl_window: false, winamp_pl_shade: false, winamp_pl_rows: 8, winamp_scale: 2 }
 const previewText = (ru: string, en: string) => previewSettings.language === 'English' ? en : ru
 const previewComments: Comment[] = []
@@ -176,8 +178,10 @@ export const api = {
     return Promise.resolve([seed, ...demo.filter(track => !likedTracks.some(liked => liked.id === track.id) && !previewWaveDislikes.has(track.id))])
   },
   waveDisliked: (trackId: number) => preview ? Promise.resolve(previewWaveDislikes.has(trackId)) : invoke<boolean>('wave_disliked', { trackId }),
+  waveDislikes: () => preview ? Promise.resolve([...previewWaveDislikes].flatMap(id => { const track = previewFeedbackTracks.get(id); return track ? [track] : [] })) : invoke<Track[]>('wave_dislikes'),
   waveDislike: (track: Track, disliked: boolean) => {
     if (!preview) return invoke<void>('wave_dislike', { track, disliked })
+    previewFeedbackTracks.set(track.id, track)
     if (disliked) {
       previewWaveDislikes.add(track.id)
       const current = previewPlayer.queue[previewPlayer.current ?? -1]
@@ -436,7 +440,7 @@ export const api = {
   saveStorefront: (input: { id: number; title: string; kind: string; link: string; linkTitle: string; description: string; price: string }) => preview ? Promise.reject<void>(new Error(previewText('Витрина доступна после входа в SoundCloud', 'Storefront is available after signing in to SoundCloud'))) : invoke<void>('save_storefront', input),
   setLiked: (trackId: number, liked: boolean) => {
     if (!preview) return afterChange(invoke<void>('set_liked', { trackId, liked }), 'tracks:likes')
-    if (liked) { previewLikes.add(trackId); previewLikedAt.set(trackId, Date.now() / 1000) } else previewLikes.delete(trackId)
+    if (liked) { previewLikes.add(trackId); previewWaveDislikes.delete(trackId); previewLikedAt.set(trackId, Date.now() / 1000) } else previewLikes.delete(trackId)
     return Promise.resolve()
   },
   connect: async () => { if (!preview) { clearLibraryCache(); await invoke<void>('connect_account') } },

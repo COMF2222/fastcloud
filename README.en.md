@@ -33,11 +33,12 @@ view with artwork and lyrics.
 
 | Feature | What it does |
 | --- | --- |
-| **Your library** | SoundCloud likes, albums, artists and playlists, plus pins and listening history. |
-| **My Wave** | Music recommendations based on your taste, likes and history, respecting your dislikes. Track stations help you find similar music. |
+| **Your library** | SoundCloud likes, albums, playlists, searchable following, pins and listening history. View dislikes, remove them or replace them with likes. |
+| **My Wave** | Music recommendations based on your taste, likes and history, respecting your dislikes. Track stations help you find similar music; autoplay keeps music going after an album or playlist ends. |
 | **Lyrics** | Search across LRCLIB, Genius and lyrics.ovh, with synchronized lines when available. Open lyrics in the sidebar or full player. |
 | **Your own style** | Colours, fonts, text sizes, panel opacity, custom images and animated backgrounds. Background-only mode hides the interface. |
 | **Sound and controls** | Equalizer, balance, playback speed, A–B repeat, queue editing, media keys and keyboard shortcuts. |
+| **Share music** | Share controls on tracks, albums, playlists and the player copy the link and open SoundCloud messages. Choose a conversation and paste the link. |
 | **Imports and integrations** | Import Spotify likes and playlists, import from Yandex Music and share your listening activity with Discord Rich Presence. |
 | **Everyday convenience** | Airwave mini player, offline downloads, Russian and English UI, and in-app updates. |
 

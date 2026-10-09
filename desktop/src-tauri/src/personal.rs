@@ -4,6 +4,8 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Instant};
+mod feedback;
+pub use feedback::{Feedback, PublicTrack};
 
 pub const PORTABLE: &[&str] = &[
     "theme", "language", "music_taste", "theme_presets", "quick_access", "accent_rgb", "panel_rgb",
@@ -20,6 +22,7 @@ pub struct Cloud {
     pub folders: BTreeMap<String, Value>,
     pub smart_playlists: BTreeMap<String, Value>,
     pub liked_at: BTreeMap<String, Value>,
+    pub track_feedback: BTreeMap<String, Feedback>,
     pub daily: Vec<Value>, pub tracks: Vec<Value>, pub totals: Value,
 }
 
@@ -39,6 +42,8 @@ struct Cache {
     dirty_folders: BTreeMap<String, Value>,
     dirty_smart: BTreeMap<String, Value>,
     dirty_likes: BTreeMap<String, Value>,
+    dirty_feedback: BTreeMap<String, Feedback>,
+    seeded_feedback: bool,
     stats: BTreeMap<String, Listen>,
     synced_stats: BTreeMap<String, (u64, u32)>,
     seeded_likes: bool,
@@ -46,6 +51,14 @@ struct Cache {
 
 struct Inner { account: u64, epoch: u64, cache: Cache, previous: Option<(u64, u64, Instant, bool)>, session_ms: u64, counted: bool, status: String }
 pub struct Hub { root: PathBuf, settings_path: PathBuf, inner: Mutex<Inner>, sync_gate: tokio::sync::Mutex<()> }
+
+fn merge_received_feedback(cache: &mut Cache, received: &BTreeMap<String,Feedback>) {
+    for (id,value) in received {
+        if cache.cloud.track_feedback.get(id).is_none_or(|current| value.rank() > current.rank()) {
+            cache.cloud.track_feedback.insert(id.clone(),value.clone());
+        }
+    }
+}
 
 pub fn portable(settings: &config::Settings) -> BTreeMap<String, Value> {
     let all = serde_json::to_value(settings).unwrap_or_default();
@@ -69,6 +82,56 @@ pub fn apply_preferences(settings: &config::Settings, values: &BTreeMap<String, 
 }
 
 impl Hub {
+    pub fn account_id(&self) -> u64 { self.inner.lock().account }
+    pub fn seed_feedback(&self, tracks: &[api::models::Track]) {
+        let mut inner = self.inner.lock();
+        if inner.account == 0 || inner.cache.seeded_feedback { return; }
+        let device = inner.cache.device.clone();
+        for track in tracks {
+            let id = track.id.to_string();
+            if inner.cache.cloud.track_feedback.contains_key(&id) { continue; }
+            let value = Feedback { disliked:true, updated_at:0, device:device.clone(), track:PublicTrack::from_track(track) };
+            inner.cache.cloud.track_feedback.insert(id.clone(),value.clone());
+            inner.cache.dirty_feedback.insert(id,value);
+        }
+        inner.cache.seeded_feedback = true;
+        if let Err(error) = self.save(&inner) { log::warn!("feedback migration cache: {error}"); }
+    }
+
+    pub fn feedback_changed(&self, track: &api::models::Track, disliked: bool) -> Result<()> {
+        ensure!(track.id > 0 && track.id < (1u64 << 53), "Invalid feedback track");
+        let mut inner = self.inner.lock();
+        let previous = inner.cache.clone();
+        let key = track.id.to_string();
+        ensure!(inner.cache.cloud.track_feedback.contains_key(&key) || inner.cache.cloud.track_feedback.len() < 5000,"Too many saved track ratings");
+        let updated_at = chrono::Utc::now().timestamp_millis().max(inner.cache.cloud.track_feedback.get(&key).map_or(0, |item| item.updated_at + 1));
+        let value = Feedback { disliked, updated_at, device:inner.cache.device.clone(),track:PublicTrack::from_track(track) };
+        inner.cache.cloud.track_feedback.insert(key.clone(),value.clone());
+        inner.cache.dirty_feedback.insert(key,value);
+        if !disliked {
+            let identity = crate::wave::track_identity(track);
+            let related: Vec<_> = inner.cache.cloud.track_feedback.iter().filter(|(_,item)| item.disliked
+                && item.track.as_track().is_some_and(|other| crate::wave::same_recording(&identity,&crate::wave::track_identity(&other))))
+                .map(|(key,item)| (key.clone(),item.clone())).collect();
+            for (key,mut value) in related {
+                value.disliked = false; value.updated_at = updated_at.max(value.updated_at + 1); value.device = inner.cache.device.clone();
+                inner.cache.cloud.track_feedback.insert(key.clone(),value.clone());
+                inner.cache.dirty_feedback.insert(key,value);
+            }
+        }
+        if let Err(error) = self.save(&inner) { inner.cache = previous; return Err(error); }
+        Ok(())
+    }
+
+    pub fn feedback(&self) -> BTreeMap<String, Feedback> { self.inner.lock().cache.cloud.track_feedback.clone() }
+
+    pub fn disliked_tracks(&self) -> Vec<api::models::Track> {
+        let inner = self.inner.lock();
+        let mut entries: Vec<_> = inner.cache.cloud.track_feedback.values().filter(|item| item.disliked).collect();
+        entries.sort_by_key(|item| std::cmp::Reverse(item.updated_at));
+        entries.into_iter().filter_map(|item| item.track.as_track()).collect()
+    }
+
     pub fn seed_preferences(&self, settings: &config::Settings) {
         let mut inner = self.inner.lock();
         if inner.cache.cloud.preferences.is_empty() { inner.cache.cloud.preferences = portable(settings); let _ = self.save(&inner); }
@@ -214,7 +277,7 @@ impl Hub {
         json!({"totals": {"ms": total_ms, "plays": plays}, "daily": daily.into_iter().map(|(day,(ms,plays))| json!({"day": day,"ms": ms,"plays": plays})).collect::<Vec<_>>(), "tracks": tracks, "syncStatus": inner.status})
     }
 
-    pub async fn sync(&self, client: &api::ApiClient, settings: &Arc<Mutex<config::Settings>>, player: Option<&Arc<Player>>) -> Result<()> {
+    pub async fn sync(&self, client: &api::ApiClient, settings: &Arc<Mutex<config::Settings>>, player: Option<&Arc<Player>>, wave: &crate::wave::Engine) -> Result<()> {
         let _gate = self.sync_gate.lock().await;
         let epoch = self.inner.lock().epoch;
         let (server, token) = client.relay_credentials().await?.context("Sign in through the Fastcloud server to sync")?;
@@ -237,17 +300,19 @@ impl Hub {
             self.save(&inner)?;
         }
         let url = format!("{server}/v1/me/personal");
+        wave.replace_dislikes(&self.feedback());
         let remote: Cloud = http.get(&url).header("Authorization", format!("OAuth {token}")).send().await?.error_for_status()?.json().await?;
         let payload = {
             let mut inner = self.inner.lock();
             if inner.epoch != epoch { return Ok(()); }
+            merge_received_feedback(&mut inner.cache,&remote.track_feedback);
             if remote.preferences.is_empty() && inner.cache.dirty_preferences.is_empty() {
                 inner.cache.dirty_preferences = if inner.cache.cloud.preferences.is_empty() { portable(&config::Settings::default()) } else { inner.cache.cloud.preferences.clone() };
             }
             let stats: Vec<_> = inner.cache.stats.iter().filter(|(key,row)| inner.cache.synced_stats.get(*key) != Some(&(row.ms, row.plays))).take(100).map(|(_,row)| row.clone()).collect();
-            json!({"preferences": inner.cache.dirty_preferences, "folders": inner.cache.dirty_folders.iter().take(100).collect::<BTreeMap<_,_>>(), "smartPlaylists": inner.cache.dirty_smart.iter().take(100).collect::<BTreeMap<_,_>>(), "likedAt": inner.cache.dirty_likes.iter().take(100).collect::<BTreeMap<_,_>>(), "device": inner.cache.device, "stats": stats})
+            json!({"preferences": inner.cache.dirty_preferences, "folders": inner.cache.dirty_folders.iter().take(100).collect::<BTreeMap<_,_>>(), "smartPlaylists": inner.cache.dirty_smart.iter().take(100).collect::<BTreeMap<_,_>>(), "likedAt": inner.cache.dirty_likes.iter().take(100).collect::<BTreeMap<_,_>>(), "trackFeedback":inner.cache.dirty_feedback.iter().take(100).collect::<BTreeMap<_,_>>(), "device": inner.cache.device, "stats": stats})
         };
-        let has_changes = ["preferences","folders","smartPlaylists","likedAt"].iter().any(|key| payload[key].as_object().is_some_and(|map| !map.is_empty())) || payload["stats"].as_array().is_some_and(|rows| !rows.is_empty());
+        let has_changes = ["preferences","folders","smartPlaylists","likedAt","trackFeedback"].iter().any(|key| payload[key].as_object().is_some_and(|map| !map.is_empty())) || payload["stats"].as_array().is_some_and(|rows| !rows.is_empty());
         let remote = if has_changes { http.post(&url).header("Authorization", format!("OAuth {token}")).json(&payload).send().await?.error_for_status()?.json::<Cloud>().await? } else { remote };
         let mut local = settings.lock();
         let preferences = {
@@ -259,6 +324,7 @@ impl Hub {
             inner.cache.dirty_folders.retain(|key,value| payload["folders"].get(key) != Some(value));
             inner.cache.dirty_smart.retain(|key,value| payload["smartPlaylists"].get(key) != Some(value));
             inner.cache.dirty_likes.retain(|key,value| payload["likedAt"].get(key) != Some(value));
+            inner.cache.dirty_feedback.retain(|key,value| payload["trackFeedback"].get(key) != serde_json::to_value(value).ok().as_ref());
             for row in payload["stats"].as_array().into_iter().flatten() {
                 let row: Listen = serde_json::from_value(row.clone())?;
                 inner.cache.synced_stats.insert(format!("{}:{}", row.day, row.track_id), (row.ms,row.plays));
@@ -267,12 +333,20 @@ impl Hub {
             let pending = inner.cache.dirty_preferences.clone(); inner.cache.cloud.preferences.extend(pending);
             let pending = inner.cache.dirty_folders.clone(); for (id,value) in pending { if value.is_null() { inner.cache.cloud.folders.remove(&id); } else { inner.cache.cloud.folders.insert(id,value); } }
             let pending = inner.cache.dirty_smart.clone(); for (id,value) in pending { if value.is_null() { inner.cache.cloud.smart_playlists.remove(&id); } else { inner.cache.cloud.smart_playlists.insert(id,value); } }
+            let pending = inner.cache.dirty_feedback.clone();
+            for (id,value) in pending {
+                if inner.cache.cloud.track_feedback.get(&id).is_none_or(|remote| value.rank() > remote.rank()) {
+                    inner.cache.cloud.track_feedback.insert(id,value);
+                }
+            }
             inner.status = "synced".into(); self.save(&inner)?;
             inner.cache.cloud.preferences.clone()
         };
         let next = apply_preferences(&local, &preferences)?;
         if portable(&local) != portable(&next) { next.save_to(&self.settings_path)?; *local = next; }
         if let Some(player) = player { player.set_autoplay(local.autoplay); player.set_audio_preferences(local.normalization, local.crossfade_ms, local.gapless); }
+        drop(local);
+        wave.replace_dislikes(&self.feedback());
         Ok(())
     }
     pub fn sync_failed(&self) { self.inner.lock().status = "offline".into(); }
@@ -351,6 +425,62 @@ fn smart_matches(rule: &Smart, track: &api::models::Track, added: i64, played: i
 mod tests {
     use super::*;
     #[test]
+    fn dislikes_survive_restart_and_sign_out_keeps_each_account_separate() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = Hub::new(dir.path().to_owned(),dir.path().join("settings.json")).unwrap();
+        hub.inner.lock().account = 123;
+        std::fs::write(dir.path().join("account.txt"),"123").unwrap();
+        let track = crate::demo::demo_tracks().remove(0);
+        hub.feedback_changed(&track,true).unwrap();
+        let restored = Hub::new(dir.path().to_owned(),dir.path().join("settings.json")).unwrap();
+        assert_eq!(restored.disliked_tracks()[0].id,track.id);
+        assert_eq!(restored.inner.lock().cache.dirty_feedback.len(),1);
+        restored.detach_account().unwrap();
+        assert!(restored.disliked_tracks().is_empty());
+        assert!(Hub::load_cache(dir.path(),123).cloud.track_feedback[&track.id.to_string()].disliked);
+    }
+    #[test]
+    fn restoring_a_recording_also_restores_its_disliked_reupload() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = Hub::new(dir.path().to_owned(),dir.path().join("settings.json")).unwrap();
+        let track = crate::demo::demo_tracks().remove(0);
+        let reupload = api::models::Track { id:99123,..track.clone() };
+        hub.feedback_changed(&track,true).unwrap();
+        hub.feedback_changed(&reupload,true).unwrap();
+        hub.feedback_changed(&track,false).unwrap();
+        assert!(hub.disliked_tracks().is_empty());
+        assert_eq!(hub.inner.lock().cache.dirty_feedback.len(),2);
+        assert!(hub.inner.lock().cache.dirty_feedback.values().all(|item| !item.disliked));
+    }
+    #[test]
+    fn an_edit_after_receiving_remote_feedback_advances_its_timestamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = Hub::new(dir.path().to_owned(),dir.path().join("settings.json")).unwrap();
+        let track = crate::demo::demo_tracks().remove(0);
+        hub.feedback_changed(&track,true).unwrap();
+        let mut received = hub.feedback();
+        let remote = received.get_mut(&track.id.to_string()).unwrap();
+        remote.updated_at += 2000; remote.disliked = false;
+        let timestamp = remote.updated_at;
+        merge_received_feedback(&mut hub.inner.lock().cache,&received);
+        assert!(hub.disliked_tracks().is_empty());
+        hub.feedback_changed(&track,true).unwrap();
+        assert!(hub.feedback()[&track.id.to_string()].updated_at > timestamp);
+    }
+    #[test]
+    fn legacy_feedback_is_only_migrated_for_a_known_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = Hub::new(dir.path().to_owned(),dir.path().join("settings.json")).unwrap();
+        let tracks = crate::demo::demo_tracks();
+        hub.seed_feedback(&tracks[..1]);
+        assert!(hub.disliked_tracks().is_empty());
+        hub.inner.lock().account = 123;
+        hub.seed_feedback(&tracks[..1]);
+        assert_eq!(hub.disliked_tracks()[0].id, tracks[0].id);
+        let feedback = hub.feedback();
+        assert_eq!(feedback[&tracks[0].id.to_string()].updated_at, 0);
+    }
+    #[test]
     fn portable_backup_preserves_device_settings_and_excludes_credentials() {
         let settings = config::Settings { client_id: Some("secret".into()), background_image: Some("C:/private.png".into()), volume: 0.3, ..Default::default() };
         let mut values = portable(&settings); values.insert("theme".into(), json!("Light"));
@@ -420,7 +550,8 @@ mod tests {
         });
         let dir = tempfile::tempdir().unwrap(); let hub = Hub::new(dir.path().to_owned(),dir.path().join("settings.json")).unwrap();
         let settings = Arc::new(Mutex::new(config::Settings { client_id:Some("secret".into()),background_image:Some("C:/private.png".into()),volume:0.3,..Default::default() }));
-        hub.seed_preferences(&settings.lock()); hub.sync(&client,&settings,None).await.unwrap();
+        let wave = crate::wave::Engine::new(dir.path().join("wave.json"));
+        hub.seed_preferences(&settings.lock()); hub.sync(&client,&settings,None,&wave).await.unwrap();
         assert_eq!(settings.lock().theme,config::ThemeMode::Light); assert_eq!(settings.lock().volume,0.3); assert_eq!(settings.lock().client_id.as_deref(),Some("secret"));
         tokio::time::timeout(std::time::Duration::from_secs(5),server).await.unwrap().unwrap();
     }

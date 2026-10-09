@@ -99,6 +99,43 @@ async fn aac_preparation_decodes_multiple_fragments_and_can_continue_after_commi
 }
 
 #[tokio::test]
+async fn delayed_autoplay_batch_resumes_after_real_eof_but_not_after_manual_pause() {
+    for paused in [false,true] {
+        let fixture = aac_fixture().await;
+        let player = &fixture.player;
+        let next = player.state.lock().queue[1].clone();
+        {
+            let mut state = player.state.lock();
+            state.queue.truncate(1); state.order = vec![0]; state.duration_ms = 1000;
+        }
+        player.decoder.lock().exhausted = true;
+        player.output.start_track(vec![0.2;44100*2],44100,true,0);
+        let runner = tokio::spawn(player.clone().run());
+        player.output.render_test_audio(48000);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(player.state.lock().current,Some(0));
+        if paused { player.pause(); }
+        player.enqueue(vec![next],false);
+        if paused {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert_eq!(player.state.lock().current,Some(0));
+            assert!(!player.state.lock().is_playing);
+        } else {
+            tokio::time::timeout(Duration::from_secs(5),async {
+                loop {
+                    let ready = { let state = player.state.lock(); state.current == Some(1) && !state.loading };
+                    if ready { break; }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }).await.expect("An asynchronously appended track must resume the exhausted queue");
+            assert!(player.output.render_test_audio(4800).iter().any(|sample|sample.abs()>0.05));
+        }
+        player.shutdown();
+        tokio::time::timeout(Duration::from_secs(2),runner).await.unwrap().unwrap();
+    }
+}
+
+#[tokio::test]
 async fn player_loop_automatically_crossfades_into_real_aac_audio_for_eight_seconds() {
     let fixture = aac_fixture().await;
     let player = &fixture.player;

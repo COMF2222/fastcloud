@@ -103,6 +103,8 @@ struct AppState {
 
 #[derive(Clone)]
 struct WaveSession {
+    continuation: bool,
+    manual_ids: std::collections::HashSet<u64>,
     likes: Vec<Track>,
     seen: std::collections::HashSet<u64>,
     seen_identities: Vec<wave::TrackIdentity>,
@@ -176,6 +178,7 @@ fn append_wave_tracks(
 ) {
     let mut guard = wave_session.lock();
     if let Some(session) = guard.as_mut().filter(|session| session.started_at == started_at) {
+        if session.continuation && !*player.autoplay.lock() { session.busy = false; return; }
         match generated {
             Ok(tracks) => wave.with_dislike_filter(|dislikes| {
                 let queued: std::collections::HashSet<_> = player.state.lock().queue.iter()
@@ -220,6 +223,7 @@ fn wave_refill_rechecks_dislikes_added_after_generation_started() {
     }
     let started_at = std::time::Instant::now();
     let session = Arc::new(Mutex::new(Some(WaveSession {
+        continuation: false, manual_ids: std::collections::HashSet::new(),
         likes: vec![tracks[0].clone()], seen: std::collections::HashSet::from([tracks[0].id]),
         seen_identities: vec![wave::track_identity(&tracks[0])],
         started_at, variation: 0, busy: true, last_attempt: Some(started_at),
@@ -231,6 +235,33 @@ fn wave_refill_rechecks_dislikes_added_after_generation_started() {
     assert_eq!(player.state.lock().queue.iter().map(|track| track.id).collect::<Vec<_>>(),
         vec![tracks[0].id, tracks[2].id]);
     assert!(!session.lock().as_ref().unwrap().busy);
+}
+
+#[cfg(test)]
+#[test]
+fn disabling_autoplay_discards_an_in_flight_continuation() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let player = Arc::new(Player::new(
+        Arc::new(audio::output::AudioOutput::silent([0.0; 10], 0.8)),
+        Arc::new(api::ApiClient::demo()), Arc::new(audio::cache::AudioCache::disabled()),
+        dir.path().join("settings.json"), runtime.handle().clone(),
+    ));
+    let tracks = demo::demo_tracks();
+    player.state.lock().queue = vec![tracks[0].clone()];
+    let started_at = std::time::Instant::now();
+    let session = Arc::new(Mutex::new(Some(WaveSession {
+        continuation: true, manual_ids: std::collections::HashSet::from([tracks[0].id]),
+        likes: vec![tracks[0].clone()], seen: std::collections::HashSet::from([tracks[0].id]),
+        seen_identities: vec![wave::track_identity(&tracks[0])],
+        started_at, variation: 0, busy: true, last_attempt: Some(started_at),
+    })));
+    *player.autoplay.lock() = false;
+    let engine = wave::Engine::new(dir.path().join("wave.json"));
+    append_wave_tracks(&player, &engine, &session, started_at, Ok(vec![tracks[1].clone()]));
+    assert_eq!(player.state.lock().queue.len(), 1);
+    assert!(!session.lock().as_ref().unwrap().busy);
+    assert!(!session.lock().as_ref().unwrap().seen.contains(&tracks[1].id));
 }
 
 #[derive(Clone, Serialize, Default)]
@@ -367,8 +398,10 @@ impl AppState {
         let wave = Arc::new(wave::Engine::new(config::app_paths()?.root.join("my-wave-profile.json")));
         let personal = Arc::new(personal::Hub::new(config::app_paths()?.root.join("personal"),config::settings_path()?)?);
         personal.seed_preferences(&settings);
+        personal.seed_feedback(&wave.disliked_tracks());
+        wave.replace_dislikes(&personal.feedback());
         wave.set_preferences(settings.music_taste.clone());
-        if settings.last_wave_active && !demo {
+        if !demo {
             let previous_id = settings.last_queue_idx.and_then(|index| settings.last_queue.get(index)).map(|track| track.id);
             settings.last_queue_idx = wave.with_dislike_filter(|dislikes|
                 dislikes.prune_saved_queue(&mut settings.last_queue, settings.last_queue_idx));
@@ -429,12 +462,14 @@ impl AppState {
         if settings.discord_presence {
             presence.configure(Some(settings.discord_client_id.clone()));
         }
-        let restored_wave = if settings.last_wave_active && !demo {
+        let restored_wave = if !demo && (settings.last_wave_active || settings.autoplay) {
             player.as_ref().and_then(|player| {
                 let playback = player.state.lock();
                 playback.current.map(|_| {
                     let queue = playback.queue.clone();
                     WaveSession {
+                        continuation: !settings.last_wave_active,
+                        manual_ids: if settings.last_wave_active { Default::default() } else { queue.iter().map(|track|track.id).collect() },
                         likes: queue.clone(),
                         seen: queue.iter().map(|track| track.id).collect(),
                         seen_identities: queue.iter().map(wave::track_identity).collect(),
@@ -454,6 +489,14 @@ impl AppState {
             let client = client.clone();
             rt.spawn(async move {
                 loop {
+                    {
+                        let session = wave_session.lock();
+                        if let Some(session) = session.as_ref() {
+                            wave.with_dislike_filter(|dislikes| {
+                                player.remove_matching(|track| !session.manual_ids.contains(&track.id) && dislikes.rejects(track));
+                            });
+                        }
+                    }
                     let snapshot = {
                         let state = player.state.lock();
                         let remaining = state.current.and_then(|current| state.order.iter()
@@ -484,7 +527,9 @@ impl AppState {
                     let refill = {
                         let mut session = wave_session.lock();
                         session.as_mut().and_then(|session| {
-                            let near_end = snapshot.3 && snapshot.6 && snapshot.5.is_some_and(|remaining| remaining <= 10);
+                            let permitted = !session.continuation || *player.autoplay.lock();
+                            let active = snapshot.3;
+                            let near_end = permitted && active && snapshot.6 && snapshot.5.is_some_and(|remaining| remaining <= if session.continuation {3} else {10});
                             let ready = session.last_attempt.is_none_or(|last| last.elapsed() >= std::time::Duration::from_secs(20));
                             if near_end && ready && !session.busy {
                                 session.busy = true;
@@ -555,7 +600,7 @@ impl AppState {
                     let signed_in = matches!(*connection.lock(),Connection::SignedIn);
                     if signed_in && last_sync.is_none_or(|last| last.elapsed() >= std::time::Duration::from_secs(30)) {
                         last_sync = Some(std::time::Instant::now());
-                        if personal.sync(&client,&settings,player.as_ref()).await.is_err() { personal.sync_failed(); }
+                        if personal.sync(&client,&settings,player.as_ref(),&wave).await.is_err() { personal.sync_failed(); }
                         wave.set_preferences(settings.lock().music_taste.clone());
                     }
                     if !signed_in { last_sync = None; }
@@ -735,7 +780,7 @@ fn player_state(
         error: current.error.clone(),
     };
     drop(current);
-    view.wave_active = state.wave_session.lock().is_some();
+    view.wave_active = state.wave_session.lock().as_ref().is_some_and(|session| !session.continuation);
     let mut last = state.last_eq_track.lock();
     if *last != track_id {
         *last = track_id;
@@ -773,6 +818,7 @@ async fn my_wave(
     liked_tracks: Vec<Track>,
     variation: u32,
 ) -> Result<Vec<Track>, String> {
+    if !feedback_account_ready(&state) { return Err("Personal data is loading; try again shortly".into()); }
     let variation = state.wave.next_variation(variation);
     let engine = state.wave.clone();
     // Ranking and saving the opening history must not stall the UI thread.
@@ -792,6 +838,7 @@ async fn my_wave(
             }
             player.play_queue(vec![seed.clone()], 0, false);
             *session = Some(WaveSession {
+                continuation: false, manual_ids: Default::default(),
                 likes: liked_tracks.clone(), seen: std::collections::HashSet::from([seed.id]),
                 seen_identities: vec![wave::track_identity(&seed)],
                 started_at, variation: variation.wrapping_add(1), busy: true, last_attempt: Some(started_at),
@@ -814,19 +861,33 @@ async fn my_wave(
 }
 
 #[tauri::command]
-fn wave_dislike(state: tauri::State<'_, AppState>, track: Track, disliked: bool) {
+fn wave_dislike(state: tauri::State<'_, AppState>, track: Track, disliked: bool) -> Result<(),String> {
+    if !feedback_account_ready(&state) { return Err("Personal data is loading; try again shortly".into()); }
     let _session = state.wave_session.lock();
-    state.wave.dislike(&track, disliked);
+    state.personal.feedback_changed(&track,disliked).map_err(|error| error.to_string())?;
+    state.wave.replace_dislikes(&state.personal.feedback());
     if disliked && let Some(player) = state.player.as_ref() {
         state.wave.with_dislike_filter(|dislikes| {
             player.remove_matching(|queued| dislikes.rejects(queued));
         });
     }
+    Ok(())
+}
+
+#[tauri::command]
+fn wave_dislikes(state: tauri::State<'_, AppState>) -> Result<Vec<Track>,String> {
+    if !feedback_account_ready(&state) { return Err("Personal data is loading; try again shortly".into()); }
+    Ok(state.personal.disliked_tracks())
+}
+
+fn feedback_account_ready(state: &AppState) -> bool {
+    if state.client.is_demo() { return true; }
+    matches!(state.store.me(), Slot::Ready(user) if user.id == state.personal.account_id())
 }
 
 #[tauri::command]
 fn wave_disliked(state: tauri::State<'_, AppState>, track_id: u64) -> bool {
-    state.wave.disliked(track_id)
+    feedback_account_ready(&state) && state.wave.disliked(track_id)
 }
 
 #[tauri::command]
@@ -2047,7 +2108,9 @@ fn transport(
         "undo_queue" => {
             if player.undo_queue() {
                 let wave = state.queue_wave_history.lock().pop_back().flatten();
-                let active = wave.is_some(); *state.wave_session.lock() = wave; state.persist_wave_active(active);
+                let active = wave.as_ref().is_some_and(|session| !session.continuation);
+                *state.wave_session.lock() = wave; state.persist_wave_active(active);
+                if active { state.wave.with_dislike_filter(|dislikes| { player.remove_matching(|track| dislikes.rejects(track)); }); }
             }
         },
         "toggle" => player.play_pause(),
@@ -2108,9 +2171,13 @@ fn play_tracks(
     if tracks.is_empty() || index >= tracks.len() {
         return Err("Choose a track to play".into());
     }
-    *state.wave_session.lock() = None;
+    let mut session = state.wave_session.lock();
+    *session = None;
     state.persist_wave_active(false);
     let player = state.player()?;
+    let seed_tracks: Vec<_> = tracks.iter().rev().take(4).cloned().collect();
+    let seen: std::collections::HashSet<_> = tracks.iter().map(|track|track.id).collect();
+    let seen_identities: Vec<_> = tracks.iter().map(wave::track_identity).collect();
     if recommended.unwrap_or(false) {
         state.wave.with_dislike_filter(|dislikes| {
             let selected_id = tracks[index].id;
@@ -2122,6 +2189,12 @@ fn play_tracks(
         })?;
     } else {
         player.play_queue(tracks, index, false);
+    }
+    if state.settings.lock().autoplay {
+        let manual_ids = if recommended.unwrap_or(false) { Default::default() } else { seen.clone() };
+        *session = Some(WaveSession { continuation:true, manual_ids, likes:seed_tracks,
+            seen, seen_identities, started_at:std::time::Instant::now(),variation:state.wave.next_variation(0),
+            busy:false,last_attempt:None });
     }
     Ok(())
 }
@@ -2165,6 +2238,13 @@ async fn set_liked(
         }
         state.store.invalidate(&Key::Likes);
     }
+    if liked && feedback_account_ready(&state) {
+        let rated = state.personal.feedback().get(&track_id.to_string()).and_then(|item| item.track.as_track());
+        if let Some(track) = rated {
+            state.personal.feedback_changed(&track,false).map_err(|error| error.to_string())?;
+            state.wave.replace_dislikes(&state.personal.feedback());
+        }
+    }
     let mut settings = state.settings.lock();
     if liked && !settings.liked_ids.contains(&track_id) {
         settings.liked_ids.push(track_id);
@@ -2174,7 +2254,7 @@ async fn set_liked(
     settings.save().map_err(|error| error.to_string())?;
     drop(settings);
     // Likes on the current track affect the next refill immediately.
-    if liked { state.personal.liked(track_id); }
+    if liked && feedback_account_ready(&state) { state.personal.liked(track_id); }
     let playing_track = state.player.as_ref().and_then(|player| {
         let playback = player.state.lock();
         playback.queue.iter().find(|track| track.id == track_id).cloned()
@@ -2263,7 +2343,7 @@ fn sleep_timer(state: tauri::State<'_, AppState>, seconds: Option<u64>, after_tr
 
 #[tauri::command]
 async fn sync_personal_data(state: tauri::State<'_, AppState>) -> Result<(),String> {
-    state.personal.sync(&state.client,&state.settings,state.player.as_ref()).await.map_err(|_| "Could not sync personal data; the local copy is kept".to_owned())?;
+    state.personal.sync(&state.client,&state.settings,state.player.as_ref(),&state.wave).await.map_err(|_| "Could not sync personal data; the local copy is kept".to_owned())?;
     state.wave.set_preferences(state.settings.lock().music_taste.clone());
     Ok(())
 }
@@ -3213,6 +3293,7 @@ async fn sign_out(state: tauri::State<'_, AppState>) -> Result<(), String> {
         .await
         .map_err(|error| error.to_string())?;
     state.personal.detach_account().map_err(|error| error.to_string())?;
+    state.wave.replace_dislikes(&state.personal.feedback());
     state.store.set_signed_in(false);
     state.store.clear();
     *state.wave_session.lock() = None;
@@ -3497,7 +3578,7 @@ pub fn run() {
                     drop(settings);
                     if !close_to_tray {
                         state.personal.flush();
-                        state.persist_wave_active(state.wave_session.lock().is_some());
+                        state.persist_wave_active(state.wave_session.lock().as_ref().is_some_and(|session| !session.continuation));
                         if let Some(player) = &state.player { player.shutdown(); }
                     }
                     close_to_tray
@@ -3662,7 +3743,7 @@ pub fn run() {
                                     log::warn!("Could not save window settings: {error}");
                                 }
                             }
-                            state.persist_wave_active(state.wave_session.lock().is_some());
+                            state.persist_wave_active(state.wave_session.lock().as_ref().is_some_and(|session| !session.continuation));
                             state.personal.flush();
                             if let Some(player) = &state.player { player.shutdown(); }
                         }
@@ -3707,6 +3788,7 @@ pub fn run() {
             my_wave,
             wave_dislike,
             wave_disliked,
+            wave_dislikes,
             set_offline_like_order,
             download_offline_track,
             remove_offline_track,

@@ -71,7 +71,7 @@
 .sidebar-collapsed .quick-access-grip { display: none; }
 .sidebar-collapsed .library-chevron, .sidebar-collapsed .library-subnav { display: none !important; }
 
-.track-row.editable { grid-template-columns: minmax(0, 1fr) minmax(80px, 18%) 58px 112px; }
+.track-row.editable { grid-template-columns: minmax(0, 1fr) minmax(80px, 18%) 58px 144px; }
 .track-actions { justify-content: flex-end; padding-right: 8px; }
 .track-row.editable .queue-order { flex: none; margin-right: 3px; }
 .track-row.editable .queue-order .icon-button { width: 26px; height: 24px; }
@@ -86,7 +86,7 @@
 @keyframes track-playing { from { transform: scaleY(.3); } to { transform: scaleY(1); } }
 html[data-motion="reduced"] .track-playback-mark i, html[data-quality="eco"] .track-playback-mark i { animation: none; }
 @media (prefers-reduced-motion: reduce) { .track-playback-mark i { animation: none; } }
-@media (max-width: 850px) { .track-row.editable { grid-template-columns: minmax(0, 1fr) 52px 112px; } }
+@media (max-width: 850px) { .track-row.editable { grid-template-columns: minmax(0, 1fr) 52px 144px; } }
 
 .quick-picks { margin: 0 0 28px; }
 .quick-picks-heading h2 { margin: 7px 0 2px; color: var(--text, #fff); font-size: calc(26px * var(--interface-text-scale, 1)); letter-spacing: -.8px; }
@@ -373,3 +373,34 @@ html[data-theme="light"] .app-shell .cards > .card, html[data-theme="light"] .ap
   .offline-page .offline-item { display: flex; flex-wrap: wrap; }
   .offline-page .offline-item > div:not(.art-row) { flex: 1 1 180px; }
 }
+/* Feedback rows reuse the app's surface and size tokens. */
+.disliked-list { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--surface-card); }
+.disliked-row { display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-bottom: 1px solid var(--line); box-sizing: border-box; }
+.disliked-row:last-child { border-bottom: 0; }
+.disliked-cover { position: relative; flex: 0 0 auto; }
+.disliked-cover > svg { position: absolute; inset: 0; margin: auto; opacity: 0; }
+.disliked-cover:hover > svg { opacity: 1; }
+.disliked-info { min-width: 0; flex: 1; text-align: left; display: flex; flex-direction: column; gap: 5px; }
+.disliked-info strong, .disliked-info small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.disliked-info small { color: var(--text-muted); }
+.disliked-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.disliked-actions .secondary-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; white-space: nowrap; }
+.profile-content-tools .profile-tabs { flex-wrap: wrap; width: 100%; overflow: visible; gap: 6px; }
+.followed-accounts .artist-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 180px)); gap: 16px; }
+@media(max-width: 650px) { .disliked-actions .secondary-button span { display: none; } .disliked-row { padding: 8px; gap: 8px; } }
+
+/* Sharing controls stay separate from the card's open/play button. */
+.share-card { position: relative; }
+.card-open { display: flex; flex-direction: column; width: 100%; min-width: 0; text-align: left; }
+.card .card-share { position: absolute; top: 20px; right: 20px; width: 32px; height: 32px; border: 1px solid var(--line); border-radius: 9px; background: var(--popup-fill, #20222c); color: var(--popup-text, #f5f6fa); box-shadow: 0 2px 8px #0004; }
+.card .card-share:hover { background: var(--popup-card, #353846); }
+.share-button.secondary-button { display: inline-flex; align-items: center; gap: 8px; }
+.share-notice { position: fixed; z-index: 10000; left: 50%; bottom: 110px; transform: translateX(-50%); width: min(460px, calc(100vw - 32px)); padding: 16px 44px 16px 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--popup-fill, #20222c); color: var(--popup-text, #f5f6fa); box-shadow: 0 8px 32px #0006; font-size: calc(12px * var(--interface-text-scale, 1)); }
+.share-notice p { margin: 0; line-height: 1.6; }
+.share-notice input { width: 100%; margin-top: 10px; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--popup-card, #353846); color: inherit; }
+.share-notice .text-button { margin-top: 10px; color: inherit; text-decoration: underline; }
+.share-notice-close { position: absolute; top: 8px; right: 8px; color: inherit; }
+
+.library-playlist-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.library-playlist-list .playlist-list-open { flex: 1; min-width: 0; }
+.library-playlist-row > .share-button { flex: none; }

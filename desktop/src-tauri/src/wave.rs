@@ -16,6 +16,7 @@ pub struct TrackIdentity {
     version: String,
     duration_ms: u64,
     audio_embedding: Option<Vec<i8>>,
+    isrc: Option<String>,
 }
 
 fn words(value: &str) -> String {
@@ -37,7 +38,7 @@ fn performer_keys(value: &str) -> Vec<String> {
 pub fn track_identity(track: &Track) -> TrackIdentity {
     let raw = track.title.trim();
     let known = words(track.artist());
-    let anchored = [" - ", " – ", " — ", " | "].into_iter().find_map(|separator| {
+    let anchored = [" - ", " – ", " — ", " | ", "-", "–", "—"].into_iter().find_map(|separator| {
         raw.match_indices(separator).find_map(|(index, _)| {
             let left = raw[..index].trim();
             let right = raw[index + separator.len()..].trim();
@@ -90,10 +91,14 @@ pub fn track_identity(track: &Track) -> TrackIdentity {
         artist: title_artist.or(explicit).map(|value| words(&value)), version,
         duration_ms: track.effective_duration_ms(),
         audio_embedding: None,
+        isrc: track.publisher_metadata.as_ref().and_then(|metadata| metadata.isrc.as_ref())
+            .map(|code| code.chars().filter(char::is_ascii_alphanumeric).flat_map(char::to_uppercase).collect::<String>())
+            .filter(|code| code.len() == 12),
     }
 }
 
 pub fn same_recording(a: &TrackIdentity, b: &TrackIdentity) -> bool {
+    if a.isrc.is_some() && a.isrc == b.isrc { return true; }
     if a.title.is_empty() || b.title.is_empty() || a.version != b.version { return false; }
     let same_title = a.title == b.title;
     let near_title = a.title.len().min(b.title.len()) >= 9
@@ -171,8 +176,9 @@ impl DislikeFilter {
         if self.ids.contains(&track.id) { return true; }
         let identity = track_identity(track);
         self.recordings.iter().any(|previous|
-            previous.performer_keys.iter().any(|key| identity.performer_keys.contains(key))
-                && same_recording(previous, &identity))
+            (previous.isrc.is_some() && previous.isrc == identity.isrc)
+            || (previous.performer_keys.iter().any(|key| identity.performer_keys.contains(key))
+                && same_recording(previous, &identity)))
     }
 
     pub(crate) fn prune_saved_queue(&self, queue: &mut Vec<Track>, current: Option<usize>) -> Option<usize> {
@@ -335,6 +341,25 @@ impl Engine {
 
     pub fn disliked(&self, id: u64) -> bool {
         self.inner.lock().profile.signals.get(&id).is_some_and(|s| s.disliked)
+    }
+
+    pub fn disliked_tracks(&self) -> Vec<Track> {
+        self.inner.lock().profile.signals.values().filter(|signal| signal.disliked)
+            .filter_map(|signal| signal.track.clone()).collect()
+    }
+
+    pub fn replace_dislikes(&self, feedback: &std::collections::BTreeMap<String, crate::personal::Feedback>) {
+        let mut inner = self.inner.lock();
+        let desired: HashSet<_> = feedback.values().filter(|item| item.disliked).map(|item| item.track.id).collect();
+        let current: HashSet<_> = inner.profile.signals.iter().filter(|(_,signal)| signal.disliked).map(|(&id,_)| id).collect();
+        if current == desired { return; }
+        for signal in inner.profile.signals.values_mut() { signal.disliked = false; }
+        for item in feedback.values().filter(|item| item.disliked) {
+            let signal = inner.profile.signals.entry(item.track.id).or_default();
+            signal.disliked = true;
+            signal.track = item.track.as_track();
+        }
+        self.save(&inner.profile);
     }
 
     // Keep feedback stable until the caller finishes updating the live queue.
@@ -1016,6 +1041,22 @@ mod tests {
         let copy = Track { id: 999_001, ..track.clone() };
         engine.dislike(&track, true);
         assert!(first_seed(&engine, &[track, copy], 0).is_none());
+    }
+
+    #[test]
+    fn joined_title_artist_and_isrc_reuploads_remain_excluded() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Engine::new(dir.path().join("wave.json"));
+        let mut original = crate::demo::demo_tracks().remove(0);
+        original.title = "CUPSIZE - ты причина".into();
+        original.metadata_artist = Some("CUPSIZE".into());
+        engine.dislike(&original,true);
+        let joined = Track { id:90001,title:"ты причина-CUPSIZE".into(),..original.clone() };
+        assert!(engine.with_dislike_filter(|filter|filter.rejects(&joined)));
+        original.publisher_metadata = Some(crate::api::models::PublisherMetadata { isrc:Some("US-ABC-23-12345".into()),..Default::default() });
+        engine.dislike(&original,true);
+        let different_name = Track { id:90002,title:"Wrong upload name".into(),metadata_artist:Some("Uploader".into()),..original };
+        assert!(engine.with_dislike_filter(|filter|filter.rejects(&different_name)));
     }
 
     #[test]
