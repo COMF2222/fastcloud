@@ -725,6 +725,15 @@ pub fn first_seed(engine: &Engine, liked_tracks: &[Track], variation: u32) -> Op
             }
         }
     }
+    // Rotate the performer before filtering recently heard recordings. Otherwise
+    // fresh songs from one artist can remove every alternative from the pool.
+    if let Some(previous) = starts.recent.last() {
+        let different = |track: &Track| !track_identity(track).performer_keys.iter()
+            .any(|key| previous.performer_keys.contains(key));
+        if candidates.iter().any(|(track, _)| different(track)) {
+            candidates.retain(|(track, _)| different(track));
+        }
+    }
     // Prefer an opening recording that has not opened any recent station,
     // including after restarting. A tiny library still falls back to its songs.
     if candidates.iter().any(|(track, _)| !starts.recent.iter().any(|previous|
@@ -823,7 +832,11 @@ fn assemble(seeds: &[Track], related: Vec<Vec<Track>>, likes: &HashSet<u64>, kno
             // where there genuinely are no other artists to play.
             score - (recent_penalty + (exposure as f64 * 1.4).min(24.0)) * (0.25 + f64::from(profile.taste.diversity) * 1.5)
         };
-        let best = pool.iter().enumerate().max_by(|(_, (a, sa)), (_, (b, sb))|
+        let previous = result.last().map(track_identity).or_else(|| session_artists.last().cloned());
+        let different_artist = |track: &Track| previous.as_ref().is_none_or(|previous|
+            !track_identity(track).performer_keys.iter().any(|key| previous.performer_keys.contains(key)));
+        let can_rotate = pool.iter().any(|(track, _)| different_artist(track));
+        let best = pool.iter().enumerate().filter(|(_, (track, _))| !can_rotate || different_artist(track)).max_by(|(_, (a, sa)), (_, (b, sb))|
             adjusted(a, *sa).total_cmp(&adjusted(b, *sb))).map(|(index, _)| index).unwrap();
         let chosen = pool.swap_remove(best).0;
         let identity = enriched_identity(&chosen, profile);
@@ -1388,4 +1401,34 @@ mod tests {
         assert_eq!(recency_penalty(900_000, 1_000_000), 5.0);
         assert_eq!(recency_penalty(1, 1_000_000), 0.0);
     }
+    #[test]
+    fn next_wave_changes_artist_even_when_only_that_artist_has_unheard_songs() {
+        let directory = tempfile::tempdir().unwrap();
+        let engine = Engine::new(directory.path().join("wave.json"));
+        let mut a = crate::demo::demo_tracks().remove(0);
+        a.title = "One".into(); a.metadata_artist = Some("Alice".into());
+        let mut b = a.clone(); b.id += 1; b.title = "Two".into(); b.metadata_artist = Some("Bob".into());
+        let mut next_a = a.clone(); next_a.id += 2; next_a.title = "Three".into();
+        engine.starts.lock().recent.push(track_identity(&a));
+        {
+            let mut inner = engine.inner.lock();
+            inner.profile.signals.insert(b.id, Signal { track: Some(b.clone()), last_played: chrono::Utc::now().timestamp(), ..Default::default() });
+        }
+        let selected = first_seed(&engine, &[a, next_a, b.clone()], 0).unwrap();
+        assert_eq!(selected.id, b.id);
+    }
+
+    #[test]
+    fn consecutive_recommendations_rotate_artists_when_an_alternative_is_available() {
+        let mut seed = crate::demo::demo_tracks().remove(0);
+        seed.title = "Seed".into(); seed.metadata_artist = Some("Seed artist".into());
+        let mut a = seed.clone(); a.id += 100; a.title = "First".into(); a.metadata_artist = Some("Alice".into()); a.genre = Some("Rock".into());
+        let mut next_a = a.clone(); next_a.id += 1; next_a.title = "Second".into();
+        let mut b = a.clone(); b.id += 2; b.title = "Third".into(); b.metadata_artist = Some("Bob".into()); b.genre = Some("Jazz".into());
+        let mut profile = Profile::default(); profile.taste.genres = vec!["Rock".into()]; profile.taste.diversity = 0.0;
+        let result = assemble(&[seed.clone()], vec![vec![a.clone(),next_a,b.clone()]], &HashSet::from([seed.id]), &[], &HashSet::new(), &profile, &TasteModel::default(), &HashMap::new(), 1, &[]);
+        assert_eq!(result[0].id,a.id);
+        assert_eq!(result[1].id,b.id);
+    }
+
 }

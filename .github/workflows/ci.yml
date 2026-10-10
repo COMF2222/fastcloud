@@ -40,7 +40,7 @@ jobs:
       - name: Test update notifications
         run: node --experimental-strip-types --test desktop/tests/updatePolling.test.ts
       - name: Test themes, queue and error actions
-        run: node --experimental-strip-types --test desktop/tests/appImprovements.test.ts
+        run: node --experimental-strip-types --test desktop/tests/appImprovements.test.ts desktop/tests/windowActions.test.ts
       - name: Test lyrics timing
         run: node --experimental-strip-types --test desktop/tests/lyricsTiming.test.ts
       - name: Test application behavior, shared audio and lyrics
@@ -56,7 +56,7 @@ jobs:
         run: python -m unittest discover -s tools -p "test_components.py"
 
   release-windows:
-    needs: desktop
+    needs: [desktop, macos]
     if: startsWith(github.ref, 'refs/tags/v')
     concurrency:
       group: release-${{ github.ref }}
@@ -153,6 +153,13 @@ jobs:
       - name: Keep lightweight installer
         if: steps.release.outputs.published != 'true'
         run: python tools/stage_release_installer.py light
+      - name: Include verified macOS release artifacts
+        if: steps.release.outputs.published != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: macos-release-*
+          merge-multiple: true
+          path: desktop/release
       - name: Prepare latest.json and checksums
         if: steps.release.outputs.published != 'true'
         run: python tools/release_manifest.py
@@ -178,3 +185,99 @@ jobs:
         env:
           FASTCLOUD_RELEASE_NOTIFY_TOKEN: ${{ secrets.FASTCLOUD_RELEASE_NOTIFY_TOKEN }}
         run: python tools/notify_release.py
+
+  macos:
+    name: macOS (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: aarch64
+          - runner: macos-15-intel
+            arch: x86_64
+    concurrency:
+      group: macos-${{ matrix.arch }}-${{ github.ref }}
+      cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+      VITE_FASTCLOUD_SERVER_URL: ${{ secrets.FASTCLOUD_SERVER_URL }}
+      FASTCLOUD_DISCORD_CLIENT_ID: ${{ vars.FASTCLOUD_DISCORD_CLIENT_ID }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.arch }}-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+          shared-key: macos-${{ matrix.arch }}
+      - run: npm ci
+        working-directory: desktop
+      - run: npm run check
+        working-directory: desktop
+      - name: Test native macOS application
+        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --all-targets
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
+        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Verify release configuration
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          test -n "$TAURI_SIGNING_PRIVATE_KEY"
+          test -n "$VITE_FASTCLOUD_SERVER_URL"
+          python tools/check_release_version.py
+      - uses: actions/cache@v4
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          path: desktop/src-tauri/resources/clap/worker-lite
+          key: clap-worker-macos-${{ matrix.arch }}-${{ hashFiles('desktop/clap_worker.py', 'desktop/clap_features.py', 'tools/prepare_macos_clap.py') }}
+      - name: Prepare and test native CLAP worker
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python tools/prepare_macos_clap.py
+      - name: Prepare content-addressed native components
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python tools/prepare_components.py
+      - name: Verify manifest embedded in native app
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          FASTCLOUD_COMPONENT_MANIFEST: ${{ github.workspace }}/desktop/src-tauri/resources/component-manifest.json
+        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked --lib components::tests::embedded_manifest_matches_application -- --exact
+      - name: Build native signed updater and DMG
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+          FASTCLOUD_COMPONENT_MANIFEST: ${{ github.workspace }}/desktop/src-tauri/resources/component-manifest.json
+        run: npm run tauri -- build --config src-tauri/tauri.private.conf.json --config src-tauri/tauri.macos.conf.json --target ${{ matrix.arch }}-apple-darwin --bundles app,dmg --ci
+      - name: Stage full macOS installer
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python tools/stage_macos_release.py full ${{ matrix.arch }}
+      - name: Bundle lightweight macOS updater
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        run: npm run tauri -- bundle --config src-tauri/tauri.light.conf.json --config src-tauri/tauri.macos.conf.json --target ${{ matrix.arch }}-apple-darwin --bundles app --ci
+      - name: Stage lightweight macOS updater
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python tools/stage_macos_release.py light ${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          name: macos-release-${{ matrix.arch }}
+          path: desktop/release/*
+          if-no-files-found: error
+          retention-days: 7

@@ -21,7 +21,9 @@ def resource_files(root):
               ("audio_model_quantized.onnx", "text_model_quantized.onnx")]
     files += list((root / "licenses").glob("*.txt"))
     files = sorted({path for path in files if path.is_file()})
-    required = [root / "worker-lite/fastcloud-clap/fastcloud-clap.exe",
+    worker = root / "worker-lite/fastcloud-clap/fastcloud-clap.exe"
+    if not worker.is_file(): worker = root / "worker-lite/fastcloud-clap/fastcloud-clap"
+    required = [worker,
                 root / "model/config.json", root / "model/tokenizer.json",
                 root / "model/onnx/audio_model_quantized.onnx",
                 root / "model/onnx/text_model_quantized.onnx"]

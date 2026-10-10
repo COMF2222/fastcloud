@@ -178,17 +178,27 @@ async fn run_at(
                 .map(|artist| artist.name.as_str())
                 .unwrap_or_default();
             let query = format!("{artist} {}", track.title);
-            let mut candidates = endpoints::search_tracks(&soundcloud, &query).await;
-            // A failed request is not a missing song. Keep the error visible;
-            // do not produce an apparently successful empty import.
-            let page = candidates
-                .next_page()
-                .await
-                .context("SoundCloud search failed; import stopped")?;
-            if let Some(found) = best_match(&track, &page) {
+            let mut candidates = endpoints::search_import_tracks(&soundcloud, &query).await;
+            let mut found = None;
+            // Keep searching when an earlier page contains only unsuitable
+            // recordings. Search failures are still errors, never missing songs.
+            for _ in 0..2 {
+                if candidates.is_exhausted() {
+                    break;
+                }
+                let page = candidates
+                    .next_page()
+                    .await
+                    .context("SoundCloud search failed; import stopped")?;
+                if let Some(candidate) = best_match(&track, &page) {
+                    found = Some(candidate.id);
+                    break;
+                }
+            }
+            if let Some(id) = found {
                 matched += 1;
-                if matched_seen.insert(found.id) {
-                    matched_ids.push(found.id);
+                if matched_seen.insert(id) {
+                    matched_ids.push(id);
                 }
             }
             processed += 1;
@@ -317,40 +327,94 @@ fn best_match<'a>(
     candidates: &'a [crate::api::models::Track],
 ) -> Option<&'a crate::api::models::Track> {
     let title = normalize(&source.title);
-    let artist = source
-        .artists
-        .first()
-        .map(|artist| normalize(&artist.name))
-        .unwrap_or_default();
+    if title.is_empty() {
+        return None;
+    }
     candidates
         .iter()
-        .map(|candidate| {
+        .filter_map(|candidate| {
+            if candidate.is_blocked() || candidate.is_snippet() || !candidate.streamable {
+                return None;
+            }
+            let source_words = words(&source.title);
+            let candidate_words = words(&candidate.title);
+            for variant in [
+                "remix",
+                "cover",
+                "live",
+                "instrumental",
+                "karaoke",
+                "acoustic",
+                "slowed",
+                "sped",
+                "nightcore",
+                "reverb",
+                "edit",
+            ] {
+                if source_words.split_whitespace().any(|word| word == variant)
+                    != candidate_words
+                        .split_whitespace()
+                        .any(|word| word == variant)
+                {
+                    return None;
+                }
+            }
+            if source.duration_ms.is_some_and(|duration| duration > 0)
+                && candidate.effective_duration_ms() == 0 { return None; }
+            let duration = source
+                .duration_ms
+                .filter(|duration| *duration > 0)
+                .zip(Some(candidate.effective_duration_ms()).filter(|duration| *duration > 0));
+            if duration.is_some_and(|(a, b)| a.abs_diff(b) > (a / 20).clamp(3000, 10000)) {
+                return None;
+            }
             let candidate_title = normalize(&candidate.title);
             let candidate_artist = normalize(candidate.artist());
-            let title_score = if candidate_title == title {
-                6
-            } else if candidate_title.contains(&title) || title.contains(&candidate_title) {
-                3
-            } else {
-                0
-            };
-            let artist_score = if !artist.is_empty() && candidate_artist == artist {
-                4
-            } else if !artist.is_empty()
-                && (candidate_artist.contains(&artist) || artist.contains(&candidate_artist))
-            {
-                2
-            } else {
-                0
-            };
-            let duration_score = source.duration_ms.map_or(0, |duration| {
-                (candidate.effective_duration_ms().abs_diff(duration) <= 6_000) as i32 * 2
+            let artist_matches = source.artists.iter().any(|artist| {
+                let normalized = normalize(&artist.name);
+                !normalized.is_empty()
+                    && (candidate_artist == normalized
+                        || format!(" {candidate_words} ")
+                            .contains(&format!(" {} ", words(&artist.name))))
             });
-            (candidate, title_score + artist_score + duration_score)
+            if !source.artists.is_empty() && !artist_matches {
+                return None;
+            }
+            let exact = candidate_title == title;
+            let title_matches = exact || source.artists.iter().any(|artist| {
+                let credit = words(&artist.name);
+                !credit.is_empty() && (candidate_words == format!("{credit} {source_words}")
+                    || candidate_words == format!("{source_words} {credit}"))
+            });
+            if !title_matches {
+                return None;
+            }
+            Some((
+                candidate,
+                if exact { 6 } else { 3 }
+                    + if artist_matches { 4 } else { 0 }
+                    + if duration.is_some() { 2 } else { 0 },
+            ))
         })
-        .filter(|(_, score)| *score >= 6)
         .max_by_key(|(_, score)| *score)
         .map(|(candidate, _)| candidate)
+}
+
+fn words(value: &str) -> String {
+    value
+        .to_lowercase()
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() {
+                character
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn normalize(value: &str) -> String {
@@ -385,7 +449,8 @@ mod tests {
             "id": id,
             "title": title,
             "duration": duration_ms,
-            "metadata_artist": artist
+            "metadata_artist": artist,
+            "streamable": true
         }))
         .unwrap()
     }
@@ -419,6 +484,7 @@ mod tests {
         empty_create: bool,
         empty_update: bool,
         search: bool,
+        preview_page: bool,
     }
 
     type Requests = Arc<parking_lot::Mutex<Vec<(String, String, serde_json::Value)>>>;
@@ -503,7 +569,17 @@ mod tests {
                         status = "400 Bad Request";
                         json!({"error":"search failed"})
                     } else {
-                        json!({"collection":[candidate(1,"One","Alice",180000)],"next_href":null})
+                        if failure.preview_page
+                            && !url.query_pairs().any(|(key, _)| key == "cursor")
+                        {
+                            let mut preview = candidate(1, "One", "Alice", 180000);
+                            preview.access = Some("preview".into());
+                            json!({"collection":[preview],"next_href":"https://api.soundcloud.com/tracks?q=Alice%20One&access=playable&cursor=full"})
+                        } else if failure.preview_page {
+                            json!({"collection":[candidate(2,"Alice - One","Uploader",180000)],"next_href":null})
+                        } else {
+                            json!({"collection":[candidate(1,"One","Alice",180000)],"next_href":null})
+                        }
                     }
                 } else if url.path().ends_with("/playlists") && method == "POST" {
                     creates += 1;
@@ -812,5 +888,62 @@ mod tests {
         assert_eq!((report.added, report.parts), (0, 0));
         assert!(report.error.is_none());
         assert!(requests.lock().is_empty());
+    }
+    #[test]
+    fn import_chooses_full_public_upload_and_rejects_preview_even_with_exact_metadata() {
+        let source = source("Midnight", "Alice", 180000);
+        let mut preview = candidate(1, "Midnight", "Alice", 180000);
+        preview.access = Some("preview".into());
+        let upload = candidate(2, "Alice - Midnight", "Uploader", 181000);
+        assert_eq!(
+            best_match(&source, &[preview.clone(), upload]).unwrap().id,
+            2
+        );
+        assert!(best_match(&source, &[preview]).is_none());
+    }
+
+    #[test]
+    fn public_upload_must_match_recording_artist_version_and_duration() {
+        let source = source("Midnight", "Alice", 180000);
+        for track in [
+            candidate(1, "Midnight", "Bob", 180000),
+            candidate(2, "Alice - Midnight remix", "Uploader", 180000),
+            candidate(3, "Alice - Midnight", "Uploader", 240000),
+            candidate(4, "Alice - Midnight part two", "Uploader", 180000),
+            candidate(5, "Alice - Midnight", "Uploader", 0),
+        ] {
+            assert!(best_match(&source, &[track]).is_none());
+        }
+    }
+    #[tokio::test]
+    async fn import_search_continues_to_a_full_matching_upload_on_the_next_page() {
+        let (base, requests, task) = fixture(Failure {
+            preview_page: true,
+            ..Default::default()
+        })
+        .await;
+        let (client, _session) = client(base.clone()).await;
+        let (tx, rx) = crossbeam_channel::unbounded();
+        run_at("test-yandex", client, &tx, &base, std::time::Duration::ZERO)
+            .await
+            .unwrap();
+        task.abort();
+        assert!(
+            rx.try_iter()
+                .any(|event| matches!(event,Event::Finished {track_ids,..} if track_ids == [2]))
+        );
+        let paths: Vec<_> = requests
+            .lock()
+            .iter()
+            .filter(|(_, path, _)| path.contains("q="))
+            .map(|(_, path, _)| path.clone())
+            .collect();
+        assert_eq!(paths.len(), 2);
+        assert!(paths.iter().all(|path| {
+            url::Url::parse(&format!("http://fixture{path}"))
+                .unwrap()
+                .query_pairs()
+                .any(|(key, value)| key == "access" && value == "playable")
+        }));
     }
 }

@@ -535,7 +535,7 @@ fn load_files(paths: &[String]) -> Result<Vec<Collection>, String> {
 /// Strong metadata checks take precedence over search rank. Unrequested remix,
 /// live and speed variants are rejected even when the artist matches.
 fn match_score(song: &Song, track: &Track) -> Option<u32> {
-    if track.is_blocked() || !track.streamable {
+    if track.is_blocked() || track.is_snippet() || !track.streamable {
         return None;
     }
     let source = normalized(&song.title);
@@ -559,6 +559,9 @@ fn match_score(song: &Song, track: &Track) -> Option<u32> {
         if has(&source, word) != has(&title, word) {
             return None;
         }
+    }
+    if song.duration.is_some_and(|duration| duration > 0) && track.effective_duration_ms() == 0 {
+        return None;
     }
     let duration = song
         .duration
@@ -586,7 +589,7 @@ fn match_score(song: &Song, track: &Track) -> Option<u32> {
         || song
             .artists
             .iter()
-            .any(|a| title_base == format!("{} {source_base}", normalized(a)));
+            .any(|a| title_base == format!("{} {source_base}", normalized(a)) || title_base == format!("{source_base} {}", normalized(a)));
     if !title_match {
         return None;
     }
@@ -599,7 +602,7 @@ fn match_score(song: &Song, track: &Track) -> Option<u32> {
         !a.is_empty()
             && (artist == a
                 || credits.split(';').any(|credit| normalized(credit) == a)
-                || title.starts_with(&format!("{a} ")))
+                || title.starts_with(&format!("{a} ")) || title.ends_with(&format!(" {a}")))
     });
     if !artist_match {
         return None;
@@ -617,7 +620,7 @@ async fn find_song(context: &Context, song: &Song) -> Result<Option<u64>, String
         song.artists.first().map(String::as_str).unwrap_or_default(),
         song.title
     );
-    let mut pager = api::endpoints::search_tracks(&context.client, &query).await;
+    let mut pager = api::endpoints::search_import_tracks(&context.client, &query).await;
     let mut best = None;
     for _ in 0..2 {
         context.check()?;
@@ -1084,7 +1087,8 @@ mod tests {
         let full = track(1, "Song");
         let mut preview = track(2, "Song");
         preview.access = Some("preview".into());
-        assert!(match_score(&source, &full) > match_score(&source, &preview));
+        assert!(match_score(&source, &full).is_some());
+        assert!(match_score(&source, &preview).is_none());
     }
 
     type Requests = Arc<Mutex<Vec<(String, String, Value)>>>;

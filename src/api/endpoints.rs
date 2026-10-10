@@ -657,6 +657,11 @@ pub async fn search_tracks(client: &Arc<ApiClient>, query: &str) -> Pager<Track>
     )
 }
 
+/// Imports require full playback, including public uploads with matching metadata.
+pub async fn search_import_tracks(client: &Arc<ApiClient>, query: &str) -> Pager<Track> {
+    Pager::new(client.clone(), "/tracks", q(&[("q", query), ("access", "playable"), ("limit", "100")]))
+}
+
 pub async fn search_playlists(client: &Arc<ApiClient>, query: &str) -> Pager<Playlist> {
     // Unlike track discovery, the playlist search needs a non-empty query.
     let query = if query.trim().is_empty() {

@@ -8,6 +8,10 @@ Metadata is read in batches of 50 using the Yandex `/tracks` form endpoint.
 Duplicate source IDs are omitted, unavailable metadata is counted as missing,
 and an API failure stops the import instead of counting songs as not found.
 
+Search is limited to full playable recordings. Preview/Go snippets are not
+imported as matches; credited artist names in public upload titles are accepted
+only when title, duration and version checks also agree.
+
 Matched SoundCloud IDs retain their source order, with duplicate matches
 removed. Each destination playlist is private. More than 500 matches produce
 ordered `Yandex Music likes - part N` playlists; for example, 1003 matches

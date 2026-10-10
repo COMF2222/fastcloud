@@ -446,7 +446,7 @@ impl Player {
         }
         let urn = track.urn();
         let (url,bitrate) = if let Some(url) = offline_playlist_url(track.id) { (url,160) }
-            else { let streams = self.client.playback_streams(&urn).await?; let (url,rate) = streams.best_full_with_bitrate().context("No full stream for transition")?; (url.to_owned(),rate) };
+            else { let streams = self.client.playback_streams_for_track(&track).await?; let (url,rate) = streams.best_full_with_bitrate().context("No full stream for transition")?; (url.to_owned(),rate) };
         self.hls.set_oauth(self.client.oauth_token());
         let playlist = self.hls.playlist(&url).await?;
         let duration = playlist.duration_ms().context("Empty transition stream")?;
@@ -1297,7 +1297,7 @@ impl Player {
         let streams: Option<StreamUrls> = if offline_url.is_none() {
             Some(
                 self.client
-                    .playback_streams(&urn)
+                    .playback_streams_for_track(&track)
                     .await
                     .context("fetch streams")?,
             )

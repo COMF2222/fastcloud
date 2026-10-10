@@ -2,6 +2,29 @@
   "schema": 1,
   "releases": [
     {
+      "version": "0.4.10",
+      "ru": {
+        "title": "Полные записи, новое окно и macOS",
+        "changes": [
+          "Добавлены сборки для macOS 13 и новее: Apple Silicon и Intel.",
+          "Кнопки управления окном встроены в интерфейс; отдельная системная полоска убрана.",
+          "Для фрагментов приложение ищет подходящую полную доступную запись. Найденные соответствия и аудиокэш переиспользуются между пользователями.",
+          "Импорт Spotify и Яндекс Музыки выбирает полные версии вместо фрагментов и проверяет исполнителя, длительность и вариант записи.",
+          "«Моя волна» лучше чередует исполнителей и меняет первого исполнителя при наличии альтернатив."
+        ]
+      },
+      "en": {
+        "title": "Full recordings, integrated window controls and macOS",
+        "changes": [
+          "Added builds for macOS 13 and later, for Apple Silicon and Intel.",
+          "Window controls are integrated into the interface, replacing the separate system title bar.",
+          "For previews, the app searches for a matching publicly playable full recording. Saved matches and the audio cache are reused across listeners.",
+          "Spotify and Yandex Music imports select full recordings instead of previews and verify artist, duration and recording version.",
+          "My Wave alternates artists more consistently and changes its opening artist when alternatives are available."
+        ]
+      }
+    },
+    {
       "version": "0.4.9",
       "ru": {
         "title": "Импорт больших библиотек и GIF-фоны",

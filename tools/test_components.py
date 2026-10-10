@@ -10,6 +10,7 @@ from unittest.mock import patch
 from prepare_components import prepare
 from release_manifest import manifests
 import stage_release_installer
+import stage_macos_release
 
 
 class ComponentsTest(unittest.TestCase):
@@ -90,6 +91,57 @@ class ComponentsTest(unittest.TestCase):
                 entry = manifest["platforms"]["windows-x86_64"]
                 self.assertTrue(entry["url"].endswith(f"/v0.2.8/Fastcloud_0.2.8_x64-{suffix}.exe"))
                 self.assertEqual(entry["signature"], f"signature-{suffix}")
+
+    def test_macos_components_accept_native_worker_without_exe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, dist = Path(directory) / "resources", Path(directory) / "release"
+            self.resources(root)
+            worker = root / "worker-lite/fastcloud-clap/fastcloud-clap.exe"
+            worker.rename(worker.with_suffix(""))
+            manifest = prepare(root, dist, "0.4.10")
+            self.assertIn("worker-lite/fastcloud-clap/fastcloud-clap", [file["path"] for file in manifest["files"]])
+
+    def test_windows_and_both_mac_architectures_use_matching_signed_archives(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"GITHUB_REF_NAME":"v0.4.10"}):
+            dist = Path(directory)
+            for suffix in ("setup","update"):
+                (dist / f"Fastcloud_0.4.10_x64-{suffix}.exe").write_bytes(b"windows")
+                (dist / f"Fastcloud_0.4.10_x64-{suffix}.exe.sig").write_text("windows signature")
+                for arch in ("aarch64","x86_64"):
+                    archive = dist / f"Fastcloud_0.4.10_macos-{arch}-{suffix}.app.tar.gz"
+                    archive.write_bytes(b"macos")
+                    archive.with_suffix(".gz.sig").write_text(f"{arch}-{suffix}-signature")
+            manifests(dist,"0.4.10")
+            for name,suffix in (("latest.json","setup"),("latest-light.json","update")):
+                data=json.loads((dist/name).read_text())
+                self.assertEqual(set(data["platforms"]),{"windows-x86_64","darwin-aarch64","darwin-x86_64"})
+                for arch in ("aarch64","x86_64"):
+                    entry=data["platforms"][f"darwin-{arch}"]
+                    self.assertTrue(entry["url"].endswith(f"macos-{arch}-{suffix}.app.tar.gz"))
+                    self.assertEqual(entry["signature"],f"{arch}-{suffix}-signature")
+
+    def test_macos_staging_keeps_full_and_light_archives_and_the_dmg(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(stage_macos_release,"ROOT",Path(directory)):
+            root=Path(directory)
+            config=root/"desktop/src-tauri/tauri.conf.json"
+            config.parent.mkdir(parents=True)
+            config.write_text('{"version":"0.4.10"}')
+            for arch in ("aarch64","x86_64"):
+                bundle=root/f"desktop/src-tauri/target/{arch}-apple-darwin/release/bundle"
+                archive=bundle/"macos/Fastcloud.app.tar.gz"
+                archive.parent.mkdir(parents=True)
+                (bundle/"dmg").mkdir()
+                (bundle/"dmg/Fastcloud.dmg").write_bytes(b"installer")
+                for kind in ("full","light"):
+                    archive.write_bytes(kind.encode())
+                    archive.with_suffix(".gz.sig").write_text(f"signature-{kind}")
+                    stage_macos_release.stage(kind,arch)
+                dist=root/"desktop/release"
+                self.assertEqual((dist/f"Fastcloud_0.4.10_macos-{arch}.dmg").read_bytes(),b"installer")
+                for suffix,kind in (("setup","full"),("update","light")):
+                    saved=dist/f"Fastcloud_0.4.10_macos-{arch}-{suffix}.app.tar.gz"
+                    self.assertEqual(saved.read_bytes(),kind.encode())
+                    self.assertEqual(saved.with_suffix(".gz.sig").read_text(),f"signature-{kind}")
 
 
 if __name__ == "__main__":

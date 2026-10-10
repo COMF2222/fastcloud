@@ -45,7 +45,7 @@ fn runtime() -> Option<(PathBuf, PathBuf)> {
                 resources.active()
             } else { BUNDLE_DIR.get().cloned() }
         })?;
-    let worker = base.join("worker-lite").join("fastcloud-clap").join("fastcloud-clap.exe");
+    let worker = base.join(crate::components::WORKER_PATH);
     let model = base.join("model");
     (worker.is_file() && model.join("onnx").join("audio_model_quantized.onnx").is_file()
         && model.join("onnx").join("text_model_quantized.onnx").is_file())

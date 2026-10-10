@@ -7,7 +7,7 @@
 <p align="center"><strong>Твоя музыка. Твой плеер. Твоё оформление.</strong></p>
 
 <p align="center">
-  <a href="https://github.com/COMF2222/fastcloud/releases/latest"><strong>Скачать для Windows</strong></a> ·
+  <a href="https://github.com/COMF2222/fastcloud/releases/latest"><strong>Скачать для Windows и Mac</strong></a> ·
   <a href="https://fastcloud.comf.workers.dev/">Сайт и демо</a> ·
   <a href="https://fastcloud.comf.workers.dev/changes">Что нового</a> ·
   <a href="README.en.md">English</a>
@@ -19,7 +19,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-242424" alt="Лицензия MIT"></a>
 </p>
 
-**Fastcloud — бесплатный SoundCloud desktop-клиент для Windows** с текстами
+**Fastcloud — бесплатный SoundCloud desktop-клиент для Windows и macOS** с текстами
 песен, персональной волной и интерфейсом, который можно настроить под себя.
 Слушай любимые треки, открывай свою библиотеку, переноси плейлисты Spotify
 и выбирай, как выглядит твой плеер: от компактного Airwave до большого экрана
@@ -102,6 +102,8 @@
 
 1. Открой [последний релиз](https://github.com/COMF2222/fastcloud/releases/latest)
    и скачай **`Fastcloud_…_x64-setup.exe`** — полный установщик для Windows x64.
+   Для Mac выбери **`Fastcloud_…_macos-aarch64.dmg`** (Apple Silicon) или
+   **`Fastcloud_…_macos-x86_64.dmg`** (Intel), открой DMG и перенеси приложение в Applications.
 2. Установи Fastcloud и войди в свой SoundCloud-аккаунт через браузер.
 3. Открой библиотеку, выбери трек или запусти «Мою волну».
 
@@ -134,8 +136,9 @@ SoundCloud. Доступность страницы входа SoundCloud в б�
 
 ### Какие системы поддерживаются?
 
-Готовые установщики публикуются для **Windows x64**. Интерфейс доступен на
-русском и английском. Сборки для Linux и macOS пока не выпускаются.
+Готовые установщики публикуются для **Windows x64** и **macOS 13+**
+(Apple Silicon и Intel). Интерфейс доступен на русском и английском.
+Готовой сборки для Linux пока нет. [Установка и тестирование на Mac](docs/macos.md).
 
 ## Помощь и участие
 

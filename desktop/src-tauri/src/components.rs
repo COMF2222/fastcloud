@@ -16,8 +16,12 @@ use tokio::io::AsyncWriteExt;
 
 const EMBEDDED: &str = include_str!(concat!(env!("OUT_DIR"), "/component-manifest.json"));
 const RELEASES: &str = "https://github.com/COMF2222/fastcloud/releases/download";
+#[cfg(windows)]
+pub const WORKER_PATH: &str = "worker-lite/fastcloud-clap/fastcloud-clap.exe";
+#[cfg(not(windows))]
+pub const WORKER_PATH: &str = "worker-lite/fastcloud-clap/fastcloud-clap";
 const REQUIRED: &[&str] = &[
-    "worker-lite/fastcloud-clap/fastcloud-clap.exe",
+    WORKER_PATH,
     "model/config.json",
     "model/tokenizer.json",
     "model/onnx/audio_model_quantized.onnx",
@@ -499,6 +503,21 @@ fn unpack(root: &Path, compressed: &Path, entry: &FileEntry) -> Result<()> {
     result
 }
 
+fn make_worker_executable(root: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let worker = root.join(WORKER_PATH);
+        let permissions = fs::metadata(&worker)?.permissions();
+        if permissions.mode() & 0o111 != 0o111 {
+            fs::set_permissions(worker, fs::Permissions::from_mode(0o755))?;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = root;
+    Ok(())
+}
+
 fn materialize(root: &Path, manifest: &Manifest) -> Result<PathBuf> {
     let sets = root.join("sets");
     let target = sets.join(&manifest.id);
@@ -509,6 +528,7 @@ fn materialize(root: &Path, manifest: &Manifest) -> Result<PathBuf> {
             .iter()
             .all(|entry| valid_file(&target.join(&entry.path), entry).unwrap_or(false))
     {
+        make_worker_executable(&target)?;
         return Ok(target);
     }
     let staging = sets.join(format!("{}.staging", manifest.id));
@@ -529,6 +549,7 @@ fn materialize(root: &Path, manifest: &Manifest) -> Result<PathBuf> {
             fs::copy(&blob, &destination)?;
         }
     }
+    make_worker_executable(&staging)?;
     fs::write(
         staging.join("manifest.json"),
         serde_json::to_vec(&manifest.files)?,
@@ -695,6 +716,22 @@ mod tests {
         manifest.validate().unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn native_worker_permissions_are_restored_after_download_and_cache_reuse() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let worker = root.path().join(WORKER_PATH);
+        fs::create_dir_all(worker.parent().unwrap()).unwrap();
+        fs::write(&worker, b"native worker").unwrap();
+        fs::set_permissions(&worker, fs::Permissions::from_mode(0o644)).unwrap();
+        make_worker_executable(root.path()).unwrap();
+        assert_eq!(fs::metadata(&worker).unwrap().permissions().mode() & 0o111, 0o111);
+        fs::set_permissions(&worker, fs::Permissions::from_mode(0o644)).unwrap();
+        make_worker_executable(root.path()).unwrap();
+        assert_eq!(fs::metadata(&worker).unwrap().permissions().mode() & 0o111, 0o111);
+    }
+
     fn gzip(bytes: &[u8]) -> Vec<u8> {
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         encoder.write_all(bytes).unwrap();
@@ -729,6 +766,9 @@ mod tests {
                         std::thread::sleep(Duration::from_millis(5));
                         continue;
                     };
+                    // Windows accepted sockets can inherit the listener's
+                    // nonblocking mode. The fixture reads complete requests.
+                    stream.set_nonblocking(false).unwrap();
                     stream
                         .set_read_timeout(Some(Duration::from_secs(10)))
                         .unwrap();
@@ -1061,7 +1101,7 @@ mod tests {
         assert!(!bundled.join("model/tokenizer.json").exists());
         assert!(
             !bundled
-                .join("worker-lite/fastcloud-clap/fastcloud-clap.exe")
+                .join(WORKER_PATH)
                 .exists()
         );
     }

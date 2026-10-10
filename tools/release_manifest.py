@@ -23,6 +23,15 @@ def manifests(dist: Path, version: str) -> None:
         manifest = {"version": version, "platforms": {"windows-x86_64": {
             "signature": signature, "url": f"{RELEASE_BASE}/download/{tag}/{installer.name}",
         }}}
+        for arch in ("aarch64", "x86_64"):
+            archive = dist / f"Fastcloud_{version}_macos-{arch}-{suffix}.app.tar.gz"
+            signature_path = archive.with_suffix(".gz.sig")
+            if archive.is_file():
+                signature = signature_path.read_text(encoding="utf-8").strip()
+                if not signature: raise ValueError("macOS updater signature is empty")
+                manifest["platforms"][f"darwin-{arch}"] = {
+                    "signature": signature, "url": f"{RELEASE_BASE}/download/{tag}/{archive.name}",
+                }
         (dist / filename).write_text(
             json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
         )

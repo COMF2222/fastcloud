@@ -19,6 +19,11 @@ impl Drop for AacFixture {
 }
 
 async fn aac_fixture() -> AacFixture {
+    aac_fixture_with_playlist(None).await
+}
+
+async fn aac_fixture_with_playlist(playlist: Option<String>) -> AacFixture {
+    let playlist = playlist.unwrap_or_else(|| String::from_utf8_lossy(include_bytes!("fixtures/aac-transition/index.m3u8")).into_owned());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let client = Arc::new(crate::api::ApiClient::new(None, false));
@@ -79,7 +84,7 @@ async fn aac_fixture() -> AacFixture {
                     resolved.fetch_add(1, Ordering::AcqRel);
                     resolve.as_bytes()
                 }
-                path if path.ends_with("/index.m3u8") => include_bytes!("fixtures/aac-transition/index.m3u8"),
+                path if path.ends_with("/index.m3u8") => playlist.as_bytes(),
                 path if path.ends_with("/init.mp4") => include_bytes!("fixtures/aac-transition/init.mp4"),
                 path if path.ends_with("/segment-0.m4s") => include_bytes!("fixtures/aac-transition/segment-0.m4s"),
                 path if path.ends_with("/segment-1.m4s") => include_bytes!("fixtures/aac-transition/segment-1.m4s"),
@@ -229,4 +234,36 @@ async fn broker_restart_renews_audio_and_resumes_the_same_track_without_sign_in(
         player.shutdown();
         tokio::time::timeout(Duration::from_secs(2), runner).await.unwrap().unwrap();
     }
+}
+
+#[tokio::test]
+async fn full_recording_for_a_preview_keeps_library_identity_and_seeks_past_thirty_seconds() {
+    let mut playlist = String::from("#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MAP:URI=\"init.mp4\"\n");
+    for index in 0..12 { playlist.push_str(&format!("#EXTINF:4,\nsegment-{}.m4s\n", index % 4)); }
+    playlist.push_str("#EXT-X-ENDLIST\n");
+    let fixture = aac_fixture_with_playlist(Some(playlist)).await;
+    let player = &fixture.player;
+    player.set_audio_preferences(false, 0, false);
+    let track = {
+        let mut state = player.state.lock();
+        state.queue[0].access = Some("preview".into());
+        state.queue[0].duration_ms = Some(30000);
+        state.queue[0].full_duration_ms = Some(48000);
+        state.queue[0].clone()
+    };
+    player.load_track(track.clone(), 35000);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while player.state.lock().loading { tokio::time::sleep(Duration::from_millis(10)).await; }
+    }).await.unwrap();
+    {
+        let state = player.state.lock();
+        assert!(state.error.is_none(), "{:?}", state.error);
+        assert!(!state.preview_fallback);
+        assert_eq!(state.duration_ms, 48000);
+        assert_eq!(state.queue[state.current.unwrap()].id, track.id);
+        assert!(state.is_playing);
+    }
+    assert!(player.output.position_ms() >= 35000);
+    assert!(player.output.render_test_audio(4800).iter().any(|sample| sample.abs() > 0.05));
+    assert!(!fixture.server.is_finished());
 }

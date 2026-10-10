@@ -7,7 +7,7 @@
 <p align="center"><strong>Your music. Your player. Your style.</strong></p>
 
 <p align="center">
-  <a href="https://github.com/COMF2222/fastcloud/releases/latest"><strong>Download for Windows</strong></a> ·
+  <a href="https://github.com/COMF2222/fastcloud/releases/latest"><strong>Download for Windows and Mac</strong></a> ·
   <a href="https://fastcloud.comf.workers.dev/en/">Website and demo</a> ·
   <a href="https://fastcloud.comf.workers.dev/en/changes">Release notes</a> ·
   <a href="README.md">Русский</a>
@@ -19,7 +19,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-242424" alt="MIT license"></a>
 </p>
 
-**Fastcloud is a free SoundCloud desktop client for Windows** with lyrics,
+**Fastcloud is a free SoundCloud desktop client for Windows and macOS** with lyrics,
 personal recommendations and a customisable interface. Listen to your
 favourite tracks, browse your library, import Spotify playlists and choose
 how your player looks — from the compact Airwave mini player to a full-screen
@@ -95,6 +95,8 @@ Performance profiles and a custom font help adapt the interface to your computer
 
 1. Open the [latest release](https://github.com/COMF2222/fastcloud/releases/latest)
    and download **`Fastcloud_…_x64-setup.exe`**, the full Windows x64 installer.
+   For Mac, choose **`Fastcloud_…_macos-aarch64.dmg`** (Apple Silicon) or
+   **`Fastcloud_…_macos-x86_64.dmg`** (Intel), open the DMG and drag the app to Applications.
 2. Install Fastcloud and sign in to your SoundCloud account in your browser.
 3. Open your library, choose a track or start My Wave.
 
@@ -127,8 +129,9 @@ it finds. [Read about the importer](docs/spotify-import.md).
 
 ### Which platforms are supported?
 
-Ready-to-use installers are available for **Windows x64**, with Russian and
-English UI. Linux and macOS packages are not currently released.
+Ready-to-use installers are available for **Windows x64** and **macOS 13+**
+(Apple Silicon and Intel), with Russian and English UI. Linux packages are not
+currently released. [Mac installation and testing](docs/macos.md).
 
 ## Help and contribute
 
