@@ -466,7 +466,13 @@ mod tests {
             // The body stays stalled until the aborted download closes TCP.
             socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n").await.unwrap();
             began.send(()).unwrap();
-            assert_eq!(socket.read(&mut request).await.unwrap(), 0);
+            // Aborting a response with an unread body may close TCP with a
+            // reset (notably on macOS) rather than a graceful EOF.
+            match socket.read(&mut request).await {
+                Ok(0) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+                other => panic!("Expected the cancelled download to close TCP, got {other:?}"),
+            }
         });
         let downloader = Arc::new(HlsDownloader::new(reqwest::Client::new(), Arc::new(super::super::cache::AudioCache::disabled())));
         let prefetch = downloader.prefetch("old-track".into(), vec![format!("{base}/segment")], &tokio::runtime::Handle::current());
