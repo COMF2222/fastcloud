@@ -16,9 +16,23 @@ HASHES = {
 }
 
 
+def prepare_bundle_config(root):
+    config = root / "desktop/src-tauri/tauri.private.conf.json"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(json.dumps({"bundle": {"resources": [
+        "resources/clap/worker-lite/fastcloud-clap/**/*",
+        "resources/clap/model/*.json",
+        "resources/clap/model/*.txt",
+        "resources/clap/model/onnx/audio_model_quantized.onnx",
+        "resources/clap/model/onnx/text_model_quantized.onnx",
+        "resources/clap/licenses/*.txt",
+    ]}}, indent=2) + "\n", encoding="utf-8")
+
+
 def main():
     if sys.platform != "darwin":
         raise SystemExit("Run this preparation on a macOS runner")
+    prepare_bundle_config(ROOT)
     build = Path(os.environ.get("RUNNER_TEMP", "/tmp")) / "fastcloud-clap-build"
     python = build / "venv/bin/python"
     if not python.is_file():

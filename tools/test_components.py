@@ -11,9 +11,31 @@ from prepare_components import prepare
 from release_manifest import manifests
 import stage_release_installer
 import stage_macos_release
+import prepare_macos_clap
 
 
 class ComponentsTest(unittest.TestCase):
+    def test_macos_preparation_creates_bundle_config_on_a_clean_checkout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            # Stop before installing dependencies; config creation must happen
+            # on every preparation run, including a cached worker run.
+            with patch.object(prepare_macos_clap, "ROOT", root), \
+                 patch.object(prepare_macos_clap.sys, "platform", "darwin"), \
+                 patch.object(prepare_macos_clap.subprocess, "run", side_effect=RuntimeError("stop before downloads")):
+                with self.assertRaisesRegex(RuntimeError, "stop before downloads"):
+                    prepare_macos_clap.main()
+            config = root / "desktop/src-tauri/tauri.private.conf.json"
+            resources = json.loads(config.read_text(encoding="utf-8"))["bundle"]["resources"]
+            self.assertEqual(resources, [
+                "resources/clap/worker-lite/fastcloud-clap/**/*",
+                "resources/clap/model/*.json",
+                "resources/clap/model/*.txt",
+                "resources/clap/model/onnx/audio_model_quantized.onnx",
+                "resources/clap/model/onnx/text_model_quantized.onnx",
+                "resources/clap/licenses/*.txt",
+            ])
+
     def resources(self, root):
         files = ["worker-lite/fastcloud-clap/fastcloud-clap.exe", "model/config.json",
                  "model/tokenizer.json", "model/onnx/audio_model_quantized.onnx",
