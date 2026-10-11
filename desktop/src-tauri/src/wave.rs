@@ -6,6 +6,31 @@ use std::{collections::{HashMap, HashSet}, path::PathBuf, sync::Arc, time::Durat
 
 const MAX_LIKES: usize = 500;
 const MAX_WAVE_TRACKS: usize = 40;
+const RECENT_DAYS: i64 = 28;
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct DailyFeedback {
+    day: i64,
+    plays: u32,
+    engaged: u32,
+    skips: u32,
+    dayparts: [u32; 4],
+    engaged_dayparts: [u32; 4],
+    skip_dayparts: [u32; 4],
+}
+
+enum FeedbackEvent { Play, Engage, Skip }
+
+#[derive(Default)]
+struct FeedbackStrength {
+    plays: f64,
+    engaged: f64,
+    skips: f64,
+    dayparts: [f64; 4],
+    engaged_dayparts: [f64; 4],
+    skip_dayparts: [f64; 4],
+}
 
 #[derive(Clone, Debug)]
 pub struct TrackIdentity {
@@ -136,6 +161,61 @@ struct Signal {
     skip_dayparts: [u32; 4],
     last_played: i64,
     audio_embedding: Option<Vec<i8>>,
+    recent: Vec<DailyFeedback>,
+}
+
+impl Signal {
+    fn record(&mut self, event: FeedbackEvent, period: usize, now: i64) {
+        let day = now.div_euclid(86_400);
+        self.recent.retain(|entry| entry.day <= day && entry.day > day - RECENT_DAYS);
+        let index = self.recent.iter().position(|entry| entry.day == day).unwrap_or_else(|| {
+            self.recent.push(DailyFeedback { day, ..Default::default() });
+            self.recent.len() - 1
+        });
+        let entry = &mut self.recent[index];
+        let (total, local, daily, daily_local) = match event {
+            FeedbackEvent::Play => (&mut self.plays, &mut self.dayparts[period], &mut entry.plays, &mut entry.dayparts[period]),
+            FeedbackEvent::Engage => (&mut self.engaged, &mut self.engaged_dayparts[period], &mut entry.engaged, &mut entry.engaged_dayparts[period]),
+            FeedbackEvent::Skip => (&mut self.skips, &mut self.skip_dayparts[period], &mut entry.skips, &mut entry.skip_dayparts[period]),
+        };
+        *total = total.saturating_add(1);
+        *local = local.saturating_add(1);
+        *daily = daily.saturating_add(1);
+        *daily_local = daily_local.saturating_add(1);
+        self.last_played = now;
+    }
+
+    fn strength(&self, now: i64) -> FeedbackStrength {
+        // Legacy counters have only a last-play date. Keep that approximation
+        // until daily feedback exists; a new listen must not rejuvenate every
+        // historical play. Undated likes remain a small cold-start prior.
+        let history_weight = if self.recent.is_empty() {
+            if self.last_played > 0 { 0.15 + 1.8 * freshness(self.last_played, now) } else { 0.35 }
+        } else { 0.15 };
+        let mut result = FeedbackStrength::default();
+        let mut add = |plays: u32, engaged: u32, skips: u32, dayparts: &[u32; 4], engaged_dayparts: &[u32; 4], skip_dayparts: &[u32; 4], weight: f64| {
+            result.plays += f64::from(plays.min(12)) * weight;
+            result.engaged += f64::from(engaged.min(12)) * weight;
+            result.skips += f64::from(skips.min(12)) * weight;
+            for period in 0..4 {
+                result.dayparts[period] += f64::from(dayparts[period].min(8)) * weight;
+                result.engaged_dayparts[period] += f64::from(engaged_dayparts[period].min(8)) * weight;
+                result.skip_dayparts[period] += f64::from(skip_dayparts[period].min(8)) * weight;
+            }
+        };
+        add(self.plays, self.engaged, self.skips, &self.dayparts, &self.engaged_dayparts, &self.skip_dayparts, history_weight);
+        let today = now.div_euclid(86_400);
+        for entry in &self.recent {
+            if entry.day > today || entry.day <= today - RECENT_DAYS { continue; }
+            let weight = 2.0 * 0.5_f64.powf((today - entry.day) as f64 / 7.0);
+            add(entry.plays, entry.engaged, entry.skips, &entry.dayparts, &entry.engaged_dayparts, &entry.skip_dayparts, weight);
+        }
+        result
+    }
+}
+
+fn freshness(timestamp: i64, now: i64) -> f64 {
+    0.5_f64.powf(now.saturating_sub(timestamp).max(0) as f64 / (7.0 * 86_400.0))
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -323,9 +403,7 @@ impl Engine {
                 seen.engagement_recorded = true;
                 let signal = inner.profile.signals.entry(track.id).or_default();
                 signal.track = Some(track);
-                signal.engaged = signal.engaged.saturating_add(1);
-                signal.engaged_dayparts[period] = signal.engaged_dayparts[period].saturating_add(1);
-                signal.last_played = chrono::Utc::now().timestamp();
+                signal.record(FeedbackEvent::Engage, period, chrono::Utc::now().timestamp());
                 self.save(&inner.profile);
             }
         }
@@ -423,15 +501,7 @@ fn finish(profile: &mut Profile, seen: Observation) -> bool {
     if !completed && !skipped { return false; }
     let signal = profile.signals.entry(seen.track.id).or_default();
     signal.track = Some(seen.track);
-    if completed {
-        signal.plays = signal.plays.saturating_add(1);
-        signal.dayparts[seen.daypart] = signal.dayparts[seen.daypart].saturating_add(1);
-        signal.last_played = chrono::Utc::now().timestamp();
-    } else {
-        signal.skips = signal.skips.saturating_add(1);
-        signal.skip_dayparts[seen.daypart] = signal.skip_dayparts[seen.daypart].saturating_add(1);
-        signal.last_played = chrono::Utc::now().timestamp();
-    }
+    signal.record(if completed { FeedbackEvent::Play } else { FeedbackEvent::Skip }, seen.daypart, chrono::Utc::now().timestamp());
     if profile.signals.len() > 4_000 {
         let oldest = profile.signals.iter().filter(|(_, s)| !s.disliked)
             .min_by_key(|(_, s)| s.last_played).map(|(id, _)| *id);
@@ -449,16 +519,17 @@ struct FeatureStats {
 }
 
 impl FeatureStats {
-    fn add(&mut self, signal: &Signal) {
-        self.total += (f64::from(signal.plays) + 1.0).ln() * 2.2
-            + (f64::from(signal.engaged) + 1.0).ln() * 0.6
-            - (f64::from(signal.skips) + 1.0).ln() * 2.8
+    fn add(&mut self, signal: &Signal, now: i64) {
+        let strength = signal.strength(now);
+        self.total += strength.plays.ln_1p() * 2.2
+            + strength.engaged.ln_1p() * 0.6
+            - strength.skips.ln_1p() * 2.8
             - if signal.disliked { 5.0 } else { 0.0 };
         self.count += 1;
         for period in 0..4 {
-            let local = (f64::from(signal.dayparts[period]) + 1.0).ln() * 3.0
-                + (f64::from(signal.engaged_dayparts[period]) + 1.0).ln() * 0.9
-                - (f64::from(signal.skip_dayparts[period]) + 1.0).ln() * 3.0;
+            let local = strength.dayparts[period].ln_1p() * 3.0
+                + strength.engaged_dayparts[period].ln_1p() * 0.9
+                - strength.skip_dayparts[period].ln_1p() * 3.0;
             if local != 0.0 {
                 self.by_daypart[period] += local;
                 self.daypart_count[period] += 1;
@@ -480,6 +551,7 @@ struct TasteModel {
     audio_by_daypart: [Vec<f32>; 4],
     audio_liked: Vec<(Vec<f32>, f32, [u32; 4])>,
     audio_avoided: Vec<(Vec<f32>, f32)>,
+    audio_dimensions: usize,
 }
 
 fn normalized(value: &str) -> String { value.trim().to_lowercase() }
@@ -495,23 +567,28 @@ fn normalize_vector(vector: &mut Vec<f32>) {
 
 impl TasteModel {
     fn from_profile(profile: &Profile) -> Self {
+        Self::from_profile_at(profile, chrono::Utc::now().timestamp())
+    }
+
+    fn from_profile_at(profile: &Profile, now: i64) -> Self {
         let mut model = Self::default();
         for signal in profile.signals.values() {
             let Some(track) = signal.track.as_ref() else { continue };
             let artist = normalized(track.artist());
-            if !artist.is_empty() { model.artists.entry(artist).or_default().add(signal); }
+            if !artist.is_empty() { model.artists.entry(artist).or_default().add(signal, now); }
             let genre = normalized(track.genre.as_deref().unwrap_or(""));
-            if !genre.is_empty() { model.genres.entry(genre).or_default().add(signal); }
+            if !genre.is_empty() { model.genres.entry(genre).or_default().add(signal, now); }
             if let Some(embedding) = signal.audio_embedding.as_ref() {
                 if model.audio_global.is_empty() {
                     model.audio_global.resize(embedding.len(), 0.0);
+                    model.audio_dimensions = embedding.len();
                     for local in &mut model.audio_by_daypart { local.resize(embedding.len(), 0.0); }
                 }
                 if embedding.len() != model.audio_global.len() { continue; }
-                let overall = signal.plays.min(8) as f32
-                    + signal.engaged.min(8) as f32 * 0.35
-                    - signal.skips.min(8) as f32 * 1.2
-                    - if signal.disliked { 5.0 } else { 0.0 };
+                let strength = signal.strength(now);
+                let overall = if signal.disliked { -5.0 } else { strength.plays.min(8.0) as f32
+                    + strength.engaged.min(8.0) as f32 * 0.35
+                    - strength.skips.min(8.0) as f32 * 1.2 };
                 let mut exemplar: Vec<f32> = embedding.iter().map(|&value| f32::from(value) / 127.0).collect();
                 normalize_vector(&mut exemplar);
                 if !exemplar.is_empty() {
@@ -525,9 +602,9 @@ impl TasteModel {
                     *target += overall * f32::from(component) / 127.0;
                 }
                 for period in 0..4 {
-                    let local = signal.dayparts[period].min(8) as f32 * 1.8
-                        + signal.engaged_dayparts[period].min(8) as f32 * 0.35
-                        - signal.skip_dayparts[period].min(8) as f32 * 1.5;
+                    let local = strength.dayparts[period].min(8.0) as f32 * 1.8
+                        + strength.engaged_dayparts[period].min(8.0) as f32 * 0.35
+                        - strength.skip_dayparts[period].min(8.0) as f32 * 1.5;
                     for (target, &component) in model.audio_by_daypart[period].iter_mut().zip(embedding) {
                         *target += local * f32::from(component) / 127.0;
                     }
@@ -550,14 +627,14 @@ impl TasteModel {
         (artist + genre * 0.7).clamp(-12.0, 12.0)
     }
 
-    fn has_audio_taste(&self) -> bool { !self.audio_global.is_empty() }
+    fn has_audio_taste(&self) -> bool { !self.audio_liked.is_empty() }
 
     fn acoustic_score(&self, vector: &[f32], period: usize) -> f64 {
-        if vector.len() != self.audio_global.len() { return 0.0; }
+        if vector.len() != self.audio_dimensions || vector.iter().any(|value| !value.is_finite()) { return 0.0; }
         let dot = |centroid: &[f32]| -> f64 { centroid.iter().zip(vector).map(|(a, b)| f64::from(a * b)).sum() };
         let liked = self.audio_liked.iter().map(|(sample, weight, dayparts)| {
             let local = 1.0 + (dayparts[period].min(5) as f64) * 0.12;
-            dot(sample) * local * (0.8 + f64::from(*weight) * 0.025)
+            dot(sample) * local * (0.2 + f64::from(*weight).min(8.0) * 0.1)
         }).fold(0.0_f64, f64::max);
         let avoided = self.audio_avoided.iter().map(|(sample, weight)|
             dot(sample) * (0.8 + f64::from(*weight) * 0.025))
@@ -580,7 +657,7 @@ fn recent_recording(track: &Track, profile: &Profile, now: i64) -> bool {
         }))
 }
 
-fn preference_score(track: &Track, profile: &Profile) -> f64 {
+fn taste_preference_score(track: &Track, profile: &Profile) -> f64 {
     let genre = normalized(track.genre.as_deref().unwrap_or(""));
     let genre_bonus = if profile.taste.genres.iter().any(|preferred| {
         let preferred = normalized(preferred);
@@ -589,15 +666,23 @@ fn preference_score(track: &Track, profile: &Profile) -> f64 {
     let familiar = profile.signals.get(&track.id).is_some_and(|s| s.engaged > 0 || s.last_played > 0);
     let discovery = f64::from(profile.taste.discovery);
     genre_bonus + if familiar { (0.5 - discovery) * 24.0 } else { (discovery - 0.5) * 24.0 }
+}
+
+fn preference_score(track: &Track, profile: &Profile) -> f64 {
+    taste_preference_score(track, profile)
         - if recent_recording(track, profile, chrono::Utc::now().timestamp()) { 150.0 } else { 0.0 }
 }
 
 fn seed_score(track: &Track, profile: &Profile, model: &TasteModel, period: usize) -> f64 {
-    let own = profile.signals.get(&track.id).map_or(0.0, |s|
-        s.plays.min(8) as f64 * 1.4 + s.dayparts[period].min(6) as f64 * 1.8
-        - s.skips.min(5) as f64 * 2.5);
+    let own = profile.signals.get(&track.id).map_or(0.0, |s| {
+        let strength = s.strength(chrono::Utc::now().timestamp());
+        strength.plays.min(8.0) * 1.4 + strength.engaged.min(8.0) * 0.7
+            + strength.dayparts[period].min(6.0) * 1.8 - strength.skips.min(5.0) * 2.5
+    });
     let last = profile.signals.get(&track.id).map_or(0, |signal| signal.last_played);
-    own + model.score(track, period) + preference_score(track, profile) - recency_penalty(last, chrono::Utc::now().timestamp())
+    // A recently enjoyed source can discover unheard music; repetition is
+    // rejected for the actual queue, not for that source's related tracks.
+    own + model.score(track, period) + taste_preference_score(track, profile) - recency_penalty(last, chrono::Utc::now().timestamp())
 }
 
 fn recency_penalty(last_played: i64, now: i64) -> f64 {
@@ -625,7 +710,9 @@ fn choose_seeds(likes: &[Track], profile: &Profile, model: &TasteModel, variatio
     if ranked.is_empty() { return Vec::new(); }
     // Move by four seeds each refill. A tiny score jitter kept returning the
     // same related page, so the station could not grow after the first batch.
-    let start = (variation as usize).wrapping_mul(4) % ranked.len().min(80);
+    let fresh_taste = ranked.iter().any(|(track, _)| profile.signals.get(&track.id)
+        .is_some_and(|signal| recently_enjoyed(signal, chrono::Utc::now().timestamp())));
+    let start = (variation as usize).wrapping_mul(4) % ranked.len().min(if fresh_taste { 12 } else { 80 });
     let mut seeds = Vec::new();
     let mut artists = HashSet::new();
     for offset in 0..ranked.len() {
@@ -649,29 +736,42 @@ fn choose_seeds(likes: &[Track], profile: &Profile, model: &TasteModel, variatio
 fn engaged_discoveries(profile: &Profile, likes: &HashSet<u64>) -> Vec<Track> {
     let now = chrono::Utc::now().timestamp();
     let mut candidates: Vec<_> = profile.signals.iter()
-        .filter(|(id, signal)| !likes.contains(id) && !signal.disliked
-            && (signal.plays > signal.skips
-                || signal.engaged >= 2 && signal.engaged > signal.skips.saturating_mul(2)))
+        .filter(|(id, signal)| {
+            let strength = signal.strength(now);
+            !likes.contains(id) && !signal.disliked && (strength.plays > strength.skips
+                || strength.engaged >= 0.7 && strength.engaged > strength.skips * 2.0)
+        })
         .filter_map(|(_, signal)| signal.track.as_ref()
             .filter(|track| !track.is_blocked() && !track.is_snippet())
             .map(|track| (track.clone(), signal)))
         .collect();
     candidates.sort_by(|(_, a), (_, b)| {
         let score = |signal: &Signal| {
-            signal.plays.min(8) as i64 * 3 + signal.engaged.min(8) as i64
-                - signal.skips.min(8) as i64 * 4
-                + if now - signal.last_played < 7 * 86_400 { 3 } else { 0 }
+            let strength = signal.strength(now);
+            strength.plays.min(8.0) * 3.0 + strength.engaged.min(8.0)
+                - strength.skips.min(8.0) * 4.0
         };
-        score(b).cmp(&score(a))
+        score(b).total_cmp(&score(a)).then_with(|| a.track.as_ref().map(|t| t.id).cmp(&b.track.as_ref().map(|t| t.id)))
     });
     candidates.into_iter().take(80).map(|(track, _)| track).collect()
+}
+
+fn recently_enjoyed(signal: &Signal, now: i64) -> bool {
+    if signal.disliked || signal.last_played <= 0 || now.saturating_sub(signal.last_played) > RECENT_DAYS * 86_400 { return false; }
+    let strength = signal.strength(now);
+    strength.plays + strength.engaged * 0.35 > strength.skips * 1.2
 }
 
 fn wave_seeds(likes: &[Track], profile: &Profile, model: &TasteModel, variation: u32,
     period: usize, avoid: &HashSet<u64>, avoid_identities: &[TrackIdentity]) -> Vec<Track> {
     let liked = choose_seeds(likes, profile, model, variation, period, avoid, avoid_identities);
     let liked_ids = likes.iter().map(|track| track.id).collect();
-    let discoveries = engaged_discoveries(profile, &liked_ids);
+    let mut discoveries = engaged_discoveries(profile, &liked_ids);
+    let now = chrono::Utc::now().timestamp();
+    let fresh: Vec<_> = discoveries.iter().filter(|track| profile.signals.get(&track.id)
+        .is_some_and(|signal| recently_enjoyed(signal, now))).cloned().collect();
+    let fresh_taste = !fresh.is_empty();
+    if fresh_taste { discoveries = fresh; }
     let discovered = choose_seeds(&discoveries, profile, model, variation.wrapping_add(1),
         period, avoid, avoid_identities);
     let mut seeds = Vec::<Track>::new();
@@ -682,13 +782,71 @@ fn wave_seeds(likes: &[Track], profile: &Profile, model: &TasteModel, variation:
             .any(|key| identity.performer_keys.contains(key))) { return; }
         seeds.push(track.clone());
     };
-    for track in liked.iter().take(2) { append(track, true); }
-    for track in discovered.iter().take(2) { append(track, true); }
+    if fresh_taste {
+        for track in discovered.iter().take(3) { append(track, true); }
+        for track in liked.iter().take(1) { append(track, true); }
+    } else {
+        for track in liked.iter().take(2) { append(track, true); }
+        for track in discovered.iter().take(2) { append(track, true); }
+    }
     for track in discovered.iter().chain(liked.iter()) {
         append(track, false);
     }
     seeds.truncate(4);
     seeds
+}
+
+fn acoustic_seed_candidates(profile: &Profile, model: &TasteModel, existing: &[Track], period: usize, variation: u32) -> Vec<Track> {
+    if !model.has_audio_taste() { return Vec::new(); }
+    let now = chrono::Utc::now().timestamp();
+    let dislikes = DislikeFilter::from_profile(profile);
+    let mut candidates: Vec<_> = profile.signals.values().filter_map(|signal| {
+        let track = signal.track.as_ref()?;
+        let embedding = signal.audio_embedding.as_ref()?;
+        let strength = signal.strength(now);
+        if track.is_blocked() || track.is_snippet() || dislikes.rejects(track)
+            || strength.plays + strength.engaged * 0.35 <= strength.skips * 1.2
+            || existing.iter().any(|seed| same_recording(&track_identity(seed), &track_identity(track))) { return None; }
+        let mut vector: Vec<_> = embedding.iter().map(|&value| f32::from(value) / 127.0).collect();
+        normalize_vector(&mut vector);
+        let similarity = model.acoustic_score(&vector, period);
+        (similarity > 1.0).then_some((track, similarity))
+    }).collect();
+    candidates.sort_by(|(a, left), (b, right)| right.total_cmp(left).then(a.id.cmp(&b.id)));
+    let mut result = Vec::new();
+    let start = variation as usize % candidates.len().min(8).max(1);
+    for offset in 0..candidates.len() {
+        let track = candidates[(start + offset) % candidates.len()].0;
+        let identity = track_identity(track);
+        if existing.iter().chain(result.iter()).any(|seed| {
+            let previous = track_identity(seed);
+            same_recording(&previous, &identity) || previous.performer_keys.iter().any(|key| identity.performer_keys.contains(key))
+        }) { continue; }
+        result.push(track.clone());
+        if result.len() == 2 { break; }
+    }
+    result
+}
+
+fn balanced_candidates(pages: &[Vec<Track>]) -> Vec<&Track> {
+    let mut result = Vec::new();
+    let mut seen = HashSet::new();
+    for index in 0..pages.iter().map(Vec::len).max().unwrap_or(0) {
+        for page in pages {
+            if let Some(track) = page.get(index) && seen.insert(track.id) { result.push(track); }
+        }
+    }
+    result
+}
+
+fn candidate_acoustic_score(track: &Track, profile: &Profile, model: &TasteModel, text_vectors: &HashMap<u64, Vec<f32>>, period: usize) -> f64 {
+    if let Some(embedding) = profile.signals.get(&track.id).and_then(|signal| signal.audio_embedding.as_ref()) {
+        let mut vector: Vec<_> = embedding.iter().map(|&value| f32::from(value) / 127.0).collect();
+        normalize_vector(&mut vector);
+        if vector.len() == model.audio_dimensions { return model.acoustic_score(&vector, period); }
+    }
+    // Metadata is only an estimate of sound; a real audio embedding wins.
+    text_vectors.get(&track.id).map_or(0.0, |vector| model.acoustic_score(vector, period) * 0.35)
 }
 
 async fn related(client: Arc<api::ApiClient>, seed_id: u64) -> Vec<Track> {
@@ -800,15 +958,9 @@ fn assemble(seeds: &[Track], related: Vec<Vec<Track>>, likes: &HashSet<u64>, kno
                 || dislikes.rejects(&candidate) { continue; }
             let score = 8.0 + preference_score(&candidate, profile) + source_score * 0.35
                 + model.score(&candidate, period) - index as f64 * 0.04
-                + text_vectors.get(&candidate.id).map_or(0.0, |vector| model.acoustic_score(vector, period))
-                + profile.signals.get(&candidate.id)
-                    .and_then(|signal| signal.audio_embedding.as_ref())
-                    .map_or(0.0, |vector| {
-                        let values: Vec<f32> = vector.iter().map(|&value| f32::from(value) / 127.0).collect();
-                        model.acoustic_score(&values, period)
-                    })
+                + candidate_acoustic_score(&candidate, profile, model, text_vectors, period)
                 - profile.signals.get(&candidate.id).map_or(0.0, |s| {
-                    s.skips as f64 * 3.0 + recency_penalty(s.last_played, chrono::Utc::now().timestamp())
+                    s.strength(chrono::Utc::now().timestamp()).skips * 3.0 + recency_penalty(s.last_played, chrono::Utc::now().timestamp())
                 })
                 - profile.recent_starts.iter().rev().take(8)
                     .filter(|previous| same_recording(&track_identity(previous), &identity)).count() as f64 * 12.0;
@@ -882,15 +1034,22 @@ pub async fn generate(client: Arc<api::ApiClient>, engine: &Engine, liked_tracks
     }
     let period = current_daypart();
     let model = TasteModel::from_profile(&profile);
-    let seeds = wave_seeds(&likes, &profile, &model, variation, period, avoid, avoid_identities);
+    let mut seeds = wave_seeds(&likes, &profile, &model, variation, period, avoid, avoid_identities);
     if seeds.is_empty() { return Err("No new playable tracks are available for My Wave".into()); }
-    let (a, b, c, d) = tokio::join!(
-        related(client.clone(), seeds[0].id),
-        async { if let Some(t) = seeds.get(1) { related(client.clone(), t.id).await } else { Vec::new() } },
-        async { if let Some(t) = seeds.get(2) { related(client.clone(), t.id).await } else { Vec::new() } },
-        async { if let Some(t) = seeds.get(3) { related(client.clone(), t.id).await } else { Vec::new() } },
-    );
-    let related = vec![a, b, c, d];
+    seeds.extend(acoustic_seed_candidates(&profile, &model, &seeds, period, variation));
+    let mut searches = tokio::task::JoinSet::new();
+    for (index, seed) in seeds.iter().enumerate() {
+        let client = client.clone();
+        let id = seed.id;
+        searches.spawn(async move { (index, related(client, id).await) });
+    }
+    let mut related = vec![Vec::new(); seeds.len()];
+    while let Some(result) = searches.join_next().await {
+        match result {
+            Ok((index, tracks)) => related[index] = tracks,
+            Err(error) => log::warn!("My Wave related search failed: {error}"),
+        }
+    }
     let mut text_vectors = HashMap::new();
     if model.has_audio_taste() && crate::clap::available() {
         let mut candidate_ids = Vec::new();
@@ -898,14 +1057,17 @@ pub async fn generate(client: Arc<api::ApiClient>, engine: &Engine, liked_tracks
         let mut unique = HashSet::new();
         {
             let mut cache = engine.text_cache.lock();
-            for track in related.iter().flatten() {
+            let dislikes = DislikeFilter::from_profile(&profile);
+            for track in balanced_candidates(&related) {
+                if track.is_blocked() || track.is_snippet() || dislikes.rejects(track) { continue; }
                 if !unique.insert(track.id) { continue; }
                 if let Some(vector) = cache.vectors.get(&track.id) {
                     text_vectors.insert(track.id, vector.clone());
-                } else if prompts.len() < 24 && cache.pending.insert(track.id) {
+                } else if prompts.len() < 48 && cache.pending.len() < 96 && cache.pending.insert(track.id) {
                     candidate_ids.push(track.id);
-                    prompts.push(format!("A music track titled {} by {}. Genre: {}.",
-                        track.title, track.artist(), track.genre.as_deref().unwrap_or("unknown")));
+                    let tags: String = track.tag_list.as_deref().unwrap_or("").chars().take(180).collect();
+                    prompts.push(format!("Music in the {} genre. Style tags: {}. Track: {} by {}.",
+                        track.genre.as_deref().unwrap_or("unknown"), tags, track.title, track.artist()));
                 }
             }
         }
@@ -969,6 +1131,167 @@ pub async fn generate(client: Arc<api::ApiClient>, engine: &Engine, liked_tracks
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_disliked_sound_is_negative_even_after_many_previous_listens() {
+        let tracks = crate::demo::demo_tracks();
+        let now = chrono::Utc::now().timestamp();
+        let mut profile = Profile::default();
+        profile.signals.insert(tracks[0].id, Signal { track: Some(tracks[0].clone()), plays: 1, last_played: now,
+            audio_embedding: Some(vec![127, 0]), ..Default::default() });
+        profile.signals.insert(tracks[1].id, Signal { track: Some(tracks[1].clone()), plays: 80, disliked: true, last_played: now,
+            audio_embedding: Some(vec![0, 127]), ..Default::default() });
+        let model = TasteModel::from_profile_at(&profile, now);
+        assert!(model.acoustic_score(&[1.0, 0.0], 1) > model.acoustic_score(&[0.0, 1.0], 1));
+        assert!(model.acoustic_score(&[0.0, 1.0], 1) < 0.0);
+    }
+
+    #[test]
+    fn daily_feedback_fades_over_weeks_and_keeps_only_twenty_eight_days() {
+        let now = 1_800_000_000;
+        let mut signal = Signal::default();
+        signal.record(FeedbackEvent::Play, 1, now);
+        let fresh = signal.strength(now).plays;
+        assert!(fresh > signal.strength(now + 7 * 86_400).plays);
+        assert!(signal.strength(now + 7 * 86_400).plays > signal.strength(now + 29 * 86_400).plays);
+        for day in 1..=60 { signal.record(FeedbackEvent::Play, 1, now + day * 86_400); }
+        assert_eq!(signal.recent.len(), RECENT_DAYS as usize);
+        assert_eq!(signal.plays, 61);
+        assert!(signal.strength(now + 120 * 86_400).plays > 0.0);
+    }
+
+    #[test]
+    fn one_new_listen_does_not_rejuvenate_eighty_historical_plays() {
+        let now = 1_800_000_000;
+        let mut legacy: Signal = serde_json::from_value(serde_json::json!({"plays": 80, "last_played": now - 180 * 86_400})).unwrap();
+        legacy.record(FeedbackEvent::Play, 1, now);
+        let mut fresh = Signal::default();
+        for _ in 0..4 { fresh.record(FeedbackEvent::Play, 1, now); }
+        assert_eq!(legacy.plays, 81);
+        assert_eq!(legacy.recent[0].plays, 1);
+        assert!(fresh.strength(now).plays > legacy.strength(now).plays);
+    }
+
+    #[test]
+    fn recent_skips_override_old_positive_counters_but_never_expire_a_dislike() {
+        let now = chrono::Utc::now().timestamp();
+        let mut signal = Signal { plays: 80, last_played: now - 180 * 86_400, ..Default::default() };
+        for _ in 0..4 { signal.record(FeedbackEvent::Skip, 1, now); }
+        assert!(!recently_enjoyed(&signal, now));
+        let track = crate::demo::demo_tracks().remove(0);
+        signal.track = Some(track.clone());
+        signal.disliked = true;
+        let mut profile = Profile::default();
+        profile.signals.insert(track.id, signal);
+        assert!(DislikeFilter::from_profile(&profile).rejects(&track));
+        assert!(!recently_enjoyed(&profile.signals[&track.id], now + 365 * 86_400));
+    }
+
+    #[test]
+    fn daily_listening_and_audio_taste_survive_a_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("wave.json");
+        let engine = Engine::new(path.clone());
+        let track = crate::demo::demo_tracks().remove(0);
+        engine.observe(Some(&track), 0, 120_000, true, false);
+        for second in 1..=90 { engine.observe(Some(&track), second * 1_000, 120_000, true, false); }
+        engine.observe(None, 0, 0, false, false);
+        engine.finish_audio_analysis(&track, Ok((0..256).map(|index| if index == 0 { 1.0 } else { 0.0 }).collect()));
+        let restarted = Engine::new(path);
+        let profile = restarted.snapshot();
+        let signal = &profile.signals[&track.id];
+        assert_eq!(signal.recent[0].plays, 1);
+        assert_eq!(signal.recent[0].engaged, 1);
+        assert_eq!(signal.recent[0].skips, 0);
+        assert!(TasteModel::from_profile(&profile).has_audio_taste());
+    }
+
+    #[test]
+    fn sound_matching_expands_sources_to_other_artists_without_using_rejected_tracks() {
+        let tracks = crate::demo::demo_tracks();
+        let now = chrono::Utc::now().timestamp();
+        let seed = Track { metadata_artist: Some("Anchor".into()), ..tracks[0].clone() };
+        let neighbor = Track { metadata_artist: Some("Other artist".into()), genre: Some("Other genre".into()), ..tracks[1].clone() };
+        let rejected = Track { metadata_artist: Some("Rejected".into()), ..tracks[2].clone() };
+        let mut profile = Profile::default();
+        profile.signals.insert(seed.id, Signal { track: Some(seed.clone()), plays: 4, last_played: now, audio_embedding: Some(vec![127, 0]), ..Default::default() });
+        profile.signals.insert(neighbor.id, Signal { track: Some(neighbor.clone()), plays: 1, audio_embedding: Some(vec![127, 0]), ..Default::default() });
+        profile.signals.insert(rejected.id, Signal { track: Some(rejected.clone()), disliked: true, plays: 4, ..Default::default() });
+        let model = TasteModel::from_profile(&profile);
+        let sources = acoustic_seed_candidates(&profile, &model, &[seed], 1, 0);
+        assert_eq!(sources.iter().map(|track| track.id).collect::<Vec<_>>(), vec![neighbor.id]);
+        assert!(acoustic_seed_candidates(&profile, &TasteModel::default(), &[], 1, 0).is_empty());
+    }
+
+    #[test]
+    fn actual_audio_overrides_metadata_estimates_and_embedding_magnitude() {
+        let tracks = crate::demo::demo_tracks();
+        let mut profile = Profile::default();
+        for (track, amplitude) in [(&tracks[0], 127), (&tracks[1], 1)] {
+            profile.signals.insert(track.id, Signal { track: Some(track.clone()), plays: 4,
+                audio_embedding: Some(vec![amplitude, 0]), ..Default::default() });
+        }
+        let model = TasteModel::from_profile(&profile);
+        let text = HashMap::from([(tracks[0].id, vec![0.0, 1.0])]);
+        let strong = candidate_acoustic_score(&tracks[0], &profile, &model, &text, 1);
+        let weak = candidate_acoustic_score(&tracks[1], &profile, &model, &text, 1);
+        assert!((strong - weak).abs() < 0.0001);
+        assert!((strong - model.acoustic_score(&[1.0, 0.0], 1)).abs() < 0.0001);
+    }
+
+    #[test]
+    fn candidate_analysis_covers_all_sources_instead_of_only_the_first_page() {
+        let tracks = crate::demo::demo_tracks();
+        let pages = vec![tracks[..5].to_vec(), vec![], tracks[5..8].to_vec(), vec![tracks[0].clone(), tracks[8].clone()]];
+        let analyzed: Vec<_> = balanced_candidates(&pages).into_iter().take(4).map(|track| track.id).collect();
+        assert_eq!(analyzed, [tracks[0].id, tracks[5].id, tracks[1].id, tracks[6].id]);
+        let all: Vec<_> = balanced_candidates(&pages).into_iter().map(|track| track.id).collect();
+        assert_eq!(all.len(), all.iter().collect::<HashSet<_>>().len());
+    }
+
+    #[test]
+    fn fresh_listening_outweighs_larger_preferences_from_months_ago() {
+        let tracks = crate::demo::demo_tracks();
+        let old = Track { metadata_artist: Some("Old favorite".into()), genre: Some("Old genre".into()), ..tracks[0].clone() };
+        let fresh = Track { metadata_artist: Some("New favorite".into()), genre: Some("New genre".into()), ..tracks[1].clone() };
+        let now = chrono::Utc::now().timestamp();
+        let mut profile = Profile::default();
+        profile.signals.insert(old.id, Signal { track: Some(old.clone()), plays: 80, last_played: now - 180 * 86_400, ..Default::default() });
+        profile.signals.insert(fresh.id, Signal { track: Some(fresh.clone()), plays: 4, last_played: now, ..Default::default() });
+        let model = TasteModel::from_profile(&profile);
+        assert!(model.score(&fresh, 1) > model.score(&old, 1));
+    }
+
+    #[test]
+    fn acoustic_taste_follows_fresh_sound_instead_of_an_old_larger_counter() {
+        let tracks = crate::demo::demo_tracks();
+        let now = chrono::Utc::now().timestamp();
+        let mut profile = Profile::default();
+        profile.signals.insert(tracks[0].id, Signal { track: Some(tracks[0].clone()), plays: 80,
+            last_played: now - 180 * 86_400, audio_embedding: Some(vec![127, 0]), ..Default::default() });
+        profile.signals.insert(tracks[1].id, Signal { track: Some(tracks[1].clone()), plays: 4,
+            last_played: now, audio_embedding: Some(vec![0, 127]), ..Default::default() });
+        let model = TasteModel::from_profile(&profile);
+        assert!(model.acoustic_score(&[0.0, 1.0], 1) > model.acoustic_score(&[1.0, 0.0], 1));
+    }
+
+    #[test]
+    fn recent_discoveries_supply_three_seeds_instead_of_always_splitting_with_likes() {
+        let tracks = crate::demo::demo_tracks();
+        let now = chrono::Utc::now().timestamp();
+        let mut profile = Profile::default();
+        let likes: Vec<_> = tracks[..2].iter().enumerate().map(|(i, track)| Track {
+            metadata_artist: Some(format!("Liked {i}")), ..track.clone()
+        }).collect();
+        let recent: Vec<_> = tracks[2..5].iter().enumerate().map(|(i, track)| Track {
+            metadata_artist: Some(format!("Recent {i}")), ..track.clone()
+        }).collect();
+        for track in &recent {
+            profile.signals.insert(track.id, Signal { track: Some(track.clone()), plays: 3, last_played: now, ..Default::default() });
+        }
+        let seeds = wave_seeds(&likes, &profile, &TasteModel::from_profile(&profile), 0, 1, &HashSet::new(), &[]);
+        assert_eq!(seeds.iter().filter(|seed| recent.iter().any(|track| track.id == seed.id)).count(), 3);
+    }
 
     #[test]
     fn recent_recordings_include_reuploads_but_not_other_artists() {

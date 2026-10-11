@@ -2,6 +2,27 @@
   "schema": 1,
   "releases": [
     {
+      "version": "0.4.12",
+      "ru": {
+        "title": "Моя волна учитывает свежий вкус",
+        "changes": [
+          "Недавние прослушивания и пропуски сильнее влияют на рекомендации. Влияние давних предпочтений постепенно уменьшается, а любимая музыка остаётся в основе вкуса.",
+          "Волна чаще ищет новую музыку от недавно понравившихся треков, даже если они не добавлены в лайки.",
+          "Расширен подбор по звучанию с использованием сохранённого аудиоанализа. Кандидаты из разных подборок рассматриваются равномернее.",
+          "Новая история вкуса сохраняется между запусками. Дизлайки не истекают со временем."
+        ]
+      },
+      "en": {
+        "title": "My Wave follows your recent taste",
+        "changes": [
+          "Recent listening and skips have more influence on recommendations. Older preferences gradually lose weight while favorite music remains part of your taste.",
+          "My Wave more often discovers music from recently enjoyed tracks, even when they are not in your likes.",
+          "Expanded sound-based discovery using saved audio analysis. Candidates across source lists receive more balanced consideration.",
+          "New taste history persists across restarts. Dislikes do not expire."
+        ]
+      }
+    },
+    {
       "version": "0.4.11",
       "ru": {
         "title": "Отображение анимированных обоев",
