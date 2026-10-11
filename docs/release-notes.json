@@ -2,6 +2,23 @@
   "schema": 1,
   "releases": [
     {
+      "version": "0.4.11",
+      "ru": {
+        "title": "Отображение анимированных обоев",
+        "changes": [
+          "Обновлён вывод GIF и анимированных WebP в основном окне и полноэкранном плеере. При размытии 0 фоновое изображение выводится без фильтра.",
+          "Исправлено отображение режима «Только фон» при открытом полноэкранном плеере."
+        ]
+      },
+      "en": {
+        "title": "Animated wallpaper rendering",
+        "changes": [
+          "Updated GIF and animated WebP rendering in the main window and full-screen player. With blur set to 0, the wallpaper is rendered without a filter.",
+          "Fixed wallpaper-only mode while the full-screen player is open."
+        ]
+      }
+    },
+    {
       "version": "0.4.10",
       "ru": {
         "title": "Полные записи, новое окно и macOS",

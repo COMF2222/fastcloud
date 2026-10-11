@@ -176,8 +176,8 @@ html[data-theme="light"] { --heading-rgb: 249 250 245; }
 .color-picker-hex-label { display: flex; align-items: center; gap: 10px; margin-top: 15px; font-size: calc(11px * var(--interface-text-scale)); color: var(--text-muted); }
 .color-picker-hex-label input { flex: 1; width: 100%; min-width: 0; padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-raised); color: var(--text); font-size: calc(12px * var(--interface-text-scale)); font-variant-numeric: tabular-nums; }
 /* Keep the player and pages mounted while showing only the existing wallpaper. */
-.app-shell.wallpaper-only > :not(.wallpaper-restore),
-.app-shell.wallpaper-only > :not(.wallpaper-restore) *,
+.app-shell.wallpaper-only > :not(.wallpaper-restore):not(.wallpaper-layer),
+.app-shell.wallpaper-only > :not(.wallpaper-restore):not(.wallpaper-layer) *,
 body.wallpaper-only > :not(#root),
 body.wallpaper-only > :not(#root) * {
   visibility: hidden !important;

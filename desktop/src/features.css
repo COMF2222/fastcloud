@@ -198,7 +198,7 @@ html[data-theme="light"] .app-shell.has-wallpaper .page-intro, html[data-theme="
 .now-playing.has-user-wallpaper .now-playing-wallpaper { inset: calc(var(--wallpaper-blur, 0px) * -2); }
 html[data-quality="eco"] .now-playing.has-user-wallpaper .now-playing-wallpaper { inset: 0; }
 .now-playing.has-user-wallpaper .now-playing-backdrop img { filter: blur(var(--wallpaper-blur, 0px)); opacity: 1; transform: none; }
-.app-shell.animated-wallpaper:has(.now-playing)::before { background-image: none; }
+.app-shell.has-wallpaper:not(.wallpaper-only):has(.now-playing) > .wallpaper-layer { visibility: hidden; }
 html[data-quality="eco"] .now-playing.has-user-wallpaper .now-playing-backdrop img { filter: none; opacity: 1; }
 .now-playing.has-user-wallpaper .now-playing-shade { background: radial-gradient(ellipse at 53% 45%, transparent 25%, rgb(0 0 0 / var(--wallpaper-opacity, .25)) 100%), linear-gradient(rgb(0 0 0 / var(--wallpaper-dim, 0)), rgb(0 0 0 / var(--wallpaper-dim, 0))); }
 .now-playing-shade { background: rgb(5 6 11 / .8); }
