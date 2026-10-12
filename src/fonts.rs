@@ -8,7 +8,7 @@
 //!
 //! soundcloud.com itself sets `--font-main: "Söhne"` — a commercial face from
 //! Klim Type Foundry, which cannot be bundled here. A user who owns it can
-//! point Fastcloud at the file
+//! point Veirune at the file
 //! ([`crate::config::Settings::interface_font`]), and it then leads the chain;
 //! see [`custom_face`].
 //!
@@ -518,7 +518,7 @@ mod tests {
         ] {
             let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
                 let galley = ui.painter().layout_no_wrap(
-                    "Fastcloud Тест…".to_owned(),
+                    "Veirune Тест…".to_owned(),
                     egui::FontId::new(14.0, family.clone()),
                     egui::Color32::WHITE,
                 );
@@ -542,7 +542,7 @@ mod tests {
         install(&ctx, Some(INTER_LATIN_400.to_vec()));
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
             let galley = ui.painter().layout_no_wrap(
-                "Fastcloud Тест…".to_owned(),
+                "Veirune Тест…".to_owned(),
                 egui::FontId::new(14.0, egui::FontFamily::Name(FAMILY_BOLD.into())),
                 egui::Color32::WHITE,
             );

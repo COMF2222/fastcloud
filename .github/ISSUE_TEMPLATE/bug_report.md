@@ -1,6 +1,6 @@
 ---
 name: Bug report / Ошибка
-about: Describe an issue in Fastcloud / Сообщить об ошибке
+about: Describe an issue in Veirune / Сообщить об ошибке
 title: ''
 labels: ''
 assignees: ''

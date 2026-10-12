@@ -1737,7 +1737,7 @@ fn uploads_tab(app: &mut App, ui: &mut egui::Ui) {
         .show(ui, |ui| {
             ui.label(Type::H4.rich("Upload to SoundCloud", app.theme.text));
             ui.label(Type::CAPTION.rich(
-                "Drop an audio file on this window or paste its full path. The file streams directly to SoundCloud and is not copied into Fastcloud.",
+                "Drop an audio file on this window or paste its full path. The file streams directly to SoundCloud and is not copied into Veirune.",
                 app.theme.text_dim,
             ));
             ui.add_space(Metrics::SP_1);
@@ -2573,7 +2573,7 @@ fn stations_tab(app: &mut App, ui: &mut egui::Ui) {
         ui.vertical_centered(|ui| {
             ui.label(Type::H2.rich("No saved stations", app.theme.text));
             ui.label(Type::BODY.rich(
-                "Start a station from a track's menu. FastCloud will not invent library items.",
+                "Start a station from a track's menu. Veirune will not invent library items.",
                 app.theme.text_dim,
             ));
         });
@@ -4517,7 +4517,7 @@ fn vibe_search(app: &mut App, ui: &mut egui::Ui, query: &str) {
     }
     let mut rows = super::vibe::rank(&profile, candidates);
 
-    // Fastcloud has no Qdrant endpoint. Keep the donor's Vibe-only surface,
+    // Veirune has no Qdrant endpoint. Keep the donor's Vibe-only surface,
     // but use lexical SoundCloud results as a graceful fallback for unknown
     // descriptions rather than showing a dead page.
     if rows.is_empty() && !loading {
@@ -5111,7 +5111,7 @@ fn settings_navigation(app: &App, ui: &mut egui::Ui) -> SettingsSection {
                     app.settings.language.text("SETTINGS", "НАСТРОЙКИ"),
                     app.theme.accent,
                 ));
-                ui.label(Type::CAPTION.rich("Fastcloud", app.theme.text_dim));
+                ui.label(Type::CAPTION.rich("Veirune", app.theme.text_dim));
             });
         });
         ui.add_space(Metrics::SP_1);
@@ -5254,7 +5254,7 @@ fn settings(app: &mut App, ui: &mut egui::Ui) {
     let language = app.settings.language;
     ui.label(Type::H4.rich(language.text("Startup", "Запуск"), app.theme.text));
     ui.label(Type::CAPTION.rich(
-        language.text("Choose the page Fastcloud opens after launch.", "Выберите страницу, которая откроется при запуске Fastcloud."),
+        language.text("Choose the page Veirune opens after launch.", "Выберите страницу, которая откроется при запуске Veirune."),
         app.theme.text_dim,
     ));
     let previous_startup = app.settings.startup_page;
@@ -5364,7 +5364,7 @@ fn settings(app: &mut App, ui: &mut egui::Ui) {
         }
         if ui.button(language.text("Choose file…", "Выбрать файл…")).clicked()
             && let Some(path) = rfd::FileDialog::new()
-                .set_title("Choose a Fastcloud background")
+                .set_title("Choose a Veirune background")
                 .add_filter("Image", &["png", "jpg", "jpeg", "webp"])
                 .pick_file()
         {
@@ -5622,7 +5622,7 @@ fn settings(app: &mut App, ui: &mut egui::Ui) {
                     app.mini
                         .as_ref()
                         .map(|m| m.lock().skin_name().to_owned())
-                        .unwrap_or_else(|| "Fastcloud (built in)".to_owned())
+                        .unwrap_or_else(|| "Veirune (built in)".to_owned())
                 });
             ui.label(Type::CAPTION.rich(&format!("{}: {name}", language.text("Skin", "Скин")), app.theme.text_dim));
             if app.settings.winamp_skin.is_some() && ui.button(language.text("Use built-in", "Встроенный скин")).clicked() {
@@ -5648,7 +5648,7 @@ fn settings(app: &mut App, ui: &mut egui::Ui) {
             }
         });
         ui.label(Type::CAPTION.rich(
-            language.text("Download a classic Winamp 2 skin (.wsz or .zip), then click Install skin…. You can also drag the file anywhere onto Fastcloud. The installed copy is kept by the app and restored on the next launch.", "Скачайте скин Winamp 2 (.wsz или .zip) и нажмите «Установить скин». Также файл можно перетащить в окно Fastcloud. Скин сохранится и загрузится при следующем запуске."),
+            language.text("Download a classic Winamp 2 skin (.wsz or .zip), then click Install skin…. You can also drag the file anywhere onto Veirune. The installed copy is kept by the app and restored on the next launch.", "Скачайте скин Winamp 2 (.wsz или .zip) и нажмите «Установить скин». Также файл можно перетащить в окно Veirune. Скин сохранится и загрузится при следующем запуске."),
             app.theme.text_dim,
         ));
     }
@@ -5725,7 +5725,7 @@ fn settings(app: &mut App, ui: &mut egui::Ui) {
     });
     ui.collapsing(language.text("How to get a Yandex OAuth token", "Как получить токен Яндекс OAuth"), |ui| {
         ui.label(Type::CAPTION.rich(
-            "Register your own application in Yandex OAuth, request the Yandex Music permission if it is offered for your account, and set the verification-code redirect URI. Then use Yandex's manual-token flow and paste only the access_token value above. Fastcloud never saves it. Do not paste your password or use third-party token generators. Yandex Music has no stable public API, so this import may stop working when Yandex changes its private endpoints.",
+            "Register your own application in Yandex OAuth, request the Yandex Music permission if it is offered for your account, and set the verification-code redirect URI. Then use Yandex's manual-token flow and paste only the access_token value above. Veirune never saves it. Do not paste your password or use third-party token generators. Yandex Music has no stable public API, so this import may stop working when Yandex changes its private endpoints.",
             app.theme.text_dim,
         ));
         ui.horizontal_wrapped(|ui| {
@@ -5845,7 +5845,7 @@ fn settings(app: &mut App, ui: &mut egui::Ui) {
     settings_section_card(app, ui, section_label, |app, ui| {
     ui.label(Type::CAPTION.rich(
         &format!(
-            "Fastcloud {} · {}",
+            "Veirune {} · {}",
             app.version_build,
             if app.demo {
                 language.text("demo library", "демо-библиотека")
@@ -5913,7 +5913,7 @@ fn interface_font_row(app: &mut App, ui: &mut egui::Ui) {
 /// Account: the SoundCloud connection, signing in, and the app registration
 /// this install uses.
 ///
-/// Fastcloud ships no credentials of its own — SoundCloud treats every client
+/// Veirune ships no credentials of its own — SoundCloud treats every client
 /// as confidential, so a secret is required and one baked into an open-source
 /// binary would be public. [`crate::auth::register`] gets the user their own in
 /// one browser sign-in; the fields below are the manual route for someone who
@@ -5941,10 +5941,10 @@ fn account_section(app: &mut App, ui: &mut egui::Ui) {
                 app.sign_out();
             }
             if ui
-                .button(language.text("Disconnect Fastcloud", "Отключить Fastcloud"))
+                .button(language.text("Disconnect Veirune", "Отключить Veirune"))
                 .on_hover_text(language.text(
-                    "Revoke Fastcloud's OAuth access to this SoundCloud account",
-                    "Отозвать доступ Fastcloud к аккаунту SoundCloud",
+                    "Revoke Veirune's OAuth access to this SoundCloud account",
+                    "Отозвать доступ Veirune к аккаунту SoundCloud",
                 ))
                 .clicked()
             {
@@ -5956,8 +5956,8 @@ fn account_section(app: &mut App, ui: &mut egui::Ui) {
     ui.add_space(Metrics::SP_075);
     ui.label(Type::CAPTION.rich(
         language.text(
-            "Public tracks do not require a paid listener subscription, but Fastcloud currently asks you to register an API app, which SoundCloud restricts to Artist Pro accounts. GO+ tracks require Go+; blocked tracks may only offer a preview.",
-            "Для публичных треков платная подписка слушателя не нужна, но сейчас Fastcloud просит зарегистрировать API-приложение, а SoundCloud разрешает это только с Artist Pro. Треки GO+ требуют Go+; заблокированные треки могут давать лишь фрагмент.",
+            "Public tracks do not require a paid listener subscription, but Veirune currently asks you to register an API app, which SoundCloud restricts to Artist Pro accounts. GO+ tracks require Go+; blocked tracks may only offer a preview.",
+            "Для публичных треков платная подписка слушателя не нужна, но сейчас Veirune просит зарегистрировать API-приложение, а SoundCloud разрешает это только с Artist Pro. Треки GO+ требуют Go+; заблокированные треки могут давать лишь фрагмент.",
         ),
         app.theme.text_dim,
     ));

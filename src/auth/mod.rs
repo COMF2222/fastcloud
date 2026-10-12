@@ -16,7 +16,7 @@
 //! > meaning a secret is required to obtain a token.
 //!
 //! So the token exchange sends `client_secret` as well as the PKCE verifier,
-//! and Fastcloud can ship **no** credentials of its own: each user needs an
+//! and Veirune can ship **no** credentials of its own: each user needs an
 //! application. [`register`] gets them one without their leaving the app — one
 //! browser sign-in registers it and hands back the keys, which also proves the
 //! account has the Artist Pro subscription SoundCloud requires for API access.
@@ -574,7 +574,7 @@ impl Session {
     pub async fn disconnect(&self) -> Result<()> {
         crate::api::endpoints::disconnect(&self.client)
             .await
-            .context("disconnect Fastcloud from SoundCloud")?;
+            .context("disconnect Veirune from SoundCloud")?;
         self.tokens.lock().await.take();
         self.client.clear_oauth();
         Tokens::delete_all()?;
@@ -734,7 +734,7 @@ async fn wait_for_callback(listener: TcpListener) -> Result<(String, String)> {
         let body = match (&code, &error) {
             (Some(_), _) => page(
                 "Signed in",
-                "Fastcloud has your authorization. You can close this tab.",
+                "Veirune has your authorization. You can close this tab.",
             ),
             (None, Some(error)) => page(
                 "Authorization failed",
@@ -875,7 +875,7 @@ pub async fn start(client: Arc<crate::api::ApiClient>) -> Option<Arc<Session>> {
 
 fn page(title: &str, message: &str) -> String {
     format!(
-        "<!doctype html><meta charset=utf-8><title>Fastcloud</title>\
+        "<!doctype html><meta charset=utf-8><title>Veirune</title>\
          <body style=\"background:#121212;color:#fff;font:16px/1.5 system-ui;\
          display:grid;place-items:center;height:100vh;margin:0\">\
          <div style=\"text-align:center\"><h1 style=\"color:#f50\">{title}</h1>\

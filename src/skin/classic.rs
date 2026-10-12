@@ -7,7 +7,7 @@ use egui::Color32;
 
 pub fn load() -> anyhow::Result<Skin> {
     let mut skin = Skin::from_wsz(
-        "Fastcloud",
+        "Veirune",
         include_bytes!("../../assets/skins/fastpotify-base.wsz").to_vec(),
     )?;
     for bitmap in skin.sheets.values_mut() {
@@ -46,7 +46,7 @@ pub fn load() -> anyhow::Result<Skin> {
                 [110, 119, 132]
             };
             let start = if shade { x } else { 27 + (275 - 44) / 2 };
-            for (i, letter) in "FASTCLOUD".chars().enumerate() {
+            for (i, letter) in "VEIRUNE".chars().enumerate() {
                 for gy in 0..6 {
                     for gx in 0..5 {
                         if glyph_lit(&font, letter, gx, gy).unwrap_or(false) {

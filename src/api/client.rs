@@ -210,7 +210,7 @@ impl ApiClient {
                     *self.media_unavailable_until.write() = Some(Instant::now() + Duration::from_secs(30));
                 }
                 Ok(response) if response.status() == reqwest::StatusCode::FORBIDDEN => {
-                    return Err(ApiError::Other(anyhow::anyhow!("Access to Fastcloud was disabled by the owner.")));
+                    return Err(ApiError::Other(anyhow::anyhow!("Access to Veirune was disabled by the owner.")));
                 }
                 Ok(response) if response.status() == reqwest::StatusCode::UNAUTHORIZED => {
                     return Err(ApiError::Unauthorized);

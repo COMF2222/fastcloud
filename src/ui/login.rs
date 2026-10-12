@@ -1,6 +1,6 @@
 //! The screen shown before the app has an application to call SoundCloud with.
 //!
-//! Fastcloud cannot ship API keys (see [`crate::auth`]), so a fresh install has
+//! Veirune cannot ship API keys (see [`crate::auth`]), so a fresh install has
 //! nothing to fetch or play with. This is the way out of that: one button
 //! guides both browser approvals SoundCloud requires, registers the user's own
 //! application, and signs that application into the account.
@@ -40,7 +40,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
 fn body(app: &mut App, ui: &mut egui::Ui) {
     let theme = app.theme;
-    ui.label(Type::H1.rich("Fastcloud", theme.text));
+    ui.label(Type::H1.rich("Veirune", theme.text));
     ui.add_space(Metrics::SP_HALF);
     ui.label(Type::BODY.rich("SoundCloud, native and light.", theme.text_dim));
     ui.add_space(Metrics::SP_4);
@@ -52,7 +52,7 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
         Connection::Disconnected => idle(app, ui),
         Connection::Pairing { code, url } => pairing(app, ui, &code, &url),
         Connection::Registering => {
-            waiting(app, ui, "Finish setting up Fastcloud in your browser…");
+            waiting(app, ui, "Finish setting up Veirune in your browser…");
             if let Some(url) = &app.auth_url {
                 ui.add_space(Metrics::SP_1);
                 ui.hyperlink_to("Open the final SoundCloud approval", url);
@@ -62,7 +62,7 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
             ui.label(Type::H4.rich("Your SoundCloud account is required", theme.text));
             ui.add_space(Metrics::SP_1);
             ui.label(Type::BODY.rich(
-                "Fastcloud opens your library only after SoundCloud confirms who you are.",
+                "Veirune opens your library only after SoundCloud confirms who you are.",
                 theme.text_dim,
             ));
             ui.add_space(Metrics::SP_2);
@@ -74,7 +74,7 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
 
     ui.add_space(Metrics::SP_5);
     ui.label(Type::CAPTION.rich(
-        "Fastcloud is not affiliated with SoundCloud.",
+        "Veirune is not affiliated with SoundCloud.",
         theme.text_dim,
     ));
 }
@@ -101,7 +101,7 @@ fn idle(app: &mut App, ui: &mut egui::Ui) {
     }
     ui.add_space(Metrics::SP_15);
     ui.label(Type::CAPTION.rich(
-        "Opens SoundCloud in your browser. Fastcloud never sees your password — \
+        "Opens SoundCloud in your browser. Veirune never sees your password — \
          SoundCloud hands back an app key of your own, which is stored in your \
          operating system's keyring.",
         theme.text_dim,

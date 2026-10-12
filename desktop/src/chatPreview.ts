@@ -2,7 +2,7 @@ import type { ChatAction, ChatAttachment, ChatMessage, ChatPerson } from './chat
 
 const peer: ChatPerson = { id: 2, username: 'Luna Waves · демо', avatarUrl: null, permalinkUrl: null }
 const me: ChatPerson = { id: 1, username: 'SoundCloud Demo', avatarUrl: null, permalinkUrl: null }
-let rows: ChatMessage[] = [{ id: 1, threadId: 1, senderId: 2, text: 'Привет! Здесь можно проверить чаты Fastcloud. Это демонстрационный диалог.', attachment: null, nonce: 'a'.repeat(32), createdAt: Date.now() - 60_000 }]
+let rows: ChatMessage[] = [{ id: 1, threadId: 1, senderId: 2, text: 'Привет! Здесь можно проверить чаты Veirune. Это демонстрационный диалог.', attachment: null, nonce: 'a'.repeat(32), createdAt: Date.now() - 60_000 }]
 let archived = false, blocked = false, read = 0
 
 export async function previewChat<T>(action: ChatAction, input: Record<string, unknown> = {}): Promise<T> {

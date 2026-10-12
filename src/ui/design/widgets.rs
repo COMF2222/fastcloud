@@ -234,7 +234,7 @@ fn paint_glass_highlight(
 
 /// Paint the quiet Airwave atmosphere behind a page. It deliberately avoids
 /// artwork or donor-specific decoration: the large glow and cropped rings are
-/// FastCloud's own spatial motif and make otherwise dark pages feel layered.
+/// Veirune's own spatial motif and make otherwise dark pages feel layered.
 pub fn canvas_backdrop(ui: &egui::Ui, theme: Theme) {
     let rect = ui.max_rect();
     let painter = ui.painter();

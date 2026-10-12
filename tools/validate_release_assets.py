@@ -1,4 +1,5 @@
 """Require all three signed platform updates before publishing a release."""
+from release_brand import asset_prefix
 import json
 from pathlib import Path
 
@@ -6,11 +7,11 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def validate(dist, version):
-    signed = [f"Fastcloud_{version}_x64-{kind}.exe" for kind in ("setup", "update")]
+    signed = [f"{asset_prefix(version)}_{version}_x64-{kind}.exe" for kind in ("setup", "update")]
     installers = []
     for arch in ("aarch64", "x86_64"):
-        installers.append(f"Fastcloud_{version}_macos-{arch}.dmg")
-        signed.extend(f"Fastcloud_{version}_macos-{arch}-{kind}.app.tar.gz" for kind in ("setup", "update"))
+        installers.append(f"{asset_prefix(version)}_{version}_macos-{arch}.dmg")
+        signed.extend(f"{asset_prefix(version)}_{version}_macos-{arch}-{kind}.app.tar.gz" for kind in ("setup", "update"))
     for name in signed + installers:
         path = dist / name
         if not path.is_file() or path.stat().st_size == 0:

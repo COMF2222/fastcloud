@@ -17,7 +17,7 @@ pub fn spawn(app: tauri::AppHandle, player: Arc<Player>, hwnd: Option<usize>) {
             let (tx, rx) = mpsc::channel();
             let config = PlatformConfig {
                 dbus_name: "fastcloud",
-                display_name: "Fastcloud",
+                display_name: "Veirune",
                 hwnd: hwnd.map(|value| value as *mut std::ffi::c_void),
             };
             let Ok(mut controls) = MediaControls::new(config) else {

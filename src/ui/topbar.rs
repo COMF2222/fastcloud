@@ -97,7 +97,7 @@ fn brand(app: &mut App, ui: &mut egui::Ui, width: f32) {
         ui.painter().text(
             egui::pos2(rect.left() + 49.0, rect.center().y - 5.0),
             egui::Align2::LEFT_CENTER,
-            "FastCloud",
+            "Veirune",
             Type::H4.font(),
             app.theme.text,
         );
@@ -115,7 +115,7 @@ fn brand(app: &mut App, ui: &mut egui::Ui, width: f32) {
     response.on_hover_text(
         app.settings
             .language
-            .text("FastCloud Home", "Главная Fastcloud"),
+            .text("Veirune Home", "Главная Veirune"),
     );
 }
 

@@ -37,9 +37,9 @@ export function chatTextParts(text: string): { text: string; url: string | null 
 export function chatError(cause: unknown, english: boolean): string {
   const code = String(cause instanceof Error ? cause.message : cause)
   const messages: Record<string, [string, string]> = {
-    sign_in: ['Войди в аккаунт Fastcloud, чтобы открыть сообщения.', 'Sign in to Fastcloud to open messages.'],
+    sign_in: ['Войди в аккаунт Veirune, чтобы открыть сообщения.', 'Sign in to Veirune to open messages.'],
     mutual_required: ['Для переписки нужна взаимная подписка в SoundCloud.', 'Mutual SoundCloud following is required to chat.'],
-    unavailable: ['Пользователь пока недоступен в чатах Fastcloud.', 'This user is not available in Fastcloud chat yet.'],
+    unavailable: ['Пользователь пока недоступен в чатах Veirune.', 'This user is not available in Veirune chat yet.'],
     blocked: ['Отправка сообщений заблокирована.', 'Messaging is blocked.'],
     rate_limited: ['Слишком много сообщений. Попробуй чуть позже.', 'Too many messages. Try again shortly.'],
     private_attachment: ['Можно отправлять только публичные треки и плейлисты.', 'Only public tracks and playlists can be shared.'],

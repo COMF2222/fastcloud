@@ -96,7 +96,7 @@ pub enum Command {
     CycleScale,
     /// Pick an exact classic scale from the O menu.
     SetScale(u32),
-    /// Open the current track in Fastcloud's detail page.
+    /// Open the current track in Veirune's detail page.
     TrackInfoCurrent,
     /// The wordmark at the bottom right: which skin, and which build.
     About,
@@ -499,7 +499,7 @@ impl MiniPlayer {
         };
         let title = match &track {
             Some(t) => format!("{} - {}", t.artist(), t.title),
-            None => "Fastcloud".to_owned(),
+            None => "Veirune".to_owned(),
         };
         let tap = self.player.output_handle().tap();
         let (bars, scope) = match mode {
@@ -588,7 +588,7 @@ impl MiniPlayer {
             layout::EJECT,
             sprites::EJECT,
             sprites::EJECT_DOWN,
-            "Back to Fastcloud",
+            "Back to Veirune",
         ) {
             frame.commands.push(Command::Close);
         }
@@ -1286,12 +1286,12 @@ impl MiniPlayer {
                 layout::OPTIONS_BUTTON,
                 sprites::OPTIONS,
                 sprites::OPTIONS_DOWN,
-                "Back to Fastcloud",
+                "Back to Veirune",
             )
         } else {
             self.hit(ui, frame, layout::OPTIONS_BUTTON, "options")
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text("Back to Fastcloud")
+                .on_hover_text("Back to Veirune")
                 .clicked()
         };
         if options {
@@ -1330,7 +1330,7 @@ impl MiniPlayer {
                 sprites::CLOSE,
                 sprites::CLOSE_DOWN,
                 "close",
-                "Back to Fastcloud",
+                "Back to Veirune",
                 Command::Close,
             ),
         ] {
@@ -1882,7 +1882,7 @@ pub(super) mod tests {
     #[test]
     fn a_new_skin_drops_the_old_textures() {
         let mut mini = mini(2);
-        assert_eq!(mini.skin_name(), "Fastcloud");
+        assert_eq!(mini.skin_name(), "Veirune");
         mini.set_skin(crate::skin::stock::stock());
         assert!(mini.textures.is_empty());
     }
@@ -1938,7 +1938,7 @@ pub(super) mod tests {
             );
             // The idle title fits both marquees, so it does not scroll — and
             // the rolled-up one is the shorter of the two.
-            assert!("Fastcloud".chars().count() <= layout::SHADE_MARQUEE_CHARS);
+            assert!("Veirune".chars().count() <= layout::SHADE_MARQUEE_CHARS);
             assert!(layout::SHADE_MARQUEE_CHARS < layout::MARQUEE.cells());
         });
         output.textures_delta.clear();

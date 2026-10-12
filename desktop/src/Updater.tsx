@@ -177,7 +177,7 @@ export function UpdateNotice({ english }: { english: boolean }) {
   if (!available || dismissedVersion === available.version) return null
   const label = displayReleaseVersion(available.version)
   return <div className="update-notice" role="status">
-    <div><strong>{english ? `Fastcloud ${label} is available` : `Доступна новая версия Fastcloud ${label}`}</strong><span>{english ? 'You can install it now.' : 'Её можно установить прямо сейчас.'}</span>{error && <small role="alert">{error}</small>}</div>
+    <div><strong>{english ? `Veirune ${label} is available` : `Доступна новая версия Veirune ${label}`}</strong><span>{english ? 'You can install it now.' : 'Её можно установить прямо сейчас.'}</span>{error && <small role="alert">{error}</small>}</div>
     <div className="update-actions">
       <button className="primary-button" disabled={installing} onClick={() => void install()}>{installing ? english ? `Installing… ${progress == null ? '' : `${progress}%`}` : `Устанавливаем… ${progress == null ? '' : `${progress}%`}` : english ? 'Update now' : 'Обновить'}</button>
       <ReleaseNotesButton version={available.version} english={english} />

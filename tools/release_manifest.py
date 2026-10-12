@@ -1,5 +1,6 @@
 """Prepare a signed Windows installer and Tauri's static update manifest."""
 
+from release_brand import asset_prefix
 import hashlib
 import json
 from pathlib import Path
@@ -14,7 +15,7 @@ RELEASE_BASE = "https://github.com/COMF2222/fastcloud/releases"
 def manifests(dist: Path, version: str) -> None:
     tag = release_tag(version)
     for suffix, filename in (("setup", "latest.json"), ("update", "latest-light.json")):
-        installer = dist / f"Fastcloud_{version}_x64-{suffix}.exe"
+        installer = dist / f"{asset_prefix(version)}_{version}_x64-{suffix}.exe"
         if not installer.is_file():
             raise SystemExit(f"Missing staged installer: {installer.name}")
         signature = installer.with_suffix(".exe.sig").read_text(encoding="utf-8").strip()
@@ -24,7 +25,7 @@ def manifests(dist: Path, version: str) -> None:
             "signature": signature, "url": f"{RELEASE_BASE}/download/{tag}/{installer.name}",
         }}}
         for arch in ("aarch64", "x86_64"):
-            archive = dist / f"Fastcloud_{version}_macos-{arch}-{suffix}.app.tar.gz"
+            archive = dist / f"{asset_prefix(version)}_{version}_macos-{arch}-{suffix}.app.tar.gz"
             signature_path = archive.with_suffix(".gz.sig")
             if archive.is_file():
                 signature = signature_path.read_text(encoding="utf-8").strip()

@@ -190,7 +190,7 @@ jobs:
       - uses: softprops/action-gh-release@v3
         if: steps.release.outputs.published != 'true'
         with:
-          name: Fastcloud ${{ github.ref_name }}
+          name: Veirune ${{ github.ref_name }}
           prerelease: false
           draft: true
           make_latest: false

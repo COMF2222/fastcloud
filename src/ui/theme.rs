@@ -36,7 +36,7 @@ use super::design::primitives::{Colors, Space};
 
 /// `--special-color` — SoundCloud orange, the one hue both themes share.
 pub const ORANGE: Color32 = Color32::from_rgb(0xFF, 0x55, 0x00);
-/// FastCloud Airwave's warmer default accent.
+/// Veirune Airwave's warmer default accent.
 pub const AIRWAVE_ORANGE: Color32 = Colors::PULSE_ORANGE;
 /// The orange knocked back for rails and inactive fills.
 pub const ORANGE_DIM: Color32 = Color32::from_rgb(0x96, 0x3C, 0x0F);

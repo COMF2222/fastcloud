@@ -1,0 +1,11 @@
+.app-icon-settings h2 { font-size: 1.1em; margin: 0 0 8px; }
+.app-icon-settings .app-icon-caption { margin: 8px 0 18px; opacity: .8; font-size: .9em; }
+.app-icon-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 10px; max-width: 760px; }
+.app-icon-grid .app-icon-choice { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; min-height: 118px; padding: 12px 6px; border-radius: 14px; border: 1px solid rgba(127,127,127,.24); background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.app-icon-choice img { width: 64px; height: 64px; border-radius: 16px; object-fit: contain; }
+.app-icon-choice span { font-size: .8em; line-height: 1.25; overflow-wrap: anywhere; }
+.app-icon-grid .app-icon-choice[aria-pressed="true"] { border-color: var(--accent, #a7b7ff); box-shadow: inset 0 0 0 1px var(--accent, #a7b7ff); background: rgba(127,127,127,.09); }
+.app-icon-choice:focus-visible { outline: 2px solid var(--accent, #a7b7ff); outline-offset: 3px; }
+.app-icon-choice:disabled { opacity: .65; cursor: progress; }
+.app-icon-feedback { min-height: 1.25em; margin: 12px 0 0; font-size: .85em; overflow-wrap: anywhere; }
+@media(max-width: 460px) { .app-icon-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; } .app-icon-grid .app-icon-choice { min-height: 110px; } }

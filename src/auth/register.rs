@@ -2,7 +2,7 @@
 //! app.
 //!
 //! SoundCloud requires a `client_secret` for every token exchange (see the
-//! module docs in [`super`]), so Fastcloud cannot ship one: each user needs an
+//! module docs in [`super`]), so Veirune cannot ship one: each user needs an
 //! application of their own. Sending them to `developers.soundcloud.com` to
 //! copy two strings back is the obvious way and a bad one — so this does what
 //! SoundCloud's own `sc-api-auth` CLI does instead:
@@ -59,11 +59,11 @@ const ACTIVATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1
 const MIN_POLL: std::time::Duration = std::time::Duration::from_secs(1);
 const DEFAULT_POLL: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// What Fastcloud registers itself as. SoundCloud shows these on the user's own
+/// What Veirune registers itself as. SoundCloud shows these on the user's own
 /// apps page, and their terms ask for them to be accurate.
-const APP_NAME: &str = "Fastcloud";
+const APP_NAME: &str = "Veirune";
 const APP_DESCRIPTION: &str =
-    "Fastcloud, a native desktop SoundCloud client: browsing, search and playback.";
+    "Veirune, a native desktop SoundCloud client: browsing, search and playback.";
 const APP_WEBSITE: &str = "https://github.com/COMF2222/fastcloud";
 
 /// Why a registration attempt could not produce credentials.
@@ -471,8 +471,8 @@ pub const ARTIST_PRO_MESSAGE: &str = "SoundCloud only issues API keys to account
 /// SoundCloud settings.
 fn device_name() -> String {
     match hostname() {
-        Some(host) => format!("Fastcloud on {host}"),
-        None => "Fastcloud".to_owned(),
+        Some(host) => format!("Veirune on {host}"),
+        None => "Veirune".to_owned(),
     }
 }
 
@@ -673,7 +673,7 @@ mod tests {
         let app = serde_json::json!({
             "client_id": "id-1",
             "client_secret": "secret-1",
-            "name": "Fastcloud",
+            "name": "Veirune",
         });
         let creds = credentials_from(&app).expect("a complete app");
         assert_eq!(creds.client_id, "id-1");
@@ -725,7 +725,7 @@ mod tests {
     /// name this app whatever the environment looks like.
     #[test]
     fn the_device_is_named_after_this_app() {
-        assert!(device_name().starts_with("Fastcloud"));
+        assert!(device_name().starts_with("Veirune"));
         assert!(!device_name().ends_with(' '));
     }
 }

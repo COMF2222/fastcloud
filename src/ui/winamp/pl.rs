@@ -642,7 +642,7 @@ impl MiniPlayer {
         let ink = self.skin.playlist.normal;
         let title = match state.current.and_then(|i| state.queue.get(i)) {
             Some(entry) => entry.title.clone(),
-            None => "Fastcloud".to_owned(),
+            None => "Veirune".to_owned(),
         };
         let box_area = layout::shade_title(width);
         let shown = pixel_text::marquee(&title, box_area.cells(), state.tick);

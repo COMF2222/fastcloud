@@ -34,6 +34,7 @@ mod vibe;
 #[path = "../../../src/vis.rs"]
 mod vis;
 mod artwork;
+mod app_icon;
 mod wallpaper;
 mod clap;
 mod components;
@@ -1633,7 +1634,7 @@ fn open_release_notes(raw: String) -> Result<(), String> {
         || url.query().is_some()
         || !matches!(url.path(), "/changes.html" | "/en/changes.html")
     {
-        return Err("Only the Fastcloud release history can be opened here".into());
+        return Err("Only the Veirune release history can be opened here".into());
     }
     webbrowser::open(url.as_str()).map_err(|error| error.to_string())
 }
@@ -2312,7 +2313,7 @@ fn theme_action(state: tauri::State<'_, AppState>, action: String, name: Option<
             *settings = next;
         }
         "export" => {
-            let preset = appearance::capture(&settings, name.filter(|value| !value.trim().is_empty()).unwrap_or_else(|| "Fastcloud theme".into())).map_err(|e| e.to_string())?;
+            let preset = appearance::capture(&settings, name.filter(|value| !value.trim().is_empty()).unwrap_or_else(|| "Veirune theme".into())).map_err(|e| e.to_string())?;
             let path = path.ok_or("Choose where to save the theme")?;
             if !path.to_lowercase().ends_with(".json") { return Err("Use a .json theme file".into()); }
             std::fs::write(path, serde_json::to_vec_pretty(&preset).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
@@ -2330,21 +2331,21 @@ fn personal_collections(state: tauri::State<'_, AppState>) -> serde_json::Value 
 #[tauri::command]
 async fn leaderboard(state: tauri::State<'_, AppState>, days: u32, sort: String) -> Result<serde_json::Value, String> {
     if ![0, 7, 30].contains(&days) || !["time", "plays"].contains(&sort.as_str()) { return Err("Invalid leaderboard selection".into()); }
-    let (server, token) = state.client.relay_credentials().await.map_err(|e| e.to_string())?.ok_or("Sign in through the Fastcloud server")?;
+    let (server, token) = state.client.relay_credentials().await.map_err(|e| e.to_string())?.ok_or("Sign in through the Veirune server")?;
     let response = reqwest::Client::new().get(format!("{server}/v1/leaderboard"))
         .query(&[("days", days.to_string()), ("sort", sort)])
         .header("Authorization", format!("OAuth {token}"))
         .timeout(std::time::Duration::from_secs(15)).send().await.map_err(|e| e.to_string())?;
-    if response.status() == reqwest::StatusCode::NOT_FOUND { return Err("Leaderboard is not available yet. Update the Fastcloud server.".into()); }
+    if response.status() == reqwest::StatusCode::NOT_FOUND { return Err("Leaderboard is not available yet. Update the Veirune server.".into()); }
     response.error_for_status().map_err(|e| e.to_string())?.json().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn leaderboard_anonymity(state: tauri::State<'_, AppState>, anonymous: bool) -> Result<(), String> {
     let original = state.session.lock().clone().ok_or("Sign in first")?;
-    let (server, token) = state.client.relay_credentials().await.map_err(|e| e.to_string())?.ok_or("Sign in through the Fastcloud server")?;
+    let (server, token) = state.client.relay_credentials().await.map_err(|e| e.to_string())?.ok_or("Sign in through the Veirune server")?;
     reqwest::Client::new().post(format!("{server}/v1/me/personal"))
-        .header("Authorization", format!("OAuth {token}")).header("X-Fastcloud-Preferences", "2")
+        .header("Authorization", format!("OAuth {token}")).header("X-Veirune-Preferences", "2")
         .json(&serde_json::json!({"preferences": {"leaderboard_anonymous": anonymous}}))
         .timeout(std::time::Duration::from_secs(15)).send().await.map_err(|e| e.to_string())?
         .error_for_status().map_err(|e| e.to_string())?;
@@ -3333,7 +3334,7 @@ async fn approval_admin_token(state: &AppState) -> Result<String, String> {
 #[tauri::command]
 async fn server_session(state: tauri::State<'_, AppState>) -> Result<ServerSession, String> {
     let session = state.session.lock().clone().ok_or("Sign in to SoundCloud first")?;
-    let server = session.media_server_url().ok_or("No Fastcloud server configured")?;
+    let server = session.media_server_url().ok_or("No Veirune server configured")?;
     let server = auth::checked_server_url(&server).map_err(|error| error.to_string())?;
     let token = session.access_token().await.map_err(|error| error.to_string())?;
     let response = reqwest::Client::new().get(format!("{server}/v1/session"))
@@ -3341,6 +3342,46 @@ async fn server_session(state: tauri::State<'_, AppState>) -> Result<ServerSessi
         .timeout(std::time::Duration::from_secs(10)).send().await.map_err(|error| error.to_string())?;
     if !response.status().is_success() { return Err(approval_response_error(response).await); }
     response.json().await.map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn pair_mobile(state: tauri::State<'_, AppState>, code: String) -> Result<serde_json::Value, String> {
+    let code = code.to_uppercase().replace(['-', ' '], "");
+    if code.len() != 8 || !code.bytes().all(|b| b.is_ascii_uppercase() || (b'2'..=b'9').contains(&b)) {
+        return Err("Enter the eight-character code shown on your phone".into());
+    }
+    let session = state.session.lock().clone().ok_or("Sign in to SoundCloud first")?;
+    let server = session.media_server_url().ok_or("No Veirune server configured")?;
+    let server = auth::checked_server_url(&server).map_err(|e| e.to_string())?;
+    let token = session.access_token().await.map_err(|e| e.to_string())?;
+    let http = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30))
+        .build().map_err(|e| e.to_string())?;
+    let owner = http.get(format!("{server}/v1/session"))
+        .header(reqwest::header::AUTHORIZATION, format!("OAuth {token}"))
+        .send().await.map_err(|e| e.to_string())?;
+    if !owner.status().is_success() { return Err(approval_response_error(owner).await); }
+    let owner: ServerSession = owner.json().await.map_err(|e| e.to_string())?;
+    let checked = http.post(format!("{server}/v1/mobile/pairing/check"))
+        .header(reqwest::header::AUTHORIZATION, format!("OAuth {token}"))
+        .json(&serde_json::json!({"code": code})).send().await.map_err(|e| e.to_string())?;
+    if !checked.status().is_success() { return Err(approval_response_error(checked).await); }
+    // Authorize a new grant without saving it into the existing desktop Session.
+    let credentials = auth::AppCredentials::from_server(&server).await.map_err(|e| e.to_string())?;
+    let phone = auth::authorize(&credentials).await.map_err(|e| e.to_string())?;
+    let identity = http.get(format!("{server}/v1/session"))
+        .header(reqwest::header::AUTHORIZATION, format!("OAuth {}", phone.access_token))
+        .send().await.map_err(|e| e.to_string())?;
+    if !identity.status().is_success() { return Err(approval_response_error(identity).await); }
+    let identity: ServerSession = identity.json().await.map_err(|e| e.to_string())?;
+    if owner.user_id != identity.user_id {
+        return Err("Sign in with the same SoundCloud account as on the PC".into());
+    }
+    let response = http.post(format!("{server}/v1/mobile/pairing/approve"))
+        .header(reqwest::header::AUTHORIZATION, format!("OAuth {}", phone.access_token))
+        .json(&serde_json::json!({"code": code, "refresh_token": phone.refresh_token}))
+        .send().await.map_err(|e| e.to_string())?;
+    if !response.status().is_success() { return Err(approval_response_error(response).await); }
+    response.json().await.map_err(|e| e.to_string())
 }
 
 async fn approval_response_error(response: reqwest::Response) -> String {
@@ -3548,7 +3589,7 @@ pub fn run() {
                 };
                 if close_to_tray {
                     if let Err(error) = window.hide() {
-                        log::error!("Could not hide Fastcloud in the tray: {error}");
+                        log::error!("Could not hide Veirune in the tray: {error}");
                     }
                 } else {
                     window.app_handle().exit(0);
@@ -3664,16 +3705,16 @@ pub fn run() {
                     log::warn!("shortcut {shortcut:?} unavailable: {error}");
                 }
             }
-            let show = MenuItem::with_id(app, "show", "Show Fastcloud", true, None::<&str>)?;
+            let show = MenuItem::with_id(app, "show", "Show Veirune", true, None::<&str>)?;
             let toggle = MenuItem::with_id(app, "toggle", "Play/Pause", true, None::<&str>)?;
             let next = MenuItem::with_id(app, "next", "Next", true, None::<&str>)?;
             let previous = MenuItem::with_id(app, "previous", "Previous", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &toggle, &next, &previous, &quit])?;
-            let mut tray = TrayIconBuilder::new()
+            let mut tray = TrayIconBuilder::with_id("main-tray")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
-                .tooltip("Fastcloud")
+                .tooltip("Veirune")
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "show" => show_window(app),
                     "toggle" | "next" | "previous" => {
@@ -3728,9 +3769,11 @@ pub fn run() {
                 tray = tray.icon(icon.clone());
             }
             tray.build(app)?;
+            app_icon::restore(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            app_icon::application_icon,
             chat_request,
             leaderboard, leaderboard_anonymity, personal_collections, listening_statistics, update_personal_collection, smart_playlist_tracks,
             sleep_timer, sync_personal_data, settings_backup,
@@ -3828,6 +3871,7 @@ pub fn run() {
             connect_server,
             approval_users,
             server_session,
+            pair_mobile,
             approval_set_user,
             approval_settings,
             approval_media,
@@ -3835,7 +3879,7 @@ pub fn run() {
             update_events::subscribe_updates
         ])
         .run(tauri::generate_context!())
-        .expect("Fastcloud failed to start");
+        .expect("Veirune failed to start");
 }
 
 fn show_window(app: &tauri::AppHandle) {

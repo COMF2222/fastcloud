@@ -51,7 +51,7 @@ export function SpotifyImport({ english }: { english: boolean }) {
   const selectedTracks = view?.collections.filter(c => selections.some(s => s.id === c.id)).reduce((n, c) => n + c.tracks, 0) || 0
   return <div className="settings-card spotify-import">
     <h3>{t('Импорт из Spotify', 'Import from Spotify')}</h3>
-    <p className="muted">{t('Перенеси плейлисты и лайки в SoundCloud. Fastcloud найдёт треки автоматически.', 'Move playlists and likes to SoundCloud. Fastcloud matches tracks automatically.')}</p>
+    <p className="muted">{t('Перенеси плейлисты и лайки в SoundCloud. Veirune найдёт треки автоматически.', 'Move playlists and likes to SoundCloud. Veirune matches tracks automatically.')}</p>
     <ol className="spotify-import-steps">
       <li>{t('Открой Exportify, войди в Spotify и нажми Export рядом с плейлистом или Liked Songs. Export All выгрузит плейлисты одним архивом.', 'Open Exportify, sign in to Spotify and click Export next to a playlist or Liked Songs. Export All downloads playlists in one archive.')}</li>
       <li>{t('Выбери скачанный CSV или ZIP ниже и нажми «Импортировать».', 'Choose the downloaded CSV or ZIP below and click Import.')}</li>

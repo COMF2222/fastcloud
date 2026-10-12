@@ -51,7 +51,7 @@ impl MediaIntegration {
         let (tx, rx) = mpsc::channel();
         let config = PlatformConfig {
             dbus_name: "fastcloud",
-            display_name: "Fastcloud",
+            display_name: "Veirune",
             hwnd: Some(hwnd),
         };
         let controls = Self::attach(config, tx);
@@ -63,7 +63,7 @@ impl MediaIntegration {
         let (tx, rx) = mpsc::channel();
         let config = PlatformConfig {
             dbus_name: "fastcloud",
-            display_name: "Fastcloud",
+            display_name: "Veirune",
             hwnd: None,
         };
         let controls = Self::attach(config, tx);
@@ -123,7 +123,7 @@ impl MediaIntegration {
     ///
     /// Windows may restore the previous SMTC transport state as an initial
     /// callback. That state belongs to the old process and must not turn a
-    /// freshly launched, deliberately paused Fastcloud session into playback.
+    /// freshly launched, deliberately paused Veirune session into playback.
     pub fn discard_pending_events(&mut self) {
         while self.rx.try_recv().is_ok() {}
     }

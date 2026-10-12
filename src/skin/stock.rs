@@ -227,7 +227,7 @@ fn generated() -> Skin {
     sheets.insert(Sheet::EqEx, eq_ex_sheet());
     sheets.insert(Sheet::Pledit, pledit_sheet());
     Skin {
-        name: "Fastcloud".to_owned(),
+        name: "Veirune".to_owned(),
         sheets,
         vis_colors: vis_colors(),
         playlist: PlaylistColors {
@@ -1187,7 +1187,7 @@ mod tests {
     #[test]
     fn the_stock_skin_has_every_sheet_the_layout_needs() {
         let skin = stock();
-        assert_eq!(skin.name, "Fastcloud");
+        assert_eq!(skin.name, "Veirune");
         // Every sheet but `nums_ex.bmp`, which is the optional one: without it
         // the renderer falls back to `numbers.bmp`, and that path needs
         // exercising by the skin the app ships with.

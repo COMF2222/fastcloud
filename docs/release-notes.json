@@ -2,6 +2,25 @@
   "schema": 1,
   "releases": [
     {
+      "version": "0.4.15",
+      "ru": {
+        "title": "Veirune — музыка с тобой",
+        "changes": [
+          "В настройках аккаунта можно подтвердить вход в Veirune Mobile по коду с телефона.",
+          "Телефон получает отдельную сессию; лайки, плейлисты и общие настройки используют тот же аккаунт.",
+          "Основной значок — Луна. В настройках можно выбрать один из 12 значков для своего устройства."
+        ]
+      },
+      "en": {
+        "title": "Veirune — your music, everywhere",
+        "changes": [
+          "Account settings can confirm Veirune Mobile sign-in using the code shown on your phone.",
+          "Your phone gets its own session while likes, playlists and shared settings use the same account.",
+          "Moon is the default icon. Choose from 12 app icons in settings for your device."
+        ]
+      }
+    },
+    {
       "version": "0.4.14",
       "ru": {
         "title": "Приветствие на главной и выбор режима волны",

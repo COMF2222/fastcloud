@@ -13,7 +13,7 @@ export function ChatReports({ english }: { english: boolean }) {
   const session = useChatSession()
   const { data, isPending, error } = useQuery({ queryKey: ['chat-reports', session.id], queryFn: () => api.chat<{ reports: Report[] }>('reports'), enabled: open && session.ready, refetchInterval: open ? 30_000 : false, retry: 1 })
   const t = (ru: string, en: string) => english ? en : ru
-  return <details onToggle={event => setOpen(event.currentTarget.open)}><summary>{t('Жалобы из чатов Fastcloud', 'Fastcloud chat reports')}</summary>
+  return <details onToggle={event => setOpen(event.currentTarget.open)}><summary>{t('Жалобы из чатов Veirune', 'Veirune chat reports')}</summary>
     {isPending && open && <p>{t('Загружаем жалобы…', 'Loading reports…')}</p>}{error && <p role="alert">{chatError(error, english)}</p>}
     {data?.reports.length === 0 && <p>{t('Жалоб пока нет.', 'No reports yet.')}</p>}
     {data?.reports.map(report => <article className="chat-report" key={report.id}><p><strong>{report.reporter?.username || report.reporterId}</strong> → <button className="text-button" onClick={() => useApp.getState().openArtist(report.peerId, report.peer?.username || String(report.peerId))}>{report.peer?.username || report.peerId}</button> · {report.reason === 'spam' ? t('Спам', 'Spam') : t('Оскорбления', 'Harassment')} · {new Date(report.createdAt).toLocaleString(english ? 'en-US' : 'ru-RU')}</p>

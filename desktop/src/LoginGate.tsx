@@ -1,3 +1,4 @@
+import { useAppIcon } from './AppIconPicker'
 import { useState } from 'react'
 import { ArrowRight, LoaderCircle, Music2 } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
@@ -5,9 +6,9 @@ import { api } from './api'
 import { UpdateNotice, UpdateSettingsCard } from './Updater'
 import { FASTCLOUD_SERVER_URL } from './server'
 import type { Connection } from './types'
-import logo from '../src-tauri/icons/128x128.png'
 
 export function LoginGate({ connection, connectionError, english }: { connection?: Connection; connectionError?: string; english: boolean }) {
+  const logo = useAppIcon()
   const queryClient = useQueryClient()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -32,13 +33,13 @@ export function LoginGate({ connection, connectionError, english }: { connection
     : connection?.status === 'pairing'
     ? english ? `Open the activation page and enter code ${connection.code}.` : `Открой страницу активации и введи код ${connection.code}.`
     : connection?.status === 'public'
-      ? english ? 'Sign in through the Fastcloud access server with your SoundCloud account.' : 'Войди через сервер Fastcloud со своим SoundCloud-аккаунтом.'
+      ? english ? 'Sign in through the Veirune access server with your SoundCloud account.' : 'Войди через сервер Veirune со своим SoundCloud-аккаунтом.'
       : pending
         ? english ? 'Complete sign-in in your browser. If access needs approval, this window will open automatically after the owner approves.' : 'Заверши вход в браузере. Если нужна заявка, приложение откроется после одобрения владельцем.'
-        : english ? 'Sign in with your SoundCloud account to open Fastcloud.' : 'Войди в свой SoundCloud-аккаунт, чтобы открыть Fastcloud.'
+        : english ? 'Sign in with your SoundCloud account to open Veirune.' : 'Войди в свой SoundCloud-аккаунт, чтобы открыть Veirune.'
 
   return <main className="login-screen"><div className="login-card">
-    <div className="login-logo"><img src={logo} alt="" /><span>fastcloud</span></div>
+    <div className="login-logo"><img src={logo} alt="" /><span>veirune</span></div>
     <UpdateNotice english={english} />
     <div className="login-icon"><Music2 size={26} /></div>
     <h1>{english ? 'Your music starts here' : 'Твоя музыка начинается здесь'}</h1>

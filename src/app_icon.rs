@@ -1,4 +1,4 @@
-//! Fastcloud's application icon, rendered at any square size.
+//! Veirune's application icon, rendered at any square size.
 
 pub const ICON_SIZE: u32 = 64;
 

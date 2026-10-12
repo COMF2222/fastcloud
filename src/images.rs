@@ -121,7 +121,7 @@ pub fn wallpaper_uri(source: &str, blur: u8) -> String {
 }
 
 fn parse_wallpaper_uri(uri: &str) -> anyhow::Result<(String, u8)> {
-    let parsed = url::Url::parse(uri).context("parse Fastcloud wallpaper URI")?;
+    let parsed = url::Url::parse(uri).context("parse Veirune wallpaper URI")?;
     if parsed.scheme() != WALLPAPER_SCHEME {
         anyhow::bail!("unsupported wallpaper URI scheme")
     }

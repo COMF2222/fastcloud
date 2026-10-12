@@ -154,7 +154,7 @@ fn main() -> Result<()> {
         .as_deref()
         .and_then(fonts::custom_face);
     let viewport = egui::ViewportBuilder::default()
-        .with_title("Fastcloud")
+        .with_title("Veirune")
         .with_app_id(config::APP_ID)
         // The same mark the tray and the .desktop file carry, so the taskbar
         // and Alt-Tab do not fall back to a blank square.
@@ -188,7 +188,7 @@ fn main() -> Result<()> {
         ..Default::default()
     };
     let native = eframe::run_native(
-        "Fastcloud",
+        "Veirune",
         options,
         Box::new(move |cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
@@ -235,7 +235,7 @@ fn build_app(
     let settings = config::Settings::load().unwrap_or_default();
 
     // Credentials: the CLI/environment beats the keyring, where a registration
-    // stores whatever app belongs to this user. Fastcloud ships none of its own
+    // stores whatever app belongs to this user. Veirune ships none of its own
     // (see `auth`), so a fresh install has none — and rather than pretending
     // otherwise, `ui::App` shows the connect screen until it does.
     let creds = args

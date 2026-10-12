@@ -1,4 +1,4 @@
-//! FastCloud's Airwave design system.
+//! Veirune's Airwave design system.
 //!
 //! The hierarchy is deliberately small and explicit:
 //!

@@ -298,7 +298,7 @@ impl Hub {
     pub async fn sync(&self, client: &api::ApiClient, settings: &Arc<Mutex<config::Settings>>, player: Option<&Arc<Player>>, wave: &crate::wave::Engine) -> Result<()> {
         let _gate = self.sync_gate.lock().await;
         let epoch = self.inner.lock().epoch;
-        let (server, token) = client.relay_credentials().await?.context("Sign in through the Fastcloud server to sync")?;
+        let (server, token) = client.relay_credentials().await?.context("Sign in through the Veirune server to sync")?;
         let http = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build()?;
         let identity: Value = http.get(format!("{server}/v1/session")).header("Authorization", format!("OAuth {token}")).send().await?.error_for_status()?.json().await?;
         let account = identity["user_id"].as_u64().context("Invalid account identity")?;

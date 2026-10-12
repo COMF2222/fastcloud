@@ -1,0 +1,56 @@
+{
+  "tool": "built-in image_gen",
+  "base": "Use case: logo-brand. Create ONE finished square app icon for Veirune, a music player. NEW independent design, not an edit, not a sheet of variations. Beautiful, bright, minimal, memorable, calm, crisp vector-like broad geometry, readable at 24px. Single centered emblem with 22% safe padding, full-bleed uniform background suitable for platform icon masks. No text, letters unless explicitly specified in the concept, watermarks, cloud, headphones, music notes, particles, texture, elaborate 3D or device mockup. No external rounded-square border. Do not use pink, orange or purple. ",
+  "variants": [
+    {
+      "number": 1,
+      "name": "Течение",
+      "concept": "One bold fluid S-like wave made of a single continuous rounded shape, a clean negative-space bend. Fresh luminous mint-green emblem on a deep midnight-teal background. Almost flat colour with a very subtle aqua highlight. No separate small details."
+    },
+    {
+      "number": 2,
+      "name": "Монограмма",
+      "concept": "A compact, beautifully balanced V monogram made of two thick softly rounded diagonal bars that meet at the base. Vivid royal/electric blue with a pale blue upper highlight on an almost-black navy background. Flat, clean and decisive, not a folded ribbon."
+    },
+    {
+      "number": 3,
+      "name": "Импульс",
+      "concept": "A bold rounded open triangular loop with one broad diagonal gap, suggesting a play symbol indirectly. Vivid lemon yellow emblem on charcoal-black background. Very clean nearly flat solid colour, slightly rounded geometry, no interior tiny decorations."
+    },
+    {
+      "number": 4,
+      "name": "Баланс",
+      "concept": "Two broad smooth off-white asymmetric pebble/capsule forms arranged diagonally with a generous negative-space channel, balanced like a modern abstract yin-yang but no small dots and no literal yin-yang symbol. Ivory white and a hint of ice grey on very dark graphite background. Extremely minimal high-contrast sculptural silhouette, flat vector design."
+    },
+    {
+      "number": 5,
+      "name": "Веер",
+      "concept": "Three bold broad curved blade-like petals fan upward from a common small rounded base, suggesting rhythmic expansion. Rich emerald jade and luminous sea-green on a deep forest-black square background. One coherent compact emblem, clean soft shapes, no leaves or plant illustration."
+    },
+    {
+      "number": 6,
+      "name": "Ритм",
+      "concept": "Four thick upright rounded rectangular tiles of different heights, tightly composed into a compact ascending-and-descending abstract rhythm emblem. Brilliant cobalt-blue forms on a clean warm off-white background. Flat graphic, elegant and highly recognizable, no gradients, no shadows, generous surrounding space. Not a conventional thin equalizer, only four broad shapes."
+    },
+    {
+      "number": 7,
+      "name": "Искра",
+      "concept": "A single thick rounded diagonal lozenge cut by one wide stepped negative-space channel, making an original compact angular-flow emblem. Bright acid lime-green on almost black graphite. Flat solid graphic, gently rounded ends, no jagged lightning bolt, no extra glow or ornamental details."
+    },
+    {
+      "number": 8,
+      "name": "Орбита",
+      "concept": "One large luminous turquoise circular disk split by a broad smooth horizontal sine-wave negative-space channel. Two balanced curved pieces that still read as one circle. Pure bright cyan/teal with a very subtle icy highlight on deep navy background. Very simple and iconic, no rings, no dots, no small ornaments."
+    },
+    {
+      "number": 9,
+      "name": "Луна",
+      "concept": "A broad silver-white crescent with a single rounded diagonal notch cut into its lower horn, an elegant new asymmetric moon-like emblem, not a standard moon pictogram. Brushed-look only through a very smooth restrained pale-grey gradient, no physical metallic texture. Monochrome silver and ivory on dark charcoal blue. Strong thick silhouette, no stars."
+    },
+    {
+      "number": 10,
+      "name": "Контур",
+      "concept": "A thick rounded hexagonal loop with one deliberate broad gap at the top-right and a softly curved inward tail at the lower-left. Distinctive simple geometric emblem. Electric sapphire blue and turquoise gradient on almost black midnight-blue background. Strong even outline thickness, clean open central negative space. No letters, no 3D folds, no extra decoration."
+    }
+  ]
+}

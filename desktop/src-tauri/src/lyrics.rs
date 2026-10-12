@@ -29,7 +29,7 @@ fn lrclib_source() -> String {
 pub(super) fn client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(6))
-        .user_agent("Fastcloud/0.2 (https://github.com/COMF2222/fastcloud)")
+        .user_agent("Veirune/0.2 (https://github.com/COMF2222/fastcloud)")
         .build()
         .map_err(|_| "Could not start lyrics search".into())
 }
@@ -1032,7 +1032,7 @@ async fn genius(
 }
 
 pub(super) const GENIUS_USER_AGENT: &str =
-    "Mozilla/5.0 (compatible; Fastcloud/0.2; +https://github.com/COMF2222/fastcloud)";
+    "Mozilla/5.0 (compatible; Veirune/0.2; +https://github.com/COMF2222/fastcloud)";
 
 fn plain_fallback_pairs(pairs: &[(String, String)]) -> Vec<(String, String)> {
     let mut result = Vec::new();

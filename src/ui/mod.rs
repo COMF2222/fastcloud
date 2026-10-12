@@ -1049,7 +1049,7 @@ impl App {
     }
 
     /// Start a one-shot Yandex Music likes import. The OAuth token is moved
-    /// into the background task and is never persisted in Fastcloud settings.
+    /// into the background task and is never persisted in Veirune settings.
     pub fn start_yandex_import(&mut self) {
         if self.yandex_import.running {
             return;
@@ -1312,7 +1312,7 @@ impl App {
 
     /// Install a classic Winamp skin and wear it immediately.
     ///
-    /// The selected archive is copied into Fastcloud's data directory. The
+    /// The selected archive is copied into Veirune's data directory. The
     /// remembered skin therefore keeps working when the original download is
     /// moved, deleted, or selected from a temporary browser directory.
     pub fn apply_skin_file(&mut self, path: std::path::PathBuf) {
@@ -1405,7 +1405,7 @@ impl App {
         // Parse it now: a face that cannot be read should be refused while the
         // user is watching, not silently ignored on the next start.
         if crate::fonts::custom_face(&path).is_none() {
-            self.toast(format!("{name} is not a font Fastcloud can read"));
+            self.toast(format!("{name} is not a font Veirune can read"));
             return;
         }
         self.settings.interface_font = Some(path);
@@ -1424,7 +1424,7 @@ impl App {
         if let Some(mini) = &self.mini {
             mini.lock().set_skin(crate::skin::stock::stock());
         }
-        self.toast("Skin: Fastcloud");
+        self.toast("Skin: Veirune");
     }
 
     /// Set the mini player's whole-pixel scale.
@@ -1523,7 +1523,7 @@ impl App {
                         .as_ref()
                         .map(|m| m.lock().skin_name().to_owned())
                         .unwrap_or_default();
-                    self.toast(format!("Fastcloud {} — skin: {skin}", self.version_build));
+                    self.toast(format!("Veirune {} — skin: {skin}", self.version_build));
                 }
                 winamp::Command::Eq(eq) => self.apply_eq(eq),
                 winamp::Command::SaveEqPreset => self.save_eq_preset(),
@@ -1842,7 +1842,7 @@ impl App {
                     let (id, title, artist, art) =
                         track
                             .as_ref()
-                            .map_or((0, "Nothing playing", "Fastcloud", None), |track| {
+                            .map_or((0, "Nothing playing", "Veirune", None), |track| {
                                 (
                                     track.id,
                                     track.title.as_str(),
@@ -1915,7 +1915,7 @@ impl App {
                         30.0,
                         self.theme.text_dim,
                         self.theme.text,
-                        "Return to Fastcloud",
+                        "Return to Veirune",
                     )
                     .clicked();
                 });
@@ -2020,7 +2020,7 @@ impl App {
         }
         if std::mem::take(&mut self.raise_requested) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            // The tray's "Show Fastcloud" on a minimized window: un-minimize
+            // The tray's "Show Veirune" on a minimized window: un-minimize
             // first, then take focus. Either alone leaves it where it was.
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -2931,7 +2931,7 @@ impl App {
                     self.followed.clear();
                     self.persist_library();
                     self.connection = connect::Connection::Connected { username: None };
-                    self.toast("Fastcloud disconnected from this SoundCloud account");
+                    self.toast("Veirune disconnected from this SoundCloud account");
                 }
                 // App-only access is live: public browsing works, and the store
                 // may have cached "sign in for this" answers while it did not.
@@ -3480,7 +3480,7 @@ impl App {
             // Answered by the singleton server, never forwarded here.
             IpcMessage::NowPlaying { .. } | IpcMessage::Devices { .. } => {}
             IpcMessage::SignIn => self.sign_in(),
-            // The tray's "Show Fastcloud", and a second launch asking the
+            // The tray's "Show Veirune", and a second launch asking the
             // running one to come forward. Applied in `apply_window_mode`,
             // which is where this frame's viewport commands are sent.
             IpcMessage::Show => self.raise_requested = true,

@@ -51,7 +51,7 @@ let previewOfflineLikeOrder: number[] = []
 const previewPlaylists: Playlist[] = ['Neon Nights', 'Low Tide Radio', 'Concrete Garden Mix'].map((title, i) => ({ id: 2001 + i, title, track_count: [4, 3, 5][i], is_album: i === 0, user: { id: 1, username: 'SoundCloud Demo' } }))
 const previewPlaylistTracks = new Map<number, number[]>()
 const previewFollowed = new Set<number>()
-const previewUsers: User[] = [{ id: 1, username: 'SoundCloud Demo', full_name: 'Fastcloud Preview', description: 'Здесь можно посмотреть, как будут выглядеть треки, альбомы и плейлисты твоего профиля.', followers_count: 0, track_count: demo.length, public_playlists_count: previewPlaylists.length }]
+const previewUsers: User[] = [{ id: 1, username: 'SoundCloud Demo', full_name: 'Veirune Preview', description: 'Здесь можно посмотреть, как будут выглядеть треки, альбомы и плейлисты твоего профиля.', followers_count: 0, track_count: demo.length, public_playlists_count: previewPlaylists.length }]
 previewUsers.push({ id: 2, username: 'Luna Waves', full_name: 'Luna', followers_count: 120, track_count: 4 }, { id: 3, username: 'Demo Listener', full_name: 'Алексей', followers_count: 0, track_count: 0 })
 const previewSettings: Settings = { wave_mode: 'Balanced', wave_mood: 'Calm', leaderboard_anonymous: true, normalization: false, crossfade_ms: 0, gapless: true, settings_version: 2, music_taste: { discovery: .5, diversity: .5, repeat_days: 2, genres: [] }, theme_presets: [], offline_limit_mb: 0, autoplay: true, compact_rows: false, visualiser: 'Spectrum', theme: 'Dark', language: 'Russian', liked_ids: [], followed_user_ids: [], quick_access: [], inbox: [], mono: false, balance: 0, eq_enabled: false, eq_preamp_db: 0, eq_gains_db: Array(10).fill(0), startup_page: 'Home', main_window_bounds: null, close_to_tray: true, memory_profile: 'Balanced', reduced_motion: false, accent_rgb: [255, 85, 25], background_image: null, interface_font: null, discord_client_id: '', discord_presence: false, background_opacity: .25, background_dim: 0, background_blur: 0, background_overlay: .8, panel_rgb: null, panel_opacity: .85, panel_blur: 12, heading_opacity: null, text_rgb: null, muted_text_rgb: null, interface_text_scale: 1, interface_scale: 1, lyrics_scale: 1, lyrics_blur_past: true, lyrics_auto_scroll: true, show_track_numbers: true, soundcloud_profile_url: null, audio_cache_limit_mb: 2048, eq_auto: false, mini_player_style: 'Airwave', winamp_window: false, winamp_on_top: false, winamp_skin: null, winamp_shade: false, winamp_eq_window: false, winamp_eq_shade: false, winamp_pl_window: false, winamp_pl_shade: false, winamp_pl_rows: 8, winamp_scale: 2 }
 const previewText = (ru: string, en: string) => previewSettings.language === 'English' ? en : ru
@@ -101,23 +101,23 @@ export const api = {
   settingsBackup: async (action: 'export' | 'import'): Promise<Settings> => {
     if (preview) {
       if (action === 'import') throw new Error(previewText('Импорт резервной копии доступен в установленном приложении.', 'Backup import is available in the installed app.'))
-      downloadJson({ version: 1, preferences: { ...captureTheme(previewSettings, 'Backup').values, language: previewSettings.language, music_taste: previewSettings.music_taste, theme_presets: previewSettings.theme_presets, quick_access: previewSettings.quick_access, normalization: previewSettings.normalization, crossfade_ms: previewSettings.crossfade_ms, gapless: previewSettings.gapless, autoplay: previewSettings.autoplay, compact_rows: previewSettings.compact_rows, show_track_numbers: previewSettings.show_track_numbers, lyrics_auto_scroll: previewSettings.lyrics_auto_scroll }, folders: previewCollections.folders, smartPlaylists: previewCollections.smartPlaylists }, 'fastcloud-settings.json')
+      downloadJson({ version: 1, preferences: { ...captureTheme(previewSettings, 'Backup').values, language: previewSettings.language, music_taste: previewSettings.music_taste, theme_presets: previewSettings.theme_presets, quick_access: previewSettings.quick_access, normalization: previewSettings.normalization, crossfade_ms: previewSettings.crossfade_ms, gapless: previewSettings.gapless, autoplay: previewSettings.autoplay, compact_rows: previewSettings.compact_rows, show_track_numbers: previewSettings.show_track_numbers, lyrics_auto_scroll: previewSettings.lyrics_auto_scroll }, folders: previewCollections.folders, smartPlaylists: previewCollections.smartPlaylists }, 'veirune-settings.json')
       return { ...previewSettings }
     }
-    const selected = action === 'export' ? await save({ defaultPath: 'fastcloud-settings.json', filters: [{ name: 'JSON', extensions: ['json'] }] }) : await open({ multiple: false, filters: [{ name: 'JSON', extensions: ['json'] }] })
+    const selected = action === 'export' ? await save({ defaultPath: 'veirune-settings.json', filters: [{ name: 'JSON', extensions: ['json'] }] }) : await open({ multiple: false, filters: [{ name: 'JSON', extensions: ['json'] }] })
     if (typeof selected !== 'string') return api.settings()
     return invoke<Settings>('settings_backup', { action, path: selected })
   },
   themeAction: async (action: 'apply' | 'save' | 'delete' | 'export' | 'import', name?: string, preset?: ThemePreset): Promise<Settings> => {
     let path: string | null = null
     if (action === 'export') {
-      if (preview) { downloadJson(captureTheme(previewSettings, name || 'Fastcloud theme'), 'fastcloud-theme.json'); return { ...previewSettings } }
-      path = await save({ defaultPath: 'fastcloud-theme.json', filters: [{ name: 'JSON', extensions: ['json'] }] })
+      if (preview) { downloadJson(captureTheme(previewSettings, name || 'Veirune theme'), 'veirune-theme.json'); return { ...previewSettings } }
+      path = await save({ defaultPath: 'veirune-theme.json', filters: [{ name: 'JSON', extensions: ['json'] }] })
       if (!path) return api.settings()
     }
     if (action === 'import') {
       if (preview) throw new Error(previewText('Импорт файла доступен в установленном приложении.', 'File import is available in the installed app.'))
-      const chosen = await open({ multiple: false, filters: [{ name: 'Fastcloud theme', extensions: ['json'] }] })
+      const chosen = await open({ multiple: false, filters: [{ name: 'Veirune theme', extensions: ['json'] }] })
       path = typeof chosen === 'string' ? chosen : null
       if (!path) return api.settings()
     }
@@ -134,8 +134,8 @@ export const api = {
   },
   problemReport: () => preview ? Promise.resolve<ProblemReport>({ version: '0.3.0', os: 'preview', architecture: 'browser', connection: 'demo', queueLength: previewPlayer.queue.length, playing: previewPlayer.isPlaying, loading: previewPlayer.loading, errorStage: 'none', sampleRate: previewPlayer.sampleRate, bitrateKbps: previewPlayer.bitrateKbps, settingsVersion: 2 }) : invoke<ProblemReport>('problem_report'),
   saveProblemReport: async (report: ProblemReport) => {
-    if (preview) { downloadJson(report, 'fastcloud-report.json'); return }
-    const path = await save({ defaultPath: 'fastcloud-report.json', filters: [{ name: 'JSON', extensions: ['json'] }] })
+    if (preview) { downloadJson(report, 'veirune-report.json'); return }
+    const path = await save({ defaultPath: 'veirune-report.json', filters: [{ name: 'JSON', extensions: ['json'] }] })
     if (path) await invoke('save_problem_report', { path, report })
   },
   offlineCapacity: () => preview ? Promise.resolve<OfflineCapacity>({ usedBytes: [...previewOffline.values()].reduce((sum, entry) => sum + entry.bytes, 0), freeBytes: 10 * 1024 ** 3, limitBytes: previewSettings.offline_limit_mb * 1048576 }) : invoke<OfflineCapacity>('offline_capacity'),
@@ -242,7 +242,7 @@ export const api = {
   playlist: (id: number) => preview ? Promise.resolve<Data<Playlist>>(previewPlaylists.find(list => list.id === id) ? { status: 'ready', data: previewPlaylists.find(list => list.id === id)! } : { status: 'failed', data: previewText('Плейлист не найден', 'Playlist not found') }) : invoke<Data<Playlist>>('playlist_detail', { id }),
   comments: (id: number) => preview ? Promise.resolve<Data<Comment[]>>({ status: 'ready', data: previewComments.filter(comment => comment.id === id) }) : invoke<Data<Comment[]>>('comments', { id }),
   trackLyrics: (artist: string, title: string, durationMs: number, albumName?: string | null, isrc?: string | null) => preview ? Promise.resolve<LyricsRecord>({
-    id: 0, trackName: title, artistName: artist, source: 'Fastcloud Demo', instrumental: false,
+    id: 0, trackName: title, artistName: artist, source: 'Veirune Demo', instrumental: false,
     syncedLyrics: '[00:00.00]Огни за окном\n[00:08.00]Город дышит тишиной\n[00:16.00]Музыка рядом\n[00:24.00]И дорога ведёт домой\n[00:32.00]Новый день впереди\n[00:40.00]Мы оставим свет за собой\n[00:48.00]Слушай этот момент\n[00:56.00]Он останется с тобой',
   }) : invoke<LyricsRecord | null>('track_lyrics', { artist, title, durationMs, albumName: albumName || null, isrc: isrc || null }),
   openLyricsSource: (raw: string) => preview ? Promise.resolve(void window.open(raw, '_blank', 'noopener,noreferrer')) : invoke<void>('open_lyrics_source', { raw }),
@@ -457,6 +457,7 @@ export const api = {
   approvalServerUrl: () => preview ? Promise.resolve<string | null>(null) : invoke<string | null>('approval_server_url'),
   connectServer: async (serverUrl: string) => { if (!preview) { await invoke<void>('connect_server', { serverUrl }); clearLibraryCache() } },
   serverSession: () => preview ? Promise.resolve<ServerSession>({ user_id: 0, admin: false }) : invoke<ServerSession>('server_session'),
+  pairMobile: (code: string) => preview ? Promise.reject(new Error('Available in the installed app')) : invoke<{ user_id: number; username: string }>('pair_mobile', { code }),
   approvalUsers: (serverUrl: string) => preview ? Promise.resolve<ApprovalUser[]>([]) : invoke<ApprovalUser[]>('approval_users', { serverUrl }),
   approvalSetUser: (serverUrl: string, userId: number, status: 'approved' | 'denied' | 'pending') =>
     preview ? Promise.resolve() : invoke<void>('approval_set_user', { serverUrl, userId, status }),

@@ -1,7 +1,7 @@
 //! Local fallback for discovery-by-feeling.
 //!
 //! The reference client performs vector search on its authenticated backend.
-//! Fastcloud keeps the same interaction useful without sending listening data
+//! Veirune keeps the same interaction useful without sending listening data
 //! to another service: several mood dimensions can match at once, their genre
 //! windows are merged, then metadata relevance wins over raw popularity.
 

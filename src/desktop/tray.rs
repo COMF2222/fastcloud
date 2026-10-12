@@ -47,7 +47,7 @@ impl Tray {
         use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 
         let menu = Menu::new();
-        let show = MenuItem::new("Show Fastcloud", true, None);
+        let show = MenuItem::new("Show Veirune", true, None);
         let toggle = MenuItem::new("Play/Pause", true, None);
         let next = MenuItem::new("Next", true, None);
         let prev = MenuItem::new("Previous", true, None);
@@ -70,7 +70,7 @@ impl Tray {
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(false)
             .with_menu_on_right_click(true)
-            .with_tooltip("Fastcloud")
+            .with_tooltip("Veirune")
             .with_icon(icon)
             .build()?;
 
@@ -137,7 +137,7 @@ impl ksni::Tray for KsniTray {
         "fastcloud".into()
     }
     fn title(&self) -> String {
-        "Fastcloud".into()
+        "Veirune".into()
     }
     fn icon_name(&self) -> String {
         "fastcloud-tray".into()
@@ -146,7 +146,7 @@ impl ksni::Tray for KsniTray {
         use ksni::menu::*;
         vec![
             StandardItem {
-                label: "Show Fastcloud".into(),
+                label: "Show Veirune".into(),
                 activate: Box::new(|t: &mut Self| {
                     let _ = t.tx.send(TrayCommand::Show);
                 }),

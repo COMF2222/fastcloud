@@ -60,7 +60,7 @@ export function LeaderboardPage({ english }: { english: boolean }) {
     <div className="leaderboard-metric"><strong>{hours(entry.ms, english)}</strong><small>{t('прослушано', 'listening time')}</small></div>
     <div className="leaderboard-metric"><strong>{entry.plays.toLocaleString()}</strong><small>{t('прослушиваний', 'listens')}</small><small>{entry.uniqueTracks} {t('разных треков', 'unique tracks')}</small></div>
   </article>
-  return <div className="page-content community-page"><div className="section-title"><div><h2>{t('Лидерборд', 'Leaderboard')}</h2><p>{t('Кто больше слушает музыку в Fastcloud.', 'Who listens the most in Fastcloud.')}</p></div><Trophy size={28} /></div>
+  return <div className="page-content community-page"><div className="section-title"><div><h2>{t('Лидерборд', 'Leaderboard')}</h2><p>{t('Кто больше слушает музыку в Veirune.', 'Who listens the most in Veirune.')}</p></div><Trophy size={28} /></div>
     {settings && <LeaderboardPrivacy settings={settings} banner />}
     <div className="community-filters"><label className="field-label">{t('Период', 'Period')}<select value={days} onChange={e => setDays(Number(e.target.value))}><option value={7}>{t('7 дней', '7 days')}</option><option value={30}>{t('30 дней', '30 days')}</option><option value={0}>{t('Всё время', 'All time')}</option></select></label><label className="field-label">{t('Рейтинг по', 'Rank by')}<select value={sort} onChange={e => setSort(e.target.value)}><option value="time">{t('Времени прослушивания', 'Listening time')}</option><option value="plays">{t('Числу прослушиваний', 'Listens')}</option></select></label></div>
     {error && <p role="alert" className="error-text">{String(error)}</p>}

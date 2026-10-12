@@ -1,4 +1,4 @@
-# Fastcloud desktop
+# Veirune desktop
 
 This is the active React 19 and Tauri 2 application. Playback, SoundCloud API
 access, cache, and settings run through the Rust backend in `src-tauri/` and

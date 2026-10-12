@@ -228,7 +228,7 @@ impl Manager {
             .https_only(true)
             .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_secs(900))
-            .user_agent("Fastcloud components")
+            .user_agent("Veirune components")
             .build()?;
         self.prepare_from(&client, RELEASES).await
     }

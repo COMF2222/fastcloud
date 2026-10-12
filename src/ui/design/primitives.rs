@@ -22,7 +22,7 @@ impl Colors {
     pub const INK_LIGHT_SECONDARY: Color32 = Color32::from_rgb(0x5F, 0x68, 0x75);
     pub const INK_LIGHT_TERTIARY: Color32 = Color32::from_rgb(0x6C, 0x74, 0x80);
 
-    /// FastCloud's default accent. Custom user accents remain supported.
+    /// Veirune's default accent. Custom user accents remain supported.
     pub const PULSE_ORANGE: Color32 = Color32::from_rgb(0xFF, 0x5B, 0x24);
     pub const LINK_DARK: Color32 = Color32::from_rgb(0x7A, 0xA7, 0xFF);
     pub const LINK_LIGHT: Color32 = Color32::from_rgb(0x1E, 0x5E, 0xD8);
