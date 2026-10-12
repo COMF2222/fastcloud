@@ -1,0 +1,31 @@
+"""Require all three signed platform updates before publishing a release."""
+import json
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def validate(dist, version):
+    signed = [f"Fastcloud_{version}_x64-{kind}.exe" for kind in ("setup", "update")]
+    installers = []
+    for arch in ("aarch64", "x86_64"):
+        installers.append(f"Fastcloud_{version}_macos-{arch}.dmg")
+        signed.extend(f"Fastcloud_{version}_macos-{arch}-{kind}.app.tar.gz" for kind in ("setup", "update"))
+    for name in signed + installers:
+        path = dist / name
+        if not path.is_file() or path.stat().st_size == 0:
+            raise ValueError(f"Missing or empty release asset: {name}")
+    for name in signed:
+        signature = dist / (name + ".sig")
+        if not signature.is_file() or not signature.read_text(encoding="utf-8").strip():
+            raise ValueError(f"Missing updater signature: {name}")
+
+
+def main():
+    version = json.loads((ROOT / "desktop/src-tauri/tauri.conf.json").read_text(encoding="utf-8"))["version"]
+    validate(ROOT / "desktop/release", version)
+    print("Windows, Apple Silicon and Intel installers and update signatures verified")
+
+
+if __name__ == "__main__":
+    main()

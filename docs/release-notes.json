@@ -2,6 +2,23 @@
   "schema": 1,
   "releases": [
     {
+      "version": "0.4.14",
+      "ru": {
+        "title": "Приветствие на главной и выбор режима волны",
+        "changes": [
+          "На главной появляются разные приветствия для утра, дня, вечера и ночи — по твоему местному времени.",
+          "Обновлено меню выбора режима волны и настроения. Выбранный пункт отмечается, меню поддерживает клавиатуру и остаётся читаемым при прозрачном интерфейсе."
+        ]
+      },
+      "en": {
+        "title": "Home greetings and a refreshed wave menu",
+        "changes": [
+          "Home shows varied greetings for morning, afternoon, evening and night based on your local time.",
+          "Refreshed the wave mode and mood menus with selected-item markers, keyboard controls and an opaque background."
+        ]
+      }
+    },
+    {
       "version": "0.4.13",
       "ru": {
         "title": "Режимы волны, лидерборд и продолжение импорта",

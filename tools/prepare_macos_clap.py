@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+from verify_clap_worker import verify
 
 ROOT = Path(__file__).resolve().parent.parent
 BUNDLE = ROOT / "desktop/src-tauri/resources/clap"
@@ -35,17 +36,21 @@ def main():
     prepare_bundle_config(ROOT)
     build = Path(os.environ.get("RUNNER_TEMP", "/tmp")) / "fastcloud-clap-build"
     python = build / "venv/bin/python"
-    if not python.is_file():
-        subprocess.run(["uv", "venv", "--python", "3.12", str(build / "venv")], check=True)
-    subprocess.run(["uv", "pip", "install", "--python", str(python),
-                    "numpy==1.26.4", "onnxruntime==1.22.0", "tokenizers==0.22.2", "pyinstaller==6.22.3",
-                    "huggingface_hub"], check=True)
     files = ["config.json", "preprocessor_config.json", "tokenizer.json", "tokenizer_config.json",
              "special_tokens_map.json", "vocab.json", "merges.txt", *["onnx/" + name for name in HASHES]]
-    code = ("from huggingface_hub import snapshot_download; snapshot_download("
-            "'Xenova/larger_clap_music_and_speech', revision=" + repr(REVISION) +
-            ", allow_patterns=" + repr(files) + ", local_dir=" + repr(str(BUNDLE / "model")) + ")")
-    subprocess.run([str(python), "-c", code], check=True)
+    worker = BUNDLE / "worker-lite/fastcloud-clap/fastcloud-clap"
+    model_ready = all((BUNDLE / "model" / name).is_file() for name in files)
+    if not model_ready or not worker.is_file():
+        if not python.is_file():
+            subprocess.run(["uv", "venv", "--python", "3.12", str(build / "venv")], check=True)
+        subprocess.run(["uv", "pip", "install", "--python", str(python),
+                        "numpy==1.26.4", "onnxruntime==1.22.0", "tokenizers==0.22.2", "pyinstaller==6.22.3",
+                        "huggingface_hub"], check=True)
+    if not model_ready:
+        code = ("from huggingface_hub import snapshot_download; snapshot_download("
+                "'Xenova/larger_clap_music_and_speech', revision=" + repr(REVISION) +
+                ", allow_patterns=" + repr(files) + ", local_dir=" + repr(str(BUNDLE / "model")) + ")")
+        subprocess.run([str(python), "-c", code], check=True)
     for name, expected in HASHES.items():
         with (BUNDLE / "model/onnx" / name).open("rb") as source:
             if hashlib.file_digest(source, "sha256").hexdigest() != expected:
@@ -72,12 +77,7 @@ def main():
         shutil.rmtree(worker_root)
         shutil.copytree(normalized, worker_root)
     # Fail packaging if native dependencies or frozen imports do not work.
-    result = subprocess.run([str(worker), str(BUNDLE / "model")],
-                            input='{"kind":"text","prompts":["happy music"]}\n',
-                            text=True, capture_output=True, timeout=180, check=True)
-    rows = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
-    if not rows or rows[0].get("ready") is not True or len(rows[-1].get("vectors", [[]])[0]) < 256:
-        raise SystemExit("Native CLAP worker smoke test failed")
+    verify(worker, BUNDLE / "model")
     print("Native macOS CLAP worker and pinned models verified")
 
 

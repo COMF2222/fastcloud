@@ -1,6 +1,5 @@
 .wave-mode-controls { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 14px; }
-.wave-mode-controls label { display: grid; gap: 6px; color: var(--text-muted); font-size: calc(11px * var(--interface-text-scale, 1)); }
-.wave-mode-controls select { min-height: 36px; max-width: 240px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; color: var(--text); background: var(--surface-raised); font-size: calc(12px * var(--interface-text-scale, 1)); }
+.wave-select-label { display: grid; gap: 6px; color: var(--text-muted); font-size: calc(11px * var(--interface-text-scale, 1)); }
 .community-filters { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 18px; }
 .community-filters label { flex: 1; max-width: 280px; min-width: 170px; }
 .leaderboard-list { padding: 6px 18px; }
@@ -19,3 +18,15 @@
 @media (max-width: 1050px) { .leaderboard-row { grid-template-columns: 28px minmax(0, 1fr) 100px; gap: 12px; }.leaderboard-metric:last-child { grid-column: 2 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; } }
 
 .leaderboard-privacy-banner { margin-bottom: 18px; border-inline-start: 3px solid var(--accent-readable, var(--accent)); }
+
+.wave-select { display: grid; gap: 6px; min-width: 165px; max-width: 290px; }
+.wave-select-trigger { display: flex; align-items: center; justify-content: space-between; gap: 18px; min-height: 36px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-raised); color: var(--text); font-size: calc(12px * var(--interface-text-scale, 1)); text-align: left; }
+.wave-select-trigger:hover { border-color: var(--accent-readable, var(--accent)); }
+.wave-select-trigger:disabled { opacity: .6; }
+.wave-select-trigger svg { flex: none; transition: transform .15s; }
+.wave-select-trigger svg.is-open { transform: rotate(180deg); }
+.wave-select-menu { position: fixed; z-index: 1300; box-sizing: border-box; padding: 5px; border: 1px solid var(--popup-line, var(--line)); border-radius: 12px; background: var(--popup-fill, #242630); color: var(--popup-text, var(--text)); box-shadow: 0 12px 32px #0006; max-height: min(360px, calc(100vh - 24px)); overflow-y: auto; }
+.wave-select-menu button { display: flex; align-items: center; justify-content: space-between; gap: 14px; width: 100%; padding: 10px 12px; border-radius: 7px; color: inherit; font-size: calc(12px * var(--interface-text-scale, 1)); line-height: 1.4; text-align: left; }
+.wave-select-menu button[aria-selected="true"] { background: var(--popup-card, #30323b); color: var(--popup-accent, var(--accent-readable, var(--accent))); }
+.wave-select-menu button:focus-visible, .wave-select-menu button:hover { background: var(--popup-card, #30323b); outline: 1px solid var(--popup-line, var(--line)); }
+.wave-select-menu button svg { flex: none; }

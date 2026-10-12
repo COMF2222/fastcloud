@@ -32,23 +32,32 @@ if (-not (Test-Path -LiteralPath $privateConfig)) {
 '@ | Set-Content -LiteralPath $privateConfig -Encoding utf8
 }
 
-if (-not (Test-Path -LiteralPath $python)) {
-    uv venv --python 3.12 $venv
-    if ($LASTEXITCODE -ne 0) { throw 'Could not create the CLAP build environment.' }
-}
-uv pip install --python $python 'onnxruntime==1.30.0' 'tokenizers==0.22.2' 'pyinstaller==6.22.3' 'huggingface_hub[cli]'
-if ($LASTEXITCODE -ne 0) { throw 'Could not install CLAP build dependencies.' }
-
-& $hf download Xenova/larger_clap_music_and_speech `
-    config.json preprocessor_config.json tokenizer.json tokenizer_config.json `
-    special_tokens_map.json vocab.json merges.txt `
-    onnx/audio_model_quantized.onnx onnx/text_model_quantized.onnx `
-    --revision $revision --local-dir $model
-if ($LASTEXITCODE -ne 0) { throw 'Could not download the pinned CLAP weights.' }
-
 $expected = @{
     'audio_model_quantized.onnx' = '021DD4FB962B4ED20CC3A6730B09E0CCF9F9C49931047032118A3B64828513A6'
     'text_model_quantized.onnx' = '8F9F29C5F6ADEE917553D4B3A70729C731C0D18B88EFCA0AE67C1A1FC278F3B6'
+}
+$modelFiles = @('config.json', 'preprocessor_config.json', 'tokenizer.json', 'tokenizer_config.json',
+    'special_tokens_map.json', 'vocab.json', 'merges.txt',
+    'onnx/audio_model_quantized.onnx', 'onnx/text_model_quantized.onnx')
+$modelReady = @($modelFiles | Where-Object { -not (Test-Path -LiteralPath (Join-Path $model $_)) }).Count -eq 0
+$workerReady = (Test-Path -LiteralPath (Join-Path $worker 'fastcloud-clap.exe')) -and -not $RebuildWorker
+if (-not $modelReady -or -not $workerReady) {
+    if (-not (Test-Path -LiteralPath $python)) {
+        uv venv --python 3.12 $venv
+        if ($LASTEXITCODE -ne 0) { throw 'Could not create the CLAP build environment.' }
+    }
+    uv pip install --python $python 'onnxruntime==1.30.0' 'tokenizers==0.22.2' 'pyinstaller==6.22.3' 'huggingface_hub[cli]'
+    if ($LASTEXITCODE -ne 0) { throw 'Could not install CLAP build dependencies.' }
+
+}
+if (-not $modelReady) {
+    & $hf download Xenova/larger_clap_music_and_speech `
+        config.json preprocessor_config.json tokenizer.json tokenizer_config.json `
+        special_tokens_map.json vocab.json merges.txt `
+        onnx/audio_model_quantized.onnx onnx/text_model_quantized.onnx `
+        --revision $revision --local-dir $model
+    if ($LASTEXITCODE -ne 0) { throw 'Could not download the pinned CLAP weights.' }
+
 }
 foreach ($name in $expected.Keys) {
     $actual = (Get-FileHash -LiteralPath (Join-Path $model "onnx/$name") -Algorithm SHA256).Hash
@@ -72,6 +81,11 @@ if (-not (Test-Path -LiteralPath (Join-Path $worker 'fastcloud-clap.exe'))) {
         (Join-Path $project 'desktop/clap_worker.py')
     if ($LASTEXITCODE -ne 0) { throw 'Could not freeze the CLAP worker.' }
 }
+
+# A restored worker must still load its native libraries and produce embeddings.
+$workerExe = Join-Path $worker 'fastcloud-clap.exe'
+python (Join-Path $project 'tools/verify_clap_worker.py') $workerExe $model
+if ($LASTEXITCODE -ne 0) { throw 'Native Windows CLAP worker smoke test failed.' }
 
 Write-Host "Private CLAP resources ready in $bundle"
 Write-Host 'Build locally with: cd desktop; npm run tauri -- build --config src-tauri/tauri.private.conf.json --bundles nsis'

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Trophy } from 'lucide-react'
 import { api } from './api'
+import { WaveSelect } from './WaveSelect'
 import type { LeaderboardEntry, Settings } from './types'
 
 const hours = (ms: number, english: boolean) => `${(ms / 3600000).toLocaleString(english ? 'en-US' : 'ru-RU', { maximumFractionDigits: 1 })} ${english ? 'h' : 'ч'}`
@@ -17,12 +18,12 @@ export function WaveModes({ settings, english }: { settings: Settings; english: 
     finally { setBusy(false) }
   }
   return <div className="wave-mode-controls">
-    <label>{english ? 'Wave mode' : 'Режим волны'}<select disabled={busy} value={settings.wave_mode || 'Balanced'} onChange={e => void choose('wave_mode', e.target.value)}>
-      {([['Balanced','По вкусу','Your taste'],['Familiar','Привычное','Familiar'],['Discover','Открытия','Discoveries'],['Mood','Под настроение','By mood'],['NoRepeats','Без повторов · 7 дней','No repeats · 7 days']] as const).map(([value, ru, en]) => <option key={value} value={value}>{english ? en : ru}</option>)}
-    </select></label>
-    {settings.wave_mode === 'Mood' && <label>{english ? 'Mood' : 'Настроение'}<select disabled={busy} value={settings.wave_mood || 'Calm'} onChange={e => void choose('wave_mood', e.target.value)}>
-      {([['Calm','Спокойное','Calm'],['Sad','Грустное','Sad'],['Happy','Весёлое','Happy'],['Workout','Тренировка','Workout'],['Road','В дороге','On the road']] as const).map(([value, ru, en]) => <option key={value} value={value}>{english ? en : ru}</option>)}
-    </select></label>}
+    <WaveSelect label={english ? 'Wave mode' : 'Режим волны'} value={settings.wave_mode || 'Balanced'} disabled={busy} english={english} onChange={value => void choose('wave_mode', value)} choices={[
+      ['Balanced','По вкусу','Your taste'],['Familiar','Привычное','Familiar'],['Discover','Открытия','Discoveries'],['Mood','Под настроение','By mood'],['NoRepeats','Без повторов · 7 дней','No repeats · 7 days']
+    ]} />
+    {settings.wave_mode === 'Mood' && <WaveSelect label={english ? 'Mood' : 'Настроение'} value={settings.wave_mood || 'Calm'} disabled={busy} english={english} onChange={value => void choose('wave_mood', value)} choices={[
+      ['Calm','Спокойное','Calm'],['Sad','Грустное','Sad'],['Happy','Весёлое','Happy'],['Workout','Тренировка','Workout'],['Road','В дороге','On the road']
+    ]} />}
     {error && <p className="error-text" role="alert">{error}</p>}
   </div>
 }
