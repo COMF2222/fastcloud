@@ -96,6 +96,19 @@ pub async fn check_token(token: &str) -> Result<usize> {
     Ok(load_liked_ids(&http, token).await?.len())
 }
 
+pub struct SourceSong { pub title: String, pub artists: Vec<String>, pub duration: Option<u64> }
+
+pub async fn source_ids_at(token: &str, base: &str) -> Result<Vec<String>> {
+    load_liked_ids_at(&http_client()?, token, base).await
+}
+
+pub async fn source_metadata_at(token: &str, ids: &[String], base: &str) -> Result<Vec<SourceSong>> {
+    anyhow::ensure!(ids.len() <= 50, "Metadata batch is too large");
+    Ok(load_tracks(&http_client()?, token, base, ids).await?
+        .result.into_iter().flatten().filter(|track| !track.title.trim().is_empty())
+        .map(|track| SourceSong { title: track.title, artists: track.artists.into_iter().map(|artist| artist.name).collect(), duration: track.duration_ms }).collect())
+}
+
 async fn load_liked_ids(http: &reqwest::Client, token: &str) -> Result<Vec<String>> {
     load_liked_ids_at(http, token, "https://api.music.yandex.net").await
 }
@@ -426,7 +439,7 @@ fn normalize(value: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn source(title: &str, artist: &str, duration_ms: u64) -> YandexTrack {
@@ -488,6 +501,10 @@ mod tests {
     }
 
     type Requests = Arc<parking_lot::Mutex<Vec<(String, String, serde_json::Value)>>>;
+
+    pub(crate) async fn metadata_fixture() -> (String, Requests, tokio::task::JoinHandle<()>) {
+        fixture(Failure::default()).await
+    }
 
     async fn fixture(failure: Failure) -> (String, Requests, tokio::task::JoinHandle<()>) {
         use serde_json::json;

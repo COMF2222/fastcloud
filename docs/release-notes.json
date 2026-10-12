@@ -2,6 +2,29 @@
   "schema": 1,
   "releases": [
     {
+      "version": "0.4.13",
+      "ru": {
+        "title": "Режимы волны, лидерборд и продолжение импорта",
+        "changes": [
+          "В «Моей волне» появились режимы: привычное, открытия, под настроение и без повторов за последние 7 дней.",
+          "Лидерборд учитывает накопленную статистику: время, прослушивания и любимую музыку. Анонимность можно переключить в аккаунте или в самом рейтинге.",
+          "В статистике объединяются варианты имени исполнителя с разным регистром и декоративными символами.",
+          "Импорт из Spotify и Яндекс Музыки можно продолжить после остановки или перезапуска. Ненайденные треки можно поискать повторно отдельно.",
+          "Треки, добавленные через «Играть следующим», сохраняют приоритет при перемешивании, пополнении волны и перезапуске."
+        ]
+      },
+      "en": {
+        "title": "Wave modes, leaderboard and resumable imports",
+        "changes": [
+          "My Wave adds familiar music, discoveries, mood and no repeats over the last 7 days.",
+          "The leaderboard uses accumulated listening statistics: time, listens and favourite music. Switch anonymity in Account settings or directly on the leaderboard.",
+          "Artist names with different capitalization and decorative symbols are combined in listening statistics.",
+          "Resume Spotify and Yandex Music imports after stopping or restarting. Retry unmatched tracks separately.",
+          "Play next tracks retain priority through shuffle, wave refills and app restarts."
+        ]
+      }
+    },
+    {
       "version": "0.4.12",
       "ru": {
         "title": "Моя волна учитывает свежий вкус",

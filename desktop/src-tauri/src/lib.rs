@@ -89,7 +89,6 @@ struct AppState {
     settings: Arc<Mutex<config::Settings>>,
     connection: Arc<Mutex<Connection>>,
     presence: discord::Presence,
-    import: Arc<Mutex<ImportStatus>>,
     spotify: Arc<spotify::Import>,
     pending_link: Mutex<Option<String>>,
     demo_reposted_tracks: Mutex<std::collections::HashSet<u64>>,
@@ -402,7 +401,7 @@ impl AppState {
         personal.seed_preferences(&settings);
         personal.seed_feedback(&wave.disliked_tracks());
         wave.replace_dislikes(&personal.feedback());
-        wave.set_preferences(settings.music_taste.clone());
+        wave.configure(&settings);
         if !demo {
             let previous_id = settings.last_queue_idx.and_then(|index| settings.last_queue.get(index)).map(|track| track.id);
             settings.last_queue_idx = wave.with_dislike_filter(|dislikes|
@@ -576,8 +575,7 @@ impl AppState {
                 Connection::Connecting
             })),
             presence,
-            import: Arc::new(Mutex::new(ImportStatus::default())),
-            spotify: Arc::new(spotify::Import::default()),
+            spotify: Arc::new(spotify::Import::new(config::app_paths()?.root.join("imports"))),
             pending_link: Mutex::new(
                 std::env::args()
                     .skip(1)
@@ -603,7 +601,7 @@ impl AppState {
                     if signed_in && last_sync.is_none_or(|last| last.elapsed() >= std::time::Duration::from_secs(30)) {
                         last_sync = Some(std::time::Instant::now());
                         if personal.sync(&client,&settings,player.as_ref(),&wave).await.is_err() { personal.sync_failed(); }
-                        wave.set_preferences(settings.lock().music_taste.clone());
+                        wave.configure(&settings.lock());
                     }
                     if !signed_in { last_sync = None; }
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -828,8 +826,13 @@ async fn my_wave(
         let seed = wave::first_seed(&engine, &liked_tracks, variation);
         (liked_tracks, seed)
     }).await.map_err(|error| error.to_string())?;
-    let seed = seed
-        .ok_or_else(|| "No playable liked tracks are available for My Wave".to_string())?;
+    let (seed, prepared) = if let Some(seed) = seed { (seed, None) } else {
+        // Strict modes may have no suitable local opening. Find an unheard or
+        // mood-matched opening instead of falling back to a prohibited repeat.
+        let generated = wave::generate(state.client.clone(), &state.wave, liked_tracks.clone(), variation,
+            &Default::default(), &[]).await?;
+        (generated.first().cloned().ok_or("No tracks match this wave mode yet")?, Some(generated))
+    };
     let player = state.player()?.clone();
     let started_at = std::time::Instant::now();
     {
@@ -855,8 +858,9 @@ async fn my_wave(
     let avoid = std::collections::HashSet::from([seed.id]);
     let avoid_identities = vec![wave::track_identity(&seed)];
     state.rt.spawn(async move {
-        let generated = wave::generate(client, &wave, liked_tracks, variation.wrapping_add(1),
-            &avoid, &avoid_identities).await;
+        let generated = if let Some(prepared) = prepared { Ok(prepared.into_iter().skip(1).collect()) } else {
+            wave::generate(client, &wave, liked_tracks, variation.wrapping_add(1), &avoid, &avoid_identities).await
+        };
         append_wave_tracks(&player, &wave, &wave_session, started_at, generated);
     });
     Ok(vec![seed])
@@ -2315,12 +2319,40 @@ fn theme_action(state: tauri::State<'_, AppState>, action: String, name: Option<
         }
         _ => return Err("Unknown theme action".into()),
     }
+    state.wave.configure(&settings);
     state.personal.preferences_changed(&settings);
     Ok(settings.clone())
 }
 
 #[tauri::command]
 fn personal_collections(state: tauri::State<'_, AppState>) -> serde_json::Value { state.personal.collections() }
+
+#[tauri::command]
+async fn leaderboard(state: tauri::State<'_, AppState>, days: u32, sort: String) -> Result<serde_json::Value, String> {
+    if ![0, 7, 30].contains(&days) || !["time", "plays"].contains(&sort.as_str()) { return Err("Invalid leaderboard selection".into()); }
+    let (server, token) = state.client.relay_credentials().await.map_err(|e| e.to_string())?.ok_or("Sign in through the Fastcloud server")?;
+    let response = reqwest::Client::new().get(format!("{server}/v1/leaderboard"))
+        .query(&[("days", days.to_string()), ("sort", sort)])
+        .header("Authorization", format!("OAuth {token}"))
+        .timeout(std::time::Duration::from_secs(15)).send().await.map_err(|e| e.to_string())?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND { return Err("Leaderboard is not available yet. Update the Fastcloud server.".into()); }
+    response.error_for_status().map_err(|e| e.to_string())?.json().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn leaderboard_anonymity(state: tauri::State<'_, AppState>, anonymous: bool) -> Result<(), String> {
+    let original = state.session.lock().clone().ok_or("Sign in first")?;
+    let (server, token) = state.client.relay_credentials().await.map_err(|e| e.to_string())?.ok_or("Sign in through the Fastcloud server")?;
+    reqwest::Client::new().post(format!("{server}/v1/me/personal"))
+        .header("Authorization", format!("OAuth {token}")).header("X-Fastcloud-Preferences", "2")
+        .json(&serde_json::json!({"preferences": {"leaderboard_anonymous": anonymous}}))
+        .timeout(std::time::Duration::from_secs(15)).send().await.map_err(|e| e.to_string())?
+        .error_for_status().map_err(|e| e.to_string())?;
+    if !state.session.lock().as_ref().is_some_and(|session| std::sync::Arc::ptr_eq(session, &original)) { return Err("Account changed".into()); }
+    let mut settings = state.settings.lock(); settings.leaderboard_anonymous = anonymous;
+    settings.save().map_err(|e| e.to_string())?; state.personal.preferences_changed(&settings);
+    Ok(())
+}
 
 #[tauri::command]
 fn listening_statistics(state: tauri::State<'_, AppState>) -> serde_json::Value { state.personal.statistics() }
@@ -2351,7 +2383,7 @@ async fn chat_request(state: tauri::State<'_, AppState>, action: chat::Action, i
 #[tauri::command]
 async fn sync_personal_data(state: tauri::State<'_, AppState>) -> Result<(),String> {
     state.personal.sync(&state.client,&state.settings,state.player.as_ref(),&state.wave).await.map_err(|_| "Could not sync personal data; the local copy is kept".to_owned())?;
-    state.wave.set_preferences(state.settings.lock().music_taste.clone());
+    state.wave.configure(&state.settings.lock());
     Ok(())
 }
 
@@ -2368,7 +2400,8 @@ fn settings_backup(state: tauri::State<'_, AppState>, action: String, path: Stri
         let next = personal::apply_preferences(&settings,&backup.preferences).map_err(|error|error.to_string())?;
         state.personal.import_collections(backup.folders,backup.smart_playlists).map_err(|error|error.to_string())?;
         next.save().map_err(|error|error.to_string())?; *settings = next;
-        state.personal.preferences_changed(&settings); state.wave.set_preferences(settings.music_taste.clone());
+        state.wave.configure(&settings);
+    state.personal.preferences_changed(&settings); state.wave.configure(&settings);
         if let Some(player) = &state.player { player.set_audio_preferences(settings.normalization,settings.crossfade_ms,settings.gapless); player.set_autoplay(settings.autoplay); }
     } else { return Err("Unknown backup action".into()); }
     Ok(settings.clone())
@@ -2426,6 +2459,7 @@ fn toggle_quick_access(
     let mut settings = state.settings.lock();
     let pinned = settings.toggle_quick_access(item);
     settings.save().map_err(|error| error.to_string())?;
+    state.wave.configure(&settings);
     state.personal.preferences_changed(&settings);
     Ok(pinned)
 }
@@ -2601,6 +2635,9 @@ fn set_setting(
         "normalization" => settings.normalization = value.as_bool().ok_or("Expected true or false")?,
         "gapless" => settings.gapless = value.as_bool().ok_or("Expected true or false")?,
         "crossfade_ms" => settings.crossfade_ms = value.as_u64().ok_or("Expected transition duration")?.min(8000) as u32,
+        "wave_mode" => settings.wave_mode = serde_json::from_value(value).map_err(|e| e.to_string())?,
+        "wave_mood" => settings.wave_mood = serde_json::from_value(value).map_err(|e| e.to_string())?,
+        "leaderboard_anonymous" => settings.leaderboard_anonymous = value.as_bool().ok_or("Expected true or false")?,
         "music_taste" => {
             let mut taste: config::MusicTaste = serde_json::from_value(value).map_err(|e| e.to_string())?;
             taste.normalize();
@@ -2818,6 +2855,7 @@ fn set_setting(
     }
     settings.save().map_err(|e| e.to_string())?;
     if let Some(player) = &state.player { player.set_audio_preferences(settings.normalization,settings.crossfade_ms,settings.gapless); }
+    state.wave.configure(&settings);
     state.personal.preferences_changed(&settings);
     drop(settings);
     if key == "eq_auto" {
@@ -2985,7 +3023,9 @@ fn clear_artwork_cache() -> Result<(), String> {
 
 #[tauri::command]
 fn import_status(state: tauri::State<'_, AppState>) -> ImportStatus {
-    state.import.lock().clone()
+    let view = spotify::spotify_import_status(state);
+    if view.source != "yandex" { return ImportStatus::default(); }
+    ImportStatus { running: view.running, current: view.current, total: view.total, matched: view.matched, title: view.title, message: view.error }
 }
 
 #[tauri::command]
@@ -2995,95 +3035,7 @@ async fn check_yandex_token(token: String) -> Result<usize, String> {
 
 #[tauri::command]
 fn start_yandex_import(state: tauri::State<'_, AppState>, token: String) -> Result<(), String> {
-    if token.trim().is_empty() {
-        return Err("Paste a Yandex Music OAuth token".into());
-    }
-    if !state.client.is_demo() && !state.store.signed_in() {
-        return Err("Sign in to SoundCloud first".into());
-    }
-    let original_session = state.session.lock().clone();
-    if !state.client.is_demo() && original_session.is_none() { return Err("No SoundCloud session".into()); }
-    let active_session = state.session.clone();
-    {
-        let mut status = state.import.lock();
-        if status.running {
-            return Err("Import is already running".into());
-        }
-        *status = ImportStatus {
-            running: true,
-            title: "Loading Yandex likes…".into(),
-            ..ImportStatus::default()
-        };
-    }
-    let status = state.import.clone();
-    let settings = state.settings.clone();
-    // Long imports must not change owner if the user signs into another account.
-    let client = Arc::new(api::ApiClient::new(state.settings.lock().client_id.clone(), state.client.is_demo()));
-    let import_session = original_session.as_ref().map(|session| session.for_client(client.clone()));
-    let store = state.store.clone();
-    let demo = client.is_demo();
-    state.rt.spawn(async move {
-        let _import_session = import_session;
-        let check_account = || -> anyhow::Result<()> {
-            anyhow::ensure!(demo || (store.signed_in() && active_session.lock().as_ref()
-                .zip(original_session.as_ref()).is_some_and(|(active, original)| Arc::ptr_eq(active, original))),
-                "SoundCloud account changed; import stopped");
-            Ok(())
-        };
-        let (tx, rx) = crossbeam_channel::unbounded();
-        tokio::spawn(import_yandex::import_likes(token, client.clone(), tx));
-        loop {
-            match rx.try_recv() {
-                Ok(import_yandex::Event::Progress { current, total, matched, title }) => {
-                    let mut value = status.lock();
-                    value.current = current; value.total = total; value.matched = matched; value.title = title;
-                }
-                Ok(import_yandex::Event::Finished { track_ids, not_found }) => {
-                    let count = track_ids.len();
-                    status.lock().title = "Saving playlists…".into();
-                    let report = if demo {
-                        let mut report = import_yandex::SavedPlaylists::default();
-                        for (part, chunk) in track_ids.chunks(import_yandex::PLAYLIST_LIMIT).enumerate() {
-                            let mut settings = settings.lock();
-                            let id = settings.custom_playlists.iter().map(|item| item.id).max().unwrap_or(8999).max(8999) + 1;
-                            settings.custom_playlists.push(config::CustomPlaylist { id,
-                                title: import_yandex::playlist_name(part, count), track_ids: chunk.to_vec() });
-                            if let Err(error) = settings.save() { report.error = Some(error.to_string()); break; }
-                            report.added += chunk.len(); report.parts += 1;
-                        }
-                        report
-                    } else {
-                        import_yandex::save_playlists(&client, &track_ids, check_account, || store.invalidate(&Key::MyPlaylists)).await
-                    };
-                    store.invalidate(&Key::MyPlaylists);
-                    let english = settings.lock().language == config::Language::English;
-                    let mut value = status.lock();
-                    value.running = false;
-                    value.title.clear();
-                    value.message = if let Some(error) = report.error {
-                        if english { format!("Import stopped. Saved {} tracks in {} playlists. {error}", report.added, report.parts) }
-                        else { format!("Импорт остановлен. Сохранено {} треков в {} плейлистах. {error}", report.added, report.parts) }
-                    } else if count == 0 {
-                        if english { format!("No matching tracks found ({not_found} not found); no playlist created") }
-                        else { format!("Подходящие треки не найдены ({not_found} не найдено). Плейлист не создан") }
-                    } else if english {
-                        format!("Imported {} tracks into {} playlists ({not_found} not found)", report.added, report.parts)
-                    } else {
-                        format!("Импортировано {} треков в {} плейлистов ({not_found} не найдено)", report.added, report.parts)
-                    };
-                    break;
-                }
-                Ok(import_yandex::Event::Failed(error)) => {
-                    let mut value = status.lock(); value.running = false; value.message = error; break;
-                }
-                Err(crossbeam_channel::TryRecvError::Empty) => tokio::time::sleep(std::time::Duration::from_millis(150)).await,
-                Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                    let mut value = status.lock(); value.running = false; value.message = "Import stopped unexpectedly".into(); break;
-                }
-            }
-        }
-    });
-    Ok(())
+    spotify::start_yandex(&state, token)
 }
 
 #[tauri::command]
@@ -3246,6 +3198,7 @@ fn connect_account(state: tauri::State<'_, AppState>) -> Result<(), String> {
                 {
                     let mut player_state = player.state.lock();
                     player_state.queue.clear();
+                    player_state.priority_next.clear();
                     player_state.queue_revision = player_state.queue_revision.wrapping_add(1);
                     player_state.order.clear();
                     player_state.current = None;
@@ -3346,6 +3299,7 @@ async fn connect_server(state: tauri::State<'_, AppState>, server_url: String) -
             player.stop();
             let mut playback = player.state.lock();
             playback.queue.clear();
+            playback.priority_next.clear();
             playback.queue_revision = playback.queue_revision.wrapping_add(1);
             playback.order.clear();
             playback.current = None;
@@ -3778,7 +3732,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             chat_request,
-            personal_collections, listening_statistics, update_personal_collection, smart_playlist_tracks,
+            leaderboard, leaderboard_anonymity, personal_collections, listening_statistics, update_personal_collection, smart_playlist_tracks,
             sleep_timer, sync_personal_data, settings_backup,
             connection,
             my_profile,
@@ -3860,6 +3814,8 @@ pub fn run() {
             spotify::preview_spotify_import,
             spotify::start_spotify_import,
             spotify::cancel_spotify_import,
+            spotify::resume_import,
+            spotify::discard_import,
             spotify::open_spotify_export,
             upload_track,
             edit_track,

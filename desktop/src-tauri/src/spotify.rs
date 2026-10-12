@@ -16,6 +16,8 @@ use std::{
     time::Duration,
 };
 
+mod recovery;
+
 const FILE_LIMIT: u64 = 16 * 1024 * 1024;
 const TOTAL_LIMIT: u64 = 128 * 1024 * 1024;
 const TRACK_LIMIT: usize = 50_000;
@@ -27,7 +29,7 @@ pub enum Kind {
     Likes,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct Song {
     title: String,
     artists: Vec<String>,
@@ -54,7 +56,7 @@ impl Song {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct Collection {
     name: String,
     kind: Kind,
@@ -78,7 +80,7 @@ pub struct Selection {
     kind: Kind,
 }
 
-#[derive(Clone, Default, Serialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Report {
     name: String,
@@ -95,12 +97,16 @@ pub struct Report {
 #[serde(rename_all = "camelCase")]
 pub struct View {
     pub running: bool,
+    pub resumable: bool,
+    pub retry_missing: bool,
+    pub needs_token: bool,
+    pub source: String,
     ready: bool,
-    current: usize,
-    total: usize,
-    matched: usize,
-    title: String,
-    error: String,
+    pub current: usize,
+    pub total: usize,
+    pub matched: usize,
+    pub title: String,
+    pub error: String,
     cancelled: bool,
     collections: Vec<Summary>,
     reports: Vec<Report>,
@@ -113,6 +119,9 @@ pub struct Import {
     cancel: AtomicBool,
     account_changes: AtomicUsize,
     finished: tokio::sync::Notify,
+    root: Option<std::path::PathBuf>,
+    loaded_owner: std::sync::atomic::AtomicU64,
+    saved: Mutex<Option<recovery::Saved>>,
 }
 
 pub struct AccountChange<'a>(&'a Import);
@@ -671,113 +680,76 @@ impl Context {
 }
 
 async fn run(context: &Context, collections: Vec<Collection>) -> Result<(), String> {
-    let mut cache = HashMap::<String, Option<u64>>::new();
+    if context.job.saved.lock().is_none() {
+        *context.job.saved.lock() = Some(recovery::Saved { parts: vec![Vec::new(); collections.len()], collections: collections.clone(), source: "spotify".into(), ..Default::default() });
+        context.job.save_recovery()?;
+    }
+    recovery::reconcile(context).await?;
     let mut liked = HashSet::new();
-    if collections.iter().any(|c| c.kind == Kind::Likes) {
+    if collections.iter().any(|collection| collection.kind == Kind::Likes) {
         let mut pager = api::endpoints::my_liked_tracks(&context.client).await;
         while !pager.is_exhausted() {
             context.check()?;
-            let page = pager
-                .next_page()
-                .await
-                .map_err(|e| format!("Could not read existing likes: {e}"))?;
-            liked.extend(page.iter().map(|t| t.id));
+            liked.extend(pager.next_page().await.map_err(|error| format!("Could not read existing likes: {error}"))?.iter().map(|track| track.id));
         }
     }
-    for collection in collections {
+    { let mut view = context.job.view.lock(); view.current = 0; view.matched = 0; view.reports.clear(); }
+    for (index, collection) in collections.iter().enumerate() {
         context.check()?;
-        let report_index = {
-            let mut view = context.job.view.lock();
-            let index = view.reports.len();
-            view.reports.push(Report {
-                name: collection.name.clone(),
-                ..Report::default()
-            });
-            index
-        };
-        let mut ids = Vec::new();
-        let mut seen = HashSet::new();
-        for song in collection.songs {
+        context.job.view.lock().reports.push(Report { name: collection.name.clone(), ..Default::default() });
+        let mut ids = Vec::new(); let mut seen = HashSet::new();
+        for song in &collection.songs {
             context.check()?;
             context.job.view.lock().title = song.label();
             let key = song.key();
-            let id = if let Some(id) = cache.get(&key) {
-                *id
-            } else {
-                let id = find_song(context, &song).await?;
-                cache.insert(key, id);
+            let cached = context.job.saved.lock().as_ref().unwrap().matches.get(&key).copied();
+            let id = if let Some(id) = cached { id } else {
+                let id = find_song(context, song).await?;
+                context.job.saved.lock().as_mut().unwrap().matches.insert(key, id);
+                context.job.save_recovery()?;
                 tokio::time::sleep(Duration::from_millis(150)).await;
                 id
             };
             context.check()?;
             if let Some(id) = id {
-                {
-                    let mut view = context.job.view.lock();
-                    view.matched += 1;
-                    view.reports[report_index].matched += 1;
-                }
+                { let mut view = context.job.view.lock(); view.matched += 1; view.reports[index].matched += 1; }
                 if seen.insert(id) {
                     ids.push(id);
                     if collection.kind == Kind::Likes {
                         if liked.insert(id) {
-                            api::endpoints::like_track(&context.client, id)
-                                .await
-                                .map_err(|e| format!("Could not add like: {e}"))?;
+                            api::endpoints::like_track(&context.client, id).await.map_err(|error| format!("Could not add like: {error}"))?;
                             context.store.invalidate(&Key::Likes);
                             context.confirmed_likes.lock().push(id);
-                            context.job.view.lock().reports[report_index].added += 1;
-                        } else {
-                            context.job.view.lock().reports[report_index].already_liked += 1;
-                        }
+                            context.job.view.lock().reports[index].added += 1;
+                        } else { context.job.view.lock().reports[index].already_liked += 1; }
                     }
                 }
             } else {
-                let mut view = context.job.view.lock();
-                let report = &mut view.reports[report_index];
+                let mut view = context.job.view.lock(); let report = &mut view.reports[index];
                 report.not_found += 1;
-                if report.missing.len() < 200 {
-                    report.missing.push(song.label());
-                }
+                if report.missing.len() < 200 { report.missing.push(song.label()); }
             }
             context.job.view.lock().current += 1;
         }
-        context.check()?;
         if collection.kind == Kind::Playlist && !ids.is_empty() {
-            save_playlist_parts(context, &collection.name, &ids, report_index).await?;
+            recovery::save_parts(context, index, &collection.name, &ids, collection.songs.len() > 500).await?;
+            let parts = context.job.saved.lock().as_ref().unwrap().parts[index].clone();
+            let mut view = context.job.view.lock();
+            view.reports[index].added = parts.iter().map(|part| part.tracks.len()).sum();
+            view.reports[index].playlist_ids = parts.iter().map(|part| part.id).collect();
         }
-        context.job.view.lock().reports[report_index].completed = true;
+        context.job.view.lock().reports[index].completed = true;
     }
-    Ok(())
-}
-
-async fn save_playlist_parts(
-    context: &Context,
-    name: &str,
-    ids: &[u64],
-    report_index: usize,
-) -> Result<(), String> {
-    // SoundCloud caps playlists at 500 tracks. Keep completed parts in the
-    // partial report if a later write fails; never retry a playlist POST blindly.
-    for (part, chunk) in ids.chunks(500).enumerate() {
-        context.check()?;
-        let name = if ids.len() > 500 {
-            format!("{name} - part {}", part + 1)
-        } else {
-            name.to_owned()
-        };
-        let playlist = api::endpoints::create_playlist(&context.client, &name, false, chunk)
-            .await
-            .map_err(|e| format!("Could not create playlist '{name}': {e}"))?;
-        context.store.invalidate(&Key::MyPlaylists);
-        let mut view = context.job.view.lock();
-        view.reports[report_index].added += chunk.len();
-        view.reports[report_index].playlist_ids.push(playlist.id);
-    }
+    context.job.saved.lock().as_mut().unwrap().done = true;
+    context.job.save_recovery()?;
     Ok(())
 }
 
 #[tauri::command]
 pub fn spotify_import_status(state: tauri::State<'_, AppState>) -> View {
+    if !super::feedback_account_ready(&state) { return View::default(); }
+    if let Err(error) = state.spotify.restore(state.personal.account_id()) { return View { error, ..Default::default() }; }
+    state.spotify.refresh_recovery_view();
     state.spotify.view.lock().clone()
 }
 
@@ -786,9 +758,9 @@ pub async fn preview_spotify_import(
     state: tauri::State<'_, AppState>,
     paths: Vec<String>,
 ) -> Result<View, String> {
-    if state.spotify.view.lock().running {
-        return Err("Import is already running".into());
-    }
+    state.spotify.restore(state.personal.account_id())?;
+    if state.spotify.view.lock().running { return Err("Import is already running".into()); }
+    if state.spotify.saved.lock().as_ref().is_some_and(|saved| !saved.done) { return Err("Resume or discard the saved import first".into()); }
     let collections = tokio::task::spawn_blocking(move || load_files(&paths))
         .await
         .map_err(|e| e.to_string())??;
@@ -810,6 +782,7 @@ pub async fn preview_spotify_import(
     if state.spotify.account_changes.load(Ordering::Acquire) > 0 {
         return Err("Wait for the SoundCloud account connection to finish".into());
     }
+    state.spotify.loaded_owner.store(state.personal.account_id(), Ordering::Release);
     *state.spotify.plan.lock() = Some(collections);
     *view = View {
         ready: true,
@@ -824,14 +797,10 @@ pub fn start_spotify_import(
     state: tauri::State<'_, AppState>,
     selections: Vec<Selection>,
 ) -> Result<(), String> {
-    if !state.store.signed_in() || state.client.is_demo() {
+    if !super::feedback_account_ready(&state) || state.client.is_demo() {
         return Err("Sign in to SoundCloud first".into());
     }
-    let original_session = state
-        .session
-        .lock()
-        .clone()
-        .ok_or("No SoundCloud session")?;
+    if state.session.lock().is_none() { return Err("No SoundCloud session".into()); }
     let mut view = state.spotify.view.lock();
     if view.running {
         return Err("Import is already running".into());
@@ -863,13 +832,26 @@ pub fn start_spotify_import(
             })
         })
         .collect::<Vec<_>>();
-    let total = collections.iter().map(|c| c.songs.len()).sum();
-    *view = View {
-        running: true,
-        total,
-        collections: view.collections.clone(),
-        ..View::default()
-    };
+    let owner = state.personal.account_id();
+    if owner == 0 { return Err("Wait for account synchronization".into()); }
+    *state.spotify.saved.lock() = Some(recovery::Saved { owner, source: "spotify".into(), parts: vec![Vec::new(); collections.len()], collections: collections.clone(), ..Default::default() });
+    state.spotify.save_recovery()?;
+    state.spotify.loaded_owner.store(owner, Ordering::Release);
+    *view = View { running: true, total: collections.iter().map(|collection| collection.songs.len()).sum(), source: "spotify".into(), ..Default::default() };
+    drop(view);
+    drop(plan);
+    launch(&state, collections, None)
+}
+
+fn launch(state: &AppState, collections: Vec<Collection>, yandex_token: Option<String>) -> Result<(), String> {
+    let mut launch_view = state.spotify.view.lock();
+    let original_session = state.session.lock().clone();
+    if state.spotify.account_changes.load(Ordering::Acquire) > 0 || original_session.is_none() {
+        launch_view.running = false;
+        state.spotify.finished.notify_waiters();
+        return Err("Wait for the SoundCloud account connection to finish".into());
+    }
+    let original_session = original_session.unwrap();
     state.spotify.cancel.store(false, Ordering::Release);
     let client = Arc::new(api::ApiClient::new(
         state.settings.lock().client_id.clone(),
@@ -888,7 +870,13 @@ pub fn start_spotify_import(
     state.rt.spawn(async move {
         // Hold the isolated session strongly until the client has finished.
         let _session = session;
-        let mut result = run(&context, collections).await;
+        let mut result = if let Some(token) = yandex_token {
+            load_yandex(&context, &token).await
+        } else { Ok(()) };
+        if result.is_ok() {
+            let saved_collections = context.job.saved.lock().as_ref().map(|saved| saved.collections.clone()).unwrap_or(collections);
+            result = run(&context, saved_collections).await;
+        }
         if context
             .active_session
             .lock()
@@ -912,7 +900,6 @@ pub fn start_spotify_import(
             }
         }
         let mut view = context.job.view.lock();
-        view.running = false;
         view.title.clear();
         if let Err(error) = result {
             if error == "cancelled" {
@@ -921,9 +908,103 @@ pub fn start_spotify_import(
                 view.error = error;
             }
         }
+        let reports = view.reports.clone();
         drop(view);
+        if let Some(saved) = context.job.saved.lock().as_mut() { saved.reports = reports; }
+        let save_error = context.job.save_recovery().err();
+        { let mut view = context.job.view.lock(); view.running = false; if let Some(error) = save_error { view.error = error; } }
+        context.job.refresh_recovery_view();
         context.job.finished.notify_waiters();
     });
+    drop(launch_view);
+    Ok(())
+}
+
+async fn load_yandex(context: &Context, token: &str) -> Result<(), String> {
+    load_yandex_at(context, token, "https://api.music.yandex.net").await
+}
+
+async fn load_yandex_at(context: &Context, token: &str, base: &str) -> Result<(), String> {
+    context.check()?;
+    let started = context.job.saved.lock().as_ref().unwrap().yandex_started;
+    if !started {
+        context.job.view.lock().title = "Loading Yandex Music likes…".into();
+        let ids = crate::import_yandex::source_ids_at(token, base).await.map_err(|error| error.to_string())?;
+        if ids.len() > TRACK_LIMIT { return Err("Too many tracks to import".into()); }
+        context.check()?;
+        { let mut saved = context.job.saved.lock(); let saved = saved.as_mut().unwrap(); saved.yandex_ids = ids; saved.yandex_started = true; }
+        context.job.save_recovery()?;
+    }
+    loop {
+        context.check()?;
+        let ids: Vec<_> = context.job.saved.lock().as_ref().unwrap().yandex_ids.iter().take(50).cloned().collect();
+        if ids.is_empty() { break; }
+        let songs = crate::import_yandex::source_metadata_at(token, &ids, base).await.map_err(|error| error.to_string())?;
+        context.check()?;
+        {
+            let mut saved = context.job.saved.lock(); let saved = saved.as_mut().unwrap();
+            saved.collections[0].skipped += ids.len().saturating_sub(songs.len());
+            saved.collections[0].songs.extend(songs.into_iter().map(|song| Song { title: song.title, artists: song.artists, duration: song.duration, isrc: None }));
+            saved.yandex_ids.drain(..ids.len());
+            let mut view = context.job.view.lock();
+            view.title = format!("Yandex Music · {} tracks loaded", saved.collections[0].songs.len());
+        }
+        context.job.save_recovery()?;
+    }
+    Ok(())
+}
+
+pub fn start_yandex(state: &AppState, token: String) -> Result<(), String> {
+    if token.trim().is_empty() { return Err("Paste a Yandex Music OAuth token".into()); }
+    if !super::feedback_account_ready(&state) || state.client.is_demo() { return Err("Wait for your SoundCloud profile to load".into()); }
+    let owner = state.personal.account_id();
+    if owner == 0 { return Err("Wait for account synchronization".into()); }
+    state.spotify.restore(owner)?;
+    if state.spotify.saved.lock().as_ref().is_some_and(|saved| !saved.done) { return Err("Resume or discard the saved import first".into()); }
+    let mut view = state.spotify.view.lock();
+    if view.running || state.spotify.account_changes.load(Ordering::Acquire) > 0 { return Err("Import is already running or account is changing".into()); }
+    let collections = vec![Collection { name: "Yandex Music likes".into(), kind: Kind::Playlist, songs: Vec::new(), skipped: 0 }];
+    *state.spotify.saved.lock() = Some(recovery::Saved { owner, source: "yandex".into(), parts: vec![Vec::new()], collections: collections.clone(), ..Default::default() });
+    state.spotify.save_recovery()?;
+    *view = View { running: true, source: "yandex".into(), ..Default::default() };
+    drop(view);
+    launch(state, collections, Some(token))
+}
+
+#[tauri::command]
+pub fn resume_import(state: tauri::State<'_, AppState>, retry_missing: bool, token: Option<String>) -> Result<(), String> {
+    if !super::feedback_account_ready(&state) || state.client.is_demo() { return Err("Wait for your SoundCloud profile to load".into()); }
+    state.spotify.restore(state.personal.account_id())?;
+    let mut view = state.spotify.view.lock();
+    if view.running || state.spotify.account_changes.load(Ordering::Acquire) > 0 { return Err("Import is already running or account is changing".into()); }
+    let collections = {
+        let mut saved = state.spotify.saved.lock();
+        let saved = saved.as_mut().ok_or("No saved import")?;
+        if saved.source == "yandex" && (!saved.yandex_started || !saved.yandex_ids.is_empty()) && token.as_ref().is_none_or(|value| value.trim().is_empty()) { return Err("Paste a Yandex Music token to finish loading the remaining tracks".into()); }
+        if retry_missing { saved.matches.retain(|_, id| id.is_some()); }
+        saved.done = false;
+        saved.collections.clone()
+    };
+    state.spotify.save_recovery()?;
+    *view = View { running: true, total: collections.iter().map(|collection| collection.songs.len()).sum(), ..Default::default() };
+    drop(view);
+    launch(&state, collections, token)
+}
+
+#[tauri::command]
+pub fn discard_import(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state.spotify.restore(state.personal.account_id())?;
+    let mut view = state.spotify.view.lock();
+    if view.running { return Err("Stop the import first".into()); }
+    if let Some(root) = &state.spotify.root {
+        for extension in ["json", "bak", "tmp"] {
+            let path = root.join(format!("{}.{}", state.personal.account_id(), extension));
+            if path.exists() { std::fs::remove_file(path).map_err(|error| error.to_string())?; }
+        }
+    }
+    *state.spotify.saved.lock() = None;
+    *state.spotify.plan.lock() = None;
+    *view = View::default();
     Ok(())
 }
 
@@ -1157,7 +1238,7 @@ mod tests {
                     } else {
                         json!({"collection":[],"next_href":"https://api.soundcloud.com/me/likes/tracks?cursor=next"})
                     }
-                } else if method == "GET" && path.contains("/tracks?") {
+                } else if method == "GET" && path.contains("/tracks?") && !path.contains("/playlists/") {
                     if fail_search {
                         status = "500 Internal Server Error";
                         json!({"error":"fixture failure"})
@@ -1178,6 +1259,17 @@ mod tests {
                         };
                         json!({"collection":[track(id,title)],"next_href":null})
                     }
+                } else if method == "GET" && path.contains("/me/playlists") {
+                    let rows: Vec<_> = recorded.lock().iter().filter(|(method, path, _)| method == "POST" && path.ends_with("/playlists")).enumerate().filter(|(index, _)| !fail_second_part || *index != 1).map(|(index, (_, _, body))| json!({"id": 91 + index, "title": body["playlist"]["title"], "user": {"id": 1, "username": "Owner"}})).collect();
+                    json!({"collection": rows, "next_href": null})
+                } else if (method == "GET" || method == "PUT") && path.contains("/playlists/") {
+                    let index = if path.contains("92") { 1 } else { 0 };
+                    let data = recorded.lock();
+                    let original = data.iter().filter(|(method, path, _)| method == "POST" && path.ends_with("/playlists")).nth(index).unwrap().2.clone();
+                    let latest = data.iter().rev().find(|(method, candidate, _)| method == "PUT" && candidate.contains(&format!("{}", 91 + index))).map(|(_,_, body)| body).unwrap_or(&original);
+                    let rows: Vec<_> = latest["playlist"]["tracks"].as_array().unwrap().iter().map(|row| { let id = row["urn"].as_str().unwrap().rsplit(':').next().unwrap().parse::<u64>().unwrap(); track(id, "Saved") }).collect();
+                    if path.contains("/tracks") { json!({"collection": rows, "next_href": null}) }
+                    else { json!({"id": 91 + index, "title": original["playlist"]["title"], "user": {"id": 1, "username": "Owner"}, "tracks": rows}) }
                 } else if method == "POST" && path.ends_with("/playlists") {
                     let count = recorded
                         .lock()
@@ -1267,7 +1359,7 @@ mod tests {
         assert!(data.iter().any(|(_, p, _)| p.contains("cursor=next")));
         assert_eq!(
             data.iter()
-                .filter(|(m, p, _)| m == "GET" && p.contains("/tracks?") && !p.contains("/likes/"))
+                .filter(|(m, p, _)| m == "GET" && p.contains("/tracks?") && !p.contains("/likes/") && !p.contains("/playlists/"))
                 .count(),
             3
         );
@@ -1344,11 +1436,11 @@ mod tests {
             let (broker, requests, server) = fixture_errors(false, fail_second).await;
             let (context, _session) = context(broker).await;
             context.job.view.lock().reports.push(Report::default());
-            let result =
-                save_playlist_parts(&context, "Long playlist", &(1..=501).collect::<Vec<_>>(), 0)
-                    .await;
+            *context.job.saved.lock() = Some(recovery::Saved { parts: vec![Vec::new()], ..Default::default() });
+            let result = recovery::save_parts(&context, 0, "Long playlist", &(1..=501).collect::<Vec<_>>(), true).await;
             assert_eq!(result.is_err(), fail_second);
-            let requests = requests.lock();
+            let requests_guard = requests.lock();
+            let requests: Vec<_> = requests_guard.iter().filter(|(method, _, _)| method == "POST").collect();
             assert_eq!(requests.len(), 2); // Failed mutation is never retried.
             assert_eq!(requests[0].2["playlist"]["title"], "Long playlist - part 1");
             assert_eq!(requests[0].2["playlist"]["sharing"], "private");
@@ -1375,6 +1467,99 @@ mod tests {
             );
             server.abort();
         }
+    }
+
+    #[tokio::test]
+    async fn resumed_import_reuses_matches_and_playlist_then_retries_only_missing() {
+        let (broker, requests, server) = fixture(false).await;
+        let (context, _session) = context(broker).await;
+        let plan = vec![Collection { name: "Resume".into(), kind: Kind::Playlist, songs: vec![song("One"), song("Missing")], skipped: 0 }];
+        run(&context, plan.clone()).await.unwrap();
+        run(&context, plan.clone()).await.unwrap();
+        assert_eq!(requests.lock().iter().filter(|(method, path, _)| method == "POST" && path.ends_with("/playlists")).count(), 1);
+        assert_eq!(requests.lock().iter().filter(|(method, path, _)| method == "GET" && path.contains("/tracks?") && !path.contains("/playlists/")).count(), 2);
+        context.job.saved.lock().as_mut().unwrap().matches.retain(|_, value| value.is_some());
+        run(&context, plan).await.unwrap();
+        assert_eq!(requests.lock().iter().filter(|(method, path, _)| method == "GET" && path.contains("/tracks?") && !path.contains("/playlists/")).count(), 3);
+        assert_eq!(requests.lock().iter().filter(|(method, path, _)| method == "POST" && path.ends_with("/playlists")).count(), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn retry_found_song_updates_existing_playlist_instead_of_creating_a_copy() {
+        let (broker, requests, server) = fixture(false).await;
+        let (context, _session) = context(broker).await;
+        let plan = vec![Collection { name: "Retry".into(), kind: Kind::Playlist, songs: vec![song("One"), song("Two")], skipped: 0 }];
+        *context.job.saved.lock() = Some(recovery::Saved { source: "spotify".into(), collections: plan.clone(), parts: vec![Vec::new()], matches: [(song("Two").key(), None)].into(), ..Default::default() });
+        run(&context, plan.clone()).await.unwrap();
+        context.job.saved.lock().as_mut().unwrap().matches.retain(|_, value| value.is_some());
+        run(&context, plan).await.unwrap();
+        let data = requests.lock();
+        assert_eq!(data.iter().filter(|(method, path, _)| method == "POST" && path.ends_with("/playlists")).count(), 1);
+        let update = &data.iter().find(|(method, _, _)| method == "PUT").unwrap().2;
+        assert_eq!(update["playlist"]["tracks"], json!([{"urn":"soundcloud:tracks:1"},{"urn":"soundcloud:tracks:2"}]));
+        assert_eq!(context.job.saved.lock().as_ref().unwrap().parts[0][0].tracks, vec![1,2]);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn lost_create_response_is_reconciled_without_creating_another_playlist() {
+        let (broker, requests, server) = fixture(false).await;
+        let (context, _session) = context(broker).await;
+        let plan = vec![Collection { name: "Recover".into(), kind: Kind::Playlist, songs: vec![song("One")], skipped: 0 }];
+        run(&context, plan).await.unwrap();
+        { let mut saved = context.job.saved.lock(); let saved = saved.as_mut().unwrap(); saved.parts[0].clear(); saved.pending = Some(recovery::Intent { collection: 0, part: 0, name: "Recover".into(), tracks: vec![1], id: None }); }
+        recovery::reconcile(&context).await.unwrap();
+        assert_eq!(context.job.saved.lock().as_ref().unwrap().parts[0][0].id, 91);
+        assert_eq!(requests.lock().iter().filter(|(method, path, _)| method == "POST" && path.ends_with("/playlists")).count(), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn yandex_metadata_resume_requests_only_remaining_ids_and_never_saves_token() {
+        let (broker, _, soundcloud_server) = fixture(false).await;
+        let (mut context, _session) = context(broker).await;
+        let directory = tempfile::tempdir().unwrap();
+        context.job = Arc::new(Import::new(directory.path().into()));
+        let plan = vec![Collection { name: "Yandex Music likes".into(), kind: Kind::Playlist, songs: Vec::new(), skipped: 0 }];
+        *context.job.saved.lock() = Some(recovery::Saved { owner: 1, source: "yandex".into(), yandex_ids: vec!["1".into(),"2".into(),"3".into()], yandex_started: true, collections: plan, parts: vec![Vec::new()], ..Default::default() });
+        context.job.save_recovery().unwrap();
+        let (base, requests, yandex_server) = crate::import_yandex::tests::metadata_fixture().await;
+        load_yandex_at(&context, "test-yandex", &base).await.unwrap();
+        load_yandex_at(&context, "test-yandex", &base).await.unwrap();
+        assert_eq!(requests.lock().len(), 1);
+        assert_eq!(requests.lock()[0].2["track-ids"], "1,2,3");
+        let raw = std::fs::read_to_string(directory.path().join("1.json")).unwrap();
+        assert!(!raw.contains("test-yandex"));
+        let restarted = Import::new(directory.path().into());
+        restarted.restore(1).unwrap();
+        let saved = restarted.saved.lock(); let saved = saved.as_ref().unwrap();
+        assert!(saved.yandex_ids.is_empty());
+        assert_eq!(saved.collections[0].songs[0].title, "One");
+        assert_eq!(saved.collections[0].songs[0].artists, vec!["Alice"]);
+        assert_eq!(saved.collections[0].songs[0].duration, Some(180000));
+        assert_eq!(saved.collections[0].skipped, 2);
+        assert!(!restarted.view.lock().needs_token);
+        yandex_server.abort(); soundcloud_server.abort();
+    }
+
+    #[test]
+    fn import_journal_is_restored_only_for_its_owner_and_keeps_all_missing_songs() {
+        let directory = tempfile::tempdir().unwrap();
+        let job = Import::new(directory.path().into());
+        let collection = Collection { name: "Test".into(), kind: Kind::Playlist, songs: (0..1001).map(|index| song(&format!("Song {index}"))).collect(), skipped: 0 };
+        let matches = collection.songs.iter().map(|song| (song.key(), None)).collect();
+        *job.saved.lock() = Some(recovery::Saved { owner: 1, source: "spotify".into(), collections: vec![collection], parts: vec![Vec::new()], matches, ..Default::default() });
+        job.save_recovery().unwrap();
+        let restarted = Import::new(directory.path().into());
+        restarted.restore(2).unwrap();
+        assert!(restarted.saved.lock().is_none());
+        restarted.restore(1).unwrap();
+        assert_eq!(restarted.saved.lock().as_ref().unwrap().matches.len(), 1001);
+        assert!(restarted.view.lock().resumable);
+        assert!(restarted.view.lock().retry_missing);
+        assert_eq!(restarted.view.lock().reports[0].missing.len(), 200);
+        assert_eq!(restarted.view.lock().reports[0].not_found, 1001);
     }
 
     #[tokio::test]

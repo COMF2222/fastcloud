@@ -223,6 +223,10 @@ fn freshness(timestamp: i64, now: i64) -> f64 {
 struct Profile {
     #[serde(skip)]
     taste: crate::config::MusicTaste,
+    #[serde(skip)]
+    mode: crate::config::WaveMode,
+    #[serde(skip)]
+    mood: crate::config::WaveMood,
     signals: HashMap<u64, Signal>,
     recent_starts: Vec<Track>,
     recommendations: Vec<Track>,
@@ -310,6 +314,7 @@ struct StartState {
 
 pub struct Engine {
     preferences: Mutex<crate::config::MusicTaste>,
+    options: Mutex<(crate::config::WaveMode, crate::config::WaveMood)>,
     path: PathBuf,
     inner: Mutex<Inner>,
     text_cache: Arc<Mutex<TextCache>>,
@@ -339,7 +344,7 @@ impl Engine {
             recommendations: profile.recommendations.clone(),
         };
         let variation = rand::random::<u32>().wrapping_add(profile.start_counter);
-        Self { path, preferences: Mutex::new(crate::config::MusicTaste::default()), variation: std::sync::atomic::AtomicU32::new(variation),
+        Self { path, preferences: Mutex::new(crate::config::MusicTaste::default()), options: Mutex::new(Default::default()), variation: std::sync::atomic::AtomicU32::new(variation),
             text_cache: Arc::new(Mutex::new(TextCache::default())), starts: Mutex::new(starts), inner: Mutex::new(Inner {
             profile, current: None,
             embedding_in_flight: HashSet::new(), embedding_failed_at: HashMap::new(),
@@ -485,9 +490,21 @@ impl Engine {
         *self.preferences.lock() = preferences;
     }
 
+    pub fn configure(&self, settings: &crate::config::Settings) {
+        self.set_preferences(settings.music_taste.clone());
+        *self.options.lock() = (settings.wave_mode, settings.wave_mood);
+    }
+
     fn snapshot(&self) -> Profile {
         let mut profile = self.inner.lock().profile.clone();
         profile.taste = self.preferences.lock().clone();
+        (profile.mode, profile.mood) = *self.options.lock();
+        match profile.mode {
+            crate::config::WaveMode::Familiar => { profile.taste.discovery = 0.1; profile.taste.repeat_days = 0; },
+            crate::config::WaveMode::Discover => profile.taste.discovery = 0.95,
+            crate::config::WaveMode::NoRepeats => profile.taste.repeat_days = 7,
+            _ => {}
+        }
         profile
     }
 }
@@ -868,13 +885,14 @@ pub fn first_seed(engine: &Engine, liked_tracks: &[Track], variation: u32) -> Op
     }
     let model = TasteModel::from_profile(&profile);
     let period = current_daypart();
-    let liked_ids = likes.iter().map(|track| track.id).collect();
+    let liked_ids: HashSet<_> = likes.iter().map(|track| track.id).collect();
     let discoveries = engaged_discoveries(&profile, &liked_ids);
     let mut starts = engine.starts.lock();
     let dislikes = DislikeFilter::from_profile(&profile);
     let mut candidates = Vec::<(Track, f64)>::new();
     let mut ids = HashSet::new();
-    for (source, bonus) in [(&starts.recommendations, 24.0), (&discoveries, 12.0), (&likes, 0.0)] {
+    let bonuses = if profile.mode == crate::config::WaveMode::Familiar { [0.0, 10.0, 30.0] } else { [24.0, 12.0, 0.0] };
+    for (source, bonus) in [(&starts.recommendations, bonuses[0]), (&discoveries, bonuses[1]), (&likes, bonuses[2])] {
         for track in source {
             if !track.is_blocked() && !track.is_snippet()
                 && !dislikes.rejects(track)
@@ -882,6 +900,9 @@ pub fn first_seed(engine: &Engine, liked_tracks: &[Track], variation: u32) -> Op
                 candidates.push((track.clone(), bonus));
             }
         }
+    }
+    if profile.mode == crate::config::WaveMode::Discover {
+        candidates.retain(|(track, _)| !liked_ids.contains(&track.id) && profile.signals.get(&track.id).is_none_or(|signal| signal.last_played == 0));
     }
     // Rotate the performer before filtering recently heard recordings. Otherwise
     // fresh songs from one artist can remove every alternative from the pool.
@@ -899,8 +920,12 @@ pub fn first_seed(engine: &Engine, liked_tracks: &[Track], variation: u32) -> Op
         candidates.retain(|(track, _)| !starts.recent.iter().any(|previous|
             previous.id == track.id || same_recording(previous, &track_identity(track))));
     }
-    if candidates.iter().any(|(track, _)| !recent_recording(track, &profile, chrono::Utc::now().timestamp())) {
+    if profile.mode == crate::config::WaveMode::NoRepeats || candidates.iter().any(|(track, _)| !recent_recording(track, &profile, chrono::Utc::now().timestamp())) {
         candidates.retain(|(track, _)| !recent_recording(track, &profile, chrono::Utc::now().timestamp()));
+    }
+    if profile.mode == crate::config::WaveMode::Mood {
+        let permitted: HashSet<_> = crate::vibe::rank(&crate::vibe::profile(profile.mood.query()), candidates.iter().map(|(track, _)| track.clone())).into_iter().map(|track| track.id).collect();
+        candidates.retain(|(track, _)| permitted.contains(&track.id));
     }
     let selected = candidates.into_iter().max_by(|(left, left_bonus), (right, right_bonus)| {
         let score = |track: &Track, bonus: f64| {
@@ -955,7 +980,8 @@ fn assemble(seeds: &[Track], related: Vec<Vec<Track>>, likes: &HashSet<u64>, kno
             let identity = enriched_identity(&candidate, profile);
             if (candidate.is_blocked() || candidate.is_snippet()) || !seen.insert(candidate.id)
                 || known.iter().any(|previous| same_recording(previous, &identity))
-                || dislikes.rejects(&candidate) { continue; }
+                || dislikes.rejects(&candidate)
+                || (profile.mode == crate::config::WaveMode::Discover && profile.signals.get(&candidate.id).is_some_and(|signal| signal.last_played > 0)) { continue; }
             let score = 8.0 + preference_score(&candidate, profile) + source_score * 0.35
                 + model.score(&candidate, period) - index as f64 * 0.04
                 + candidate_acoustic_score(&candidate, profile, model, text_vectors, period)
@@ -967,7 +993,7 @@ fn assemble(seeds: &[Track], related: Vec<Vec<Track>>, likes: &HashSet<u64>, kno
             pool.push((candidate, score));
         }
     }
-    if pool.iter().any(|(track, _)| !recent_recording(track, profile, chrono::Utc::now().timestamp())) {
+    if profile.mode == crate::config::WaveMode::NoRepeats || pool.iter().any(|(track, _)| !recent_recording(track, profile, chrono::Utc::now().timestamp())) {
         pool.retain(|(track, _)| !recent_recording(track, profile, chrono::Utc::now().timestamp()));
     }
     while result.len() < MAX_WAVE_TRACKS && !pool.is_empty() {
@@ -1002,15 +1028,18 @@ fn assemble(seeds: &[Track], related: Vec<Vec<Track>>, likes: &HashSet<u64>, kno
 }
 
 fn blend_familiar(mut tracks: Vec<Track>, likes: &[Track], profile: &Profile, avoid: &HashSet<u64>, avoid_identities: &[TrackIdentity]) -> Vec<Track> {
+    if profile.mode == crate::config::WaveMode::Discover { return tracks; }
     let dislikes = DislikeFilter::from_profile(profile);
     let mut familiar: Vec<_> = likes.iter().filter(|track| !avoid.contains(&track.id)
         && !track.is_blocked() && !track.is_snippet() && !dislikes.rejects(track)
         && !recent_recording(track, profile, chrono::Utc::now().timestamp())
+        && (profile.mode != crate::config::WaveMode::Mood || !crate::vibe::rank(&crate::vibe::profile(profile.mood.query()), [(*track).clone()]).is_empty())
         && !avoid_identities.iter().any(|old| same_recording(old, &track_identity(track)))
         && !tracks.iter().any(|existing| same_recording(&track_identity(existing), &track_identity(track))))
         .cloned().collect();
     familiar.sort_by(|a, b| preference_score(b, profile).total_cmp(&preference_score(a, profile)));
-    let count = ((tracks.len() as f32 * (1.0 - profile.taste.discovery) * 0.5).round() as usize).min(familiar.len());
+    let weight = if profile.mode == crate::config::WaveMode::Familiar { 3.0 } else { 0.5 };
+    let count = ((tracks.len() as f32 * (1.0 - profile.taste.discovery) * weight).round() as usize).min(familiar.len());
     familiar.truncate(count);
     // Evenly spread familiar songs instead of placing them in one block.
     for (offset, track) in familiar.into_iter().enumerate() {
@@ -1043,12 +1072,28 @@ pub async fn generate(client: Arc<api::ApiClient>, engine: &Engine, liked_tracks
         let id = seed.id;
         searches.spawn(async move { (index, related(client, id).await) });
     }
-    let mut related = vec![Vec::new(); seeds.len()];
+    if profile.mode == crate::config::WaveMode::Mood {
+        let client = client.clone();
+        let mood = profile.mood;
+        let index = seeds.len();
+        searches.spawn(async move {
+            let mut pager = api::endpoints::search_tracks(&client, mood.query()).await;
+            let tracks = tokio::time::timeout(Duration::from_secs(9), pager.next_page()).await.ok().and_then(Result::ok).unwrap_or_default();
+            (index, tracks)
+        });
+    }
+    let mut related = vec![Vec::new(); seeds.len() + usize::from(profile.mode == crate::config::WaveMode::Mood)];
     while let Some(result) = searches.join_next().await {
         match result {
             Ok((index, tracks)) => related[index] = tracks,
             Err(error) => log::warn!("My Wave related search failed: {error}"),
         }
+    }
+    if profile.mode == crate::config::WaveMode::Mood {
+        let extra = related.pop().unwrap_or_default();
+        related[0].extend(extra);
+        let mood = crate::vibe::profile(profile.mood.query());
+        for page in &mut related { *page = crate::vibe::rank(&mood, std::mem::take(page)); }
     }
     let mut text_vectors = HashMap::new();
     if model.has_audio_taste() && crate::clap::available() {
@@ -1118,7 +1163,10 @@ pub async fn generate(client: Arc<api::ApiClient>, engine: &Engine, liked_tracks
             if !avoid.contains(&track.id) && !track.is_blocked() && !track.is_snippet()
                 && !tracks.iter().any(|existing| same_recording(
                     &enriched_identity(existing, &profile), &enriched_identity(track, &profile)))
-                && !dislikes.rejects(track) && seen.insert(track.id) {
+                && !dislikes.rejects(track) && seen.insert(track.id)
+                && (profile.mode != crate::config::WaveMode::Discover || (!liked_ids.contains(&track.id) && profile.signals.get(&track.id).is_none_or(|signal| signal.last_played == 0)))
+                && (profile.mode != crate::config::WaveMode::NoRepeats || !recent_recording(track, &profile, chrono::Utc::now().timestamp()))
+                && (profile.mode != crate::config::WaveMode::Mood || !crate::vibe::rank(&crate::vibe::profile(profile.mood.query()), [track.clone()]).is_empty()) {
                 tracks.push(track.clone());
             }
         }
@@ -1634,6 +1682,39 @@ mod tests {
         let seeds = wave_seeds(&liked, &profile, &model, 0, 1, &HashSet::new(), &[]);
         assert!(seeds.iter().any(|track| track.id == tracks[2].id));
         assert!(!seeds.iter().any(|track| track.id == tracks[3].id || track.id == tracks[4].id));
+    }
+
+    #[test]
+    fn strict_modes_do_not_fall_back_to_recent_or_liked_openings() {
+        let directory = tempfile::tempdir().unwrap();
+        let engine = Engine::new(directory.path().join("wave.json"));
+        let likes = crate::demo::demo_tracks();
+        let now = chrono::Utc::now().timestamp();
+        engine.inner.lock().profile.signals.insert(likes[0].id, Signal { track: Some(likes[0].clone()), last_played: now, plays: 1, ..Default::default() });
+        let mut settings = crate::config::Settings::default();
+        settings.wave_mode = crate::config::WaveMode::NoRepeats;
+        engine.configure(&settings);
+        assert!(first_seed(&engine, &likes[..1], 0).is_none());
+        assert!(first_seed(&engine, &likes[..2], 0).is_some_and(|track| track.id == likes[1].id));
+        settings.wave_mode = crate::config::WaveMode::Discover;
+        engine.configure(&settings);
+        assert!(first_seed(&engine, &likes, 0).is_none());
+        let mut discovery = likes[0].clone(); discovery.id = 99999; discovery.title = "Unheard".into();
+        engine.starts.lock().recommendations = vec![discovery.clone()];
+        assert_eq!(first_seed(&engine, &likes, 0).unwrap().id, discovery.id);
+    }
+
+    #[test]
+    fn familiar_mode_keeps_likes_ahead_of_unheard_cached_recommendations() {
+        let directory = tempfile::tempdir().unwrap();
+        let engine = Engine::new(directory.path().join("wave.json"));
+        let likes = crate::demo::demo_tracks();
+        let mut recommendation = likes[0].clone(); recommendation.id = 99999;
+        engine.starts.lock().recommendations = vec![recommendation];
+        let mut settings = crate::config::Settings::default(); settings.wave_mode = crate::config::WaveMode::Familiar;
+        engine.configure(&settings);
+        let opening = first_seed(&engine, &likes, 0).unwrap();
+        assert!(likes.iter().any(|track| track.id == opening.id));
     }
 
     #[test]

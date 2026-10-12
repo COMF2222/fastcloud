@@ -46,6 +46,12 @@ impl Default for MainWindowBounds {
 pub struct Settings {
     pub settings_version: u8,
     pub music_taste: MusicTaste,
+    #[serde(default)]
+    pub wave_mode: WaveMode,
+    #[serde(default)]
+    pub wave_mood: WaveMood,
+    #[serde(default = "default_true")]
+    pub leaderboard_anonymous: bool,
     pub theme_presets: Vec<serde_json::Value>,
     pub offline_limit_mb: u64,
     pub normalization: bool,
@@ -229,6 +235,8 @@ pub struct Settings {
     /// Index into `last_queue` that was current.
     #[serde(default)]
     pub last_queue_idx: Option<usize>,
+    #[serde(default)]
+    pub last_queue_priority: Vec<usize>,
     /// Tracks and collections explicitly pinned by the listener.
     #[serde(default)]
     pub quick_access: Vec<QuickAccessShortcut>,
@@ -241,6 +249,18 @@ pub struct MusicTaste {
     pub diversity: f32,
     pub repeat_days: u8,
     pub genres: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WaveMode { #[default] Balanced, Familiar, Discover, Mood, NoRepeats }
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WaveMood { #[default] Calm, Sad, Happy, Workout, Road }
+
+impl WaveMood {
+    pub fn query(self) -> &'static str {
+        match self { Self::Calm => "calm chill", Self::Sad => "sad melancholy", Self::Happy => "happy upbeat", Self::Workout => "workout energy", Self::Road => "road driving" }
+    }
 }
 
 impl Default for MusicTaste {
@@ -266,6 +286,7 @@ impl Default for Settings {
         Self {
             settings_version: 2,
             music_taste: MusicTaste::default(),
+            wave_mode: WaveMode::Balanced, wave_mood: WaveMood::Calm, leaderboard_anonymous: true,
             theme_presets: Vec::new(),
             offline_limit_mb: 0,
             normalization: false,
@@ -334,6 +355,7 @@ impl Default for Settings {
             winamp_scale: default_scale(),
             last_queue: Vec::new(),
             last_queue_idx: None,
+            last_queue_priority: Vec::new(),
             quick_access: Vec::new(),
         }
     }

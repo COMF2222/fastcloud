@@ -6,6 +6,7 @@ import { ThemePresets } from './AppImprovements'
 import { PlaybackOptions } from './PersonalPages'
 import { ThemeSettings } from './ThemeSettings'
 import { ColorPicker } from './ColorPicker'
+import { ImportRecovery } from './ImportRecovery'
 import { SpotifyImport } from './SpotifyImport'
 
 const sizeLabel = (bytes: number) => bytes >= 1073741824 ? `${(bytes / 1073741824).toFixed(2)} GiB` : `${(bytes / 1048576).toFixed(1)} MiB`
@@ -94,6 +95,7 @@ export function SettingsSections({ section, settings, update, showDeveloperSetti
   </>
 
   if (section === 'integrations') return <>
+    <ImportRecovery english={settings.language === 'English'} />
     <SpotifyImport english={settings.language === 'English'} />
     <div className="settings-card">
       <h3>Discord Rich Presence</h3>

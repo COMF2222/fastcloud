@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use std::collections::VecDeque;
 
 #[derive(Clone)]
-struct QueueSnapshot { queue: Vec<Track>, order: Vec<usize>, current: Option<usize>, position: u64, playing: bool, shuffle: bool }
+struct QueueSnapshot { queue: Vec<Track>, order: Vec<usize>, current: Option<usize>, position: u64, playing: bool, shuffle: bool, priority: Vec<usize> }
 #[derive(Default)]
 struct AudioPreferences { crossfade_ms: u32, gapless: bool }
 struct SleepTimer { deadline: Option<Instant>, track_id: Option<u64> }
@@ -135,6 +135,7 @@ pub struct PlayerState {
     /// uses this to avoid copying the whole queue on position-only polls.
     pub queue_revision: u64,
     pub order: Vec<usize>,
+    pub priority_next: Vec<usize>,
     pub current: Option<usize>,
     pub shuffle: bool,
     pub repeat: RepeatMode,
@@ -169,6 +170,7 @@ impl Default for PlayerState {
             queue: Vec::new(),
             queue_revision: 0,
             order: Vec::new(),
+            priority_next: Vec::new(),
             current: None,
             shuffle: false,
             repeat: RepeatMode::Off,
@@ -384,7 +386,7 @@ impl Player {
 
     pub fn checkpoint_queue(&self) {
         let state = self.state.lock();
-        let snapshot = QueueSnapshot { queue: state.queue.clone(), order: state.order.clone(), current: state.current, position: state.position_ms, playing: state.is_playing, shuffle: state.shuffle };
+        let snapshot = QueueSnapshot { queue: state.queue.clone(), order: state.order.clone(), current: state.current, position: state.position_ms, playing: state.is_playing, shuffle: state.shuffle, priority: state.priority_next.clone() };
         drop(state);
         let mut history = self.queue_history.lock(); history.push_back(snapshot);
         while history.len() > 5 || (history.len() > 1 && history.iter().map(|item| item.queue.len()).sum::<usize>() > 10000) { history.pop_front(); }
@@ -397,7 +399,7 @@ impl Player {
         let mut state = self.state.lock();
         let running_id = state.current.and_then(|index| state.queue.get(index)).map(|track| track.id);
         let preserved = running_id.and_then(|id| snapshot.queue.iter().position(|track| track.id == id));
-        state.queue = snapshot.queue; state.order = snapshot.order; state.shuffle = snapshot.shuffle;
+        state.queue = snapshot.queue; state.order = snapshot.order; state.shuffle = snapshot.shuffle; state.priority_next = snapshot.priority;
         state.queue_revision = state.queue_revision.wrapping_add(1);
         state.current = preserved.or(snapshot.current);
         if preserved.is_some() { drop(state); self.save_session(); return true; }
@@ -528,6 +530,7 @@ impl Player {
             || state.queue.get(index).is_none_or(|row| row.id != prepared.track.id) { return false; }
         self.load_generation.fetch_add(1,Ordering::AcqRel);
         *decoder = prepared.decoder;
+        state.priority_next.retain(|&row| row != index);
         state.current = Some(index); state.position_ms = 0; state.duration_ms = prepared.duration;
         state.sample_rate = prepared.rate; state.bitrate_kbps = prepared.bitrate; state.channels = prepared.channels;
         state.error = None; state.preview_fallback = false;
@@ -569,6 +572,7 @@ impl Player {
     pub fn play_queue(&self, tracks: Vec<Track>, start: usize, shuffle: bool) {
         let mut st = self.state.lock();
         st.queue = tracks;
+        st.priority_next.clear();
         st.queue_revision = st.queue_revision.wrapping_add(1);
         st.shuffle = shuffle;
         st.order = build_order(st.queue.len(), shuffle);
@@ -598,6 +602,8 @@ impl Player {
         if play_next {
             let cur = st.current.unwrap_or(0);
             let split = (cur + 1).min(st.queue.len());
+            for index in &mut st.priority_next { if *index >= split { *index += added; } }
+            st.priority_next.splice(0..0, split..split + added);
             let mut tail = st.queue.split_off(split);
             st.queue.extend(tracks);
             st.queue.append(&mut tail);
@@ -621,9 +627,10 @@ impl Player {
             }
         }
         st.queue_revision = st.queue_revision.wrapping_add(1);
-        if !st.shuffle {
-            st.order = build_order(st.queue.len(), false);
-        }
+        if !st.shuffle { st.order = build_order(st.queue.len(), false); }
+        protect_manual_next(&mut st);
+        drop(st);
+        self.save_session();
     }
 
     /// Keep the current track, upcoming tracks and a short back history.
@@ -646,6 +653,7 @@ impl Player {
             }
         }
         state.current = remap[current];
+        state.priority_next = state.priority_next.iter().filter_map(|&index| remap[index]).collect();
         state.order = state.order.iter().filter_map(|&index| remap[index]).collect();
         state.queue = kept;
         state.queue_revision = state.queue_revision.wrapping_add(1);
@@ -670,6 +678,9 @@ impl Player {
         } else {
             st.order = build_order(st.queue.len(), false);
         }
+        protect_manual_next(&mut st);
+        st.queue_revision = st.queue_revision.wrapping_add(1);
+        drop(st); self.save_session();
     }
 
     /// Set shuffle directly (CLI/MPRIS); no-op when unchanged.
@@ -817,6 +828,7 @@ impl Player {
                 (Some(p), _) if p + 1 < st.order.len() => st.order[p + 1],
                 _ => return false,
             };
+            st.priority_next.retain(|&index| index != next);
             st.current = Some(next);
             let track = st.queue.get(next).cloned();
             drop(st);
@@ -881,7 +893,9 @@ impl Player {
             if idx >= st.queue.len() {
                 return false;
             }
+            st.priority_next.retain(|&index| index != idx);
             st.current = Some(idx);
+            protect_manual_next(&mut st);
             st.queue.get(idx).cloned()
         };
         if let Some(t) = track {
@@ -912,6 +926,7 @@ impl Player {
                     .position(|&x| x == idx)
                     .and_then(|p| st.order.get(p + 1).copied())
                     .map(|n| if n > idx { n - 1 } else { n });
+                st.priority_next = st.priority_next.iter().filter_map(|&row| if row == idx { None } else { Some(if row > idx { row - 1 } else { row }) }).collect();
                 st.queue.remove(idx);
                 st.queue_revision = st.queue_revision.wrapping_add(1);
                 let (order, _) = drop_bookkeeping(&st.order, None, idx);
@@ -922,6 +937,7 @@ impl Player {
                     None => Plan::Stop,
                 }
             } else {
+                st.priority_next = st.priority_next.iter().filter_map(|&row| if row == idx { None } else { Some(if row > idx { row - 1 } else { row }) }).collect();
                 st.queue.remove(idx);
                 st.queue_revision = st.queue_revision.wrapping_add(1);
                 let (order, current) = drop_bookkeeping(&st.order, st.current, idx);
@@ -965,7 +981,8 @@ impl Player {
                 }
             }
             state.current = state.current.and_then(|index| remap[index]);
-            state.order = state.order.iter().filter_map(|&index| remap[index]).collect();
+            state.priority_next = state.priority_next.iter().filter_map(|&index| remap[index]).collect();
+        state.order = state.order.iter().filter_map(|&index| remap[index]).collect();
             state.queue = kept;
             state.queue_revision = state.queue_revision.wrapping_add(1);
             (removed, advance, next.and_then(|index| remap[index]))
@@ -998,6 +1015,7 @@ impl Player {
                 index
             }
         };
+        state.priority_next = state.priority_next.iter().copied().map(remap).filter(|&index| index != to).collect();
         state.current = state.current.map(remap);
         for index in &mut state.order {
             *index = remap(*index);
@@ -1016,6 +1034,7 @@ impl Player {
         };
         let removed = st.queue.len().saturating_sub(1);
         st.queue = vec![track];
+        st.priority_next.clear();
         st.queue_revision = st.queue_revision.wrapping_add(1);
         st.current = Some(0);
         st.order = vec![0];
@@ -1075,6 +1094,7 @@ impl Player {
         {
             let mut state = self.state.lock();
             state.queue.clear();
+            state.priority_next.clear();
             state.queue_revision = state.queue_revision.wrapping_add(1);
             state.order.clear();
             state.current = None;
@@ -1788,7 +1808,7 @@ impl Player {
         if *self.demo.lock() {
             return;
         }
-        let (urn, pos, vol, balance, mono, queue, current) = {
+        let (urn, pos, vol, balance, mono, queue, current, priority) = {
             let st = self.state.lock();
             let urn = st.current.and_then(|i| st.queue.get(i).map(|t| t.urn()));
             (
@@ -1799,11 +1819,13 @@ impl Player {
                 st.mono,
                 st.queue.clone(),
                 st.current,
+                st.priority_next.clone(),
             )
         };
         // Persist the queue itself so it survives restarts. Tracks are
         // small structs; keep the current one plus its surroundings
         // (at most ~200 entries ≈ 100 KB of JSON).
+        let window_start = current.filter(|&index| index < queue.len()).map_or(0, |index| index.saturating_sub(50));
         let (kept, kept_current) = match current {
             Some(i) if i < queue.len() => {
                 let start = i.saturating_sub(50);
@@ -1818,6 +1840,7 @@ impl Player {
             settings.volume = vol;
             settings.balance = balance;
             settings.mono = mono;
+            settings.last_queue_priority = priority.iter().filter_map(|&index| index.checked_sub(window_start)).filter(|&index| index < kept.len()).collect();
             settings.last_queue = kept;
             settings.last_queue_idx = kept_current.filter(|_| !settings.last_queue.is_empty());
         }) {
@@ -1831,9 +1854,8 @@ impl Player {
         if queue.is_empty() {
             return None;
         }
-        let pos = Settings::load_from(&self.settings_path)
-            .ok()
-            .and_then(|s| s.last_position_ms);
+        let saved = Settings::load_from(&self.settings_path).ok();
+        let pos = saved.as_ref().and_then(|s| s.last_position_ms);
         {
             let mut st = self.state.lock();
             let current = current.filter(|&i| i < queue.len());
@@ -1844,7 +1866,9 @@ impl Player {
             st.queue = queue;
             st.queue_revision = st.queue_revision.wrapping_add(1);
             st.order = (0..st.queue.len()).collect();
+            st.priority_next = saved.as_ref().map(|settings| settings.last_queue_priority.clone()).unwrap_or_default();
             st.current = current;
+            protect_manual_next(&mut st);
             st.position_ms = pos.unwrap_or(0);
             st.is_playing = false;
             st.loading = false;
@@ -1871,6 +1895,15 @@ impl Player {
         self.decoder.lock().prefetch.take();
         self.save_session();
     }
+}
+
+fn protect_manual_next(state: &mut PlayerState) {
+    let start = state.current.and_then(|current| state.order.iter().position(|&index| index == current)).map_or(0, |position| position + 1);
+    let upcoming: std::collections::HashSet<_> = state.order[start..].iter().copied().collect();
+    let mut seen = std::collections::HashSet::new();
+    state.priority_next.retain(|index| *index < state.queue.len() && upcoming.contains(index) && seen.insert(*index));
+    let tail: Vec<_> = state.order[start..].iter().copied().filter(|index| !seen.contains(index)).collect();
+    state.order.splice(start.., state.priority_next.iter().copied().chain(tail));
 }
 
 fn build_order(len: usize, shuffle: bool) -> Vec<usize> {
@@ -1935,6 +1968,7 @@ fn clear_played_state(state: &mut PlayerState) -> usize {
         old_index += 1;
         if removed.contains(&index) { false } else { mapping.insert(index, kept); kept += 1; true }
     });
+    state.priority_next = state.priority_next.iter().filter_map(|index| mapping.get(index).copied()).collect();
     state.current = mapping.get(&current).copied();
     state.order = state.order.iter().filter_map(|index| mapping.get(index).copied()).collect();
     state.queue_revision = state.queue_revision.wrapping_add(1);
@@ -2248,6 +2282,51 @@ mod tests {
         player.enqueue(vec![track(6)], false);
         let state = player.state.lock();
         assert_eq!(state.order, vec![0, 1, 2, 4, 3, 5]);
+    }
+
+    #[test]
+    fn manual_next_survives_shuffle_and_autoplay_then_clears_with_queue() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let player = Player::new(Arc::new(AudioOutput::silent([0.0; 10], 0.8)), Arc::new(crate::api::ApiClient::demo()), Arc::new(AudioCache::disabled()), dir.path().join("settings.json"), runtime.handle().clone());
+        let track = |id| serde_json::from_value::<Track>(serde_json::json!({"id": id, "title": format!("Track {id}")})).unwrap();
+        { let mut state = player.state.lock(); state.queue = (1..=4).map(track).collect(); state.order = vec![0,1,2,3]; state.current = Some(0); }
+        player.enqueue(vec![track(5), track(6)], true);
+        player.enqueue(vec![track(7)], false);
+        for _ in 0..8 {
+            player.toggle_shuffle();
+            let state = player.state.lock();
+            let after = state.order.iter().position(|&i| Some(i) == state.current).unwrap() + 1;
+            assert_eq!(state.order[after..after+2].iter().map(|&i| state.queue[i].id).collect::<Vec<_>>(), vec![5,6]);
+        }
+        player.enqueue(vec![track(8)], true);
+        { let state = player.state.lock(); let after = state.order.iter().position(|&i| Some(i) == state.current).unwrap()+1; assert_eq!(state.order[after..after+3].iter().map(|&i| state.queue[i].id).collect::<Vec<_>>(), vec![8,5,6]); }
+        player.clear_queue();
+        assert!(player.state.lock().priority_next.is_empty());
+    }
+
+    #[test]
+    fn priority_occurrences_survive_removal_restart_and_undo() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let dir = tempfile::tempdir().unwrap(); let path = dir.path().join("settings.json");
+        let player = Player::new(Arc::new(AudioOutput::silent([0.0;10], 0.8)), Arc::new(crate::api::ApiClient::demo()), Arc::new(AudioCache::disabled()), path.clone(), runtime.handle().clone());
+        let track = |id| serde_json::from_value::<Track>(serde_json::json!({"id":id,"title":format!("Track {id}")})).unwrap();
+        { let mut state = player.state.lock(); state.queue = vec![track(1),track(2),track(3)]; state.order = vec![0,1,2]; state.current = Some(0); }
+        player.enqueue(vec![track(2),track(4)], true);
+        // Remove the ordinary copy, preserving the explicitly queued occurrence.
+        player.remove_at(3);
+        assert_eq!(player.state.lock().priority_next, vec![1,2]);
+        player.toggle_shuffle();
+        let saved = Settings::load_from(&path).unwrap();
+        assert_eq!(saved.last_queue_priority, vec![1,2]);
+        let restored = Player::new(Arc::new(AudioOutput::silent([0.0;10], 0.8)), Arc::new(crate::api::ApiClient::demo()), Arc::new(AudioCache::disabled()), path, runtime.handle().clone());
+        restored.restore_session(saved.last_queue, saved.last_queue_idx);
+        { let state = restored.state.lock(); assert_eq!(state.order[..3], [0,1,2]); assert_eq!(state.priority_next, vec![1,2]); }
+        player.checkpoint_queue();
+        player.clear_upcoming();
+        assert!(player.state.lock().priority_next.is_empty());
+        assert!(player.undo_queue());
+        assert_eq!(player.state.lock().priority_next, vec![1,2]);
     }
 
     #[test]

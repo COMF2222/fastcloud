@@ -1,0 +1,21 @@
+.wave-mode-controls { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 14px; }
+.wave-mode-controls label { display: grid; gap: 6px; color: var(--text-muted); font-size: calc(11px * var(--interface-text-scale, 1)); }
+.wave-mode-controls select { min-height: 36px; max-width: 240px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; color: var(--text); background: var(--surface-raised); font-size: calc(12px * var(--interface-text-scale, 1)); }
+.community-filters { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 18px; }
+.community-filters label { flex: 1; max-width: 280px; min-width: 170px; }
+.leaderboard-list { padding: 6px 18px; }
+.leaderboard-row { display: grid; grid-template-columns: 32px minmax(0, 1fr) 120px 140px; gap: 16px; align-items: start; padding: 18px 0; border-bottom: 1px solid var(--line); font-size: calc(13px * var(--interface-text-scale, 1)); color: var(--text); }
+.leaderboard-row:last-child { border-bottom: 0; }
+.leaderboard-row.is-me { border-left: 3px solid var(--accent-readable, var(--accent)); padding-left: 12px; }
+.leaderboard-rank { color: var(--accent-readable, var(--accent)); }
+.leaderboard-person { min-width: 0; display: grid; gap: 7px; overflow-wrap: anywhere; }
+.leaderboard-person button { color: inherit; text-align: left; font: inherit; }
+.leaderboard-person button:hover { text-decoration: underline; }
+.leaderboard-person > span, .leaderboard-person details, .leaderboard-metric small { color: var(--text-muted); font-size: calc(11px * var(--interface-text-scale, 1)); }
+.leaderboard-you { margin-left: 10px; color: var(--accent-readable, var(--accent)); }
+.leaderboard-person details p { margin: 7px 0; }
+.leaderboard-metric { display: grid; gap: 6px; font-variant-numeric: tabular-nums; }
+.leaderboard-person summary { cursor: pointer; }
+@media (max-width: 1050px) { .leaderboard-row { grid-template-columns: 28px minmax(0, 1fr) 100px; gap: 12px; }.leaderboard-metric:last-child { grid-column: 2 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; } }
+
+.leaderboard-privacy-banner { margin-bottom: 18px; border-inline-start: 3px solid var(--accent-readable, var(--accent)); }

@@ -8,6 +8,7 @@ mod feedback;
 pub use feedback::{Feedback, PublicTrack};
 
 pub const PORTABLE: &[&str] = &[
+    "wave_mode", "wave_mood", "leaderboard_anonymous",
     "theme", "language", "music_taste", "theme_presets", "quick_access", "accent_rgb", "panel_rgb",
     "panel_opacity", "panel_blur", "heading_opacity", "text_rgb", "muted_text_rgb", "interface_text_scale",
     "interface_scale", "background_opacity", "background_dim", "background_blur", "background_overlay",
@@ -79,6 +80,23 @@ pub fn apply_preferences(settings: &config::Settings, values: &BTreeMap<String, 
     crate::appearance::capture(&next,"Backup".into())?;
     next.music_taste.normalize();
     Ok(next)
+}
+
+/// Merge typography-only variants; collaborations and distinct spellings stay separate.
+fn artist_totals(tracks: &[Value]) -> Vec<Value> {
+    use unicode_normalization::UnicodeNormalization;
+    let mut groups = BTreeMap::<String, (String, u64)>::new();
+    for row in tracks {
+        let name: String = row["artist"].as_str().unwrap_or_default().nfkc().collect();
+        let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+        let name = name.trim_matches(|c: char| !c.is_alphanumeric()).trim();
+        if name.is_empty() { continue; }
+        let group = groups.entry(name.to_lowercase()).or_insert_with(|| (name.into(), 0));
+        group.1 = group.1.saturating_add(row["ms"].as_u64().unwrap_or_default());
+    }
+    let mut artists: Vec<_> = groups.into_values().collect();
+    artists.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    artists.into_iter().map(|(name, ms)| json!({"name": name, "ms": ms})).collect()
 }
 
 impl Hub {
@@ -274,7 +292,7 @@ impl Hub {
             track["lastPlayed"] = json!(track["lastPlayed"].as_i64().unwrap_or(0).max(row.last_played));
         }
         let mut tracks: Vec<_> = tracks.into_values().collect(); tracks.sort_by_key(|row| std::cmp::Reverse(row["ms"].as_u64().unwrap_or(0)));
-        json!({"totals": {"ms": total_ms, "plays": plays}, "daily": daily.into_iter().map(|(day,(ms,plays))| json!({"day": day,"ms": ms,"plays": plays})).collect::<Vec<_>>(), "tracks": tracks, "syncStatus": inner.status})
+        json!({"totals": {"ms": total_ms, "plays": plays}, "daily": daily.into_iter().map(|(day,(ms,plays))| json!({"day": day,"ms": ms,"plays": plays})).collect::<Vec<_>>(), "artists": artist_totals(&tracks), "tracks": tracks, "syncStatus": inner.status})
     }
 
     pub async fn sync(&self, client: &api::ApiClient, settings: &Arc<Mutex<config::Settings>>, player: Option<&Arc<Player>>, wave: &crate::wave::Engine) -> Result<()> {
@@ -301,7 +319,7 @@ impl Hub {
         }
         let url = format!("{server}/v1/me/personal");
         wave.replace_dislikes(&self.feedback());
-        let remote: Cloud = http.get(&url).header("Authorization", format!("OAuth {token}")).send().await?.error_for_status()?.json().await?;
+        let remote: Cloud = http.get(&url).header("X-Fastcloud-Preferences", "2").header("Authorization", format!("OAuth {token}")).send().await?.error_for_status()?.json().await?;
         let payload = {
             let mut inner = self.inner.lock();
             if inner.epoch != epoch { return Ok(()); }
@@ -313,7 +331,7 @@ impl Hub {
             json!({"preferences": inner.cache.dirty_preferences, "folders": inner.cache.dirty_folders.iter().take(100).collect::<BTreeMap<_,_>>(), "smartPlaylists": inner.cache.dirty_smart.iter().take(100).collect::<BTreeMap<_,_>>(), "likedAt": inner.cache.dirty_likes.iter().take(100).collect::<BTreeMap<_,_>>(), "trackFeedback":inner.cache.dirty_feedback.iter().take(100).collect::<BTreeMap<_,_>>(), "device": inner.cache.device, "stats": stats})
         };
         let has_changes = ["preferences","folders","smartPlaylists","likedAt","trackFeedback"].iter().any(|key| payload[key].as_object().is_some_and(|map| !map.is_empty())) || payload["stats"].as_array().is_some_and(|rows| !rows.is_empty());
-        let remote = if has_changes { http.post(&url).header("Authorization", format!("OAuth {token}")).json(&payload).send().await?.error_for_status()?.json::<Cloud>().await? } else { remote };
+        let remote = if has_changes { http.post(&url).header("X-Fastcloud-Preferences", "2").header("Authorization", format!("OAuth {token}")).json(&payload).send().await?.error_for_status()?.json::<Cloud>().await? } else { remote };
         let mut local = settings.lock();
         let preferences = {
             let mut inner = self.inner.lock();
@@ -424,6 +442,16 @@ fn smart_matches(rule: &Smart, track: &api::models::Track, added: i64, played: i
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn decorated_artist_names_merge_but_collaborations_do_not() {
+        let tracks = vec![json!({"artist": "Lil Peep", "ms": 1000}), json!({"artist": "☆LiL PEEP☆", "ms": 2000}), json!({"artist": "Lil Peep & Lil Tracy", "ms": 500}), json!({"artist": "  ＣＵＰＳＩＺＥ  ", "ms": 400}), json!({"artist": "cupsize", "ms": 600})];
+        let totals = artist_totals(&tracks);
+        assert_eq!(totals[0], json!({"name": "Lil Peep", "ms": 3000}));
+        assert_eq!(totals[1], json!({"name": "CUPSIZE", "ms": 1000}));
+        assert_eq!(totals.len(), 3);
+        assert_eq!(tracks.iter().map(|row| row["ms"].as_u64().unwrap()).sum::<u64>(), totals.iter().map(|row| row["ms"].as_u64().unwrap()).sum::<u64>());
+    }
+
     #[test]
     fn dislikes_survive_restart_and_sign_out_keeps_each_account_separate() {
         let dir = tempfile::tempdir().unwrap();

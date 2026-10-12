@@ -26,11 +26,7 @@ export function StatisticsPage({ english }: { english: boolean }) {
   })
   const total = chart.reduce((sum, row) => sum + row.ms, 0)
   const maximum = Math.max(60000, ...chart.map(row => row.ms))
-  const artists = useMemo(() => {
-    const groups = new Map<string, number>()
-    for (const row of data?.tracks || []) groups.set(row.artist, (groups.get(row.artist) || 0) + row.ms)
-    return [...groups].sort((a, b) => b[1] - a[1]).slice(0, 5)
-  }, [data?.tracks])
+  const artists = (data?.artists || []).slice(0, 5)
   const genres = useMemo(() => {
     const groups = new Map<string, number>()
     for (const row of data?.tracks || []) if (row.genre) groups.set(row.genre, (groups.get(row.genre) || 0) + row.ms)
@@ -46,7 +42,7 @@ export function StatisticsPage({ english }: { english: boolean }) {
     <div className="listening-summary"><div><strong>{listeningTime(data?.totals.ms || 0, english)}</strong><small>{t('за всё время', 'all time')}</small></div><div><strong>{data?.totals.plays || 0}</strong><small>{t('прослушиваний', 'listens')}</small></div><div><strong>{data?.tracks.length || 0}</strong><small>{t('разных треков', 'unique tracks')}</small></div></div>
     <section className="settings-card"><div className="personal-section-heading"><h3>{t('Активность', 'Listening activity')} · {listeningTime(total, english)}</h3><div className="preference-genres">{[7, 30].map(value => <button key={value} aria-pressed={days === value} onClick={() => setDays(value)}>{value} {t('дней', 'days')}</button>)}</div></div><div className="listening-chart" role="img" aria-label={t(`Прослушивание за ${days} дней, ${listeningTime(total, false)}`, `Listening over ${days} days, ${listeningTime(total, true)}`)}>{chart.map(row => <div key={row.day} title={`${row.day}: ${listeningTime(row.ms, english)}`}><span style={{ height: `${Math.max(row.ms ? 3 : 0, row.ms / maximum * 100)}%` }} /><small>{days === 7 ? new Date(row.day + 'T12:00:00Z').toLocaleDateString(english ? 'en-GB' : 'ru-RU', { weekday: 'short', timeZone: 'UTC' }) : row.day.slice(8)}</small></div>)}</div><p className="muted">{t('Даты указаны в UTC.', 'Dates are shown in UTC.')}</p></section>
     {!data?.tracks.length && <div className="empty"><Clock3 size={30} /><h3>{t('Начни слушать', 'Start listening')}</h3><p>{t('Включи музыку, чтобы здесь появилась статистика.', 'Play some music to see your statistics here.')}</p></div>}
-    <div className="personal-columns"><section className="settings-card"><h3>{t('Любимые исполнители · всё время', 'Top artists · all time')}</h3>{artists.map(([name, ms]) => <div className="listening-ranking" key={name}><strong>{name}</strong><span>{listeningTime(ms, english)}</span></div>)}</section><section className="settings-card"><h3>{t('Жанры · всё время', 'Genres · all time')}</h3>{genres.map(([name, ms]) => <div className="listening-ranking" key={name}><strong>{name}</strong><span>{listeningTime(ms, english)}</span></div>)}</section></div>
+    <div className="personal-columns"><section className="settings-card"><h3>{t('Любимые исполнители · всё время', 'Top artists · all time')}</h3>{artists.map(({name, ms}) => <div className="listening-ranking" key={name}><strong>{name}</strong><span>{listeningTime(ms, english)}</span></div>)}</section><section className="settings-card"><h3>{t('Жанры · всё время', 'Genres · all time')}</h3>{genres.map(([name, ms]) => <div className="listening-ranking" key={name}><strong>{name}</strong><span>{listeningTime(ms, english)}</span></div>)}</section></div>
     {!!data?.tracks.length && <section className="settings-card"><h3>{t('Самые прослушанные треки · всё время', 'Top tracks · all time')}</h3>{data.tracks.slice(0, 10).map((row, index) => <button className="listening-track" key={row.trackId} onClick={() => void play(row.trackId)}><span>{index + 1}</span><div><strong>{row.title}</strong><small>{row.artist}</small></div><span>{listeningTime(row.ms, english)}</span><Play size={15} /></button>)}</section>}
   </div>
 }

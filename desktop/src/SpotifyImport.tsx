@@ -11,7 +11,8 @@ export function SpotifyImport({ english }: { english: boolean }) {
   const [error, setError] = useState('')
   const [cancelling, setCancelling] = useState(false)
   const [selections, setSelections] = useState<SpotifyImportSelection[]>([])
-  const { data: view, error: statusError } = useQuery({ queryKey: ['spotify-import'], queryFn: api.spotifyImportStatus, refetchInterval: query => query.state.data?.running ? 750 : 2500 })
+  const { data: rawView, error: statusError } = useQuery({ queryKey: ['spotify-import'], queryFn: api.spotifyImportStatus, refetchInterval: query => query.state.data?.running ? 750 : 2500 })
+  const view = rawView?.source === 'yandex' ? undefined : rawView
   const wasRunning = useRef(false)
   useEffect(() => {
     if (wasRunning.current && !view?.running) {
