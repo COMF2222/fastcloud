@@ -36,10 +36,10 @@ def validate(data):
 
 def render(note, tag):
     version = note["version"]
-    url = f"https://github.com/COMF2222/fastcloud/releases/download/{tag}/{asset_prefix(version)}_{version}_x64-setup.exe"
+    url = f"https://github.com/COMF2222/veirune/releases/download/{tag}/{asset_prefix(version)}_{version}_x64-setup.exe"
     lines = [f"[**Скачать для Windows x64 / Download for Windows x64**]({url})", ""]
     if tuple(map(int, version.split('-')[0].split('.'))) >= (0, 4, 10):
-        base = f"https://github.com/COMF2222/fastcloud/releases/download/{tag}"
+        base = f"https://github.com/COMF2222/veirune/releases/download/{tag}"
         lines += [f"[macOS · Apple Silicon]({base}/{asset_prefix(version)}_{version}_macos-aarch64.dmg) · [macOS · Intel]({base}/{asset_prefix(version)}_{version}_macos-x86_64.dmg)", "",
                   "macOS 13+: открой DMG и перенеси Veirune в Applications. При первом запуске разреши открытие в «Конфиденциальность и безопасность».",
                   "macOS 13+: open the DMG and drag Veirune to Applications. Allow the first launch in Privacy & Security.", ""]

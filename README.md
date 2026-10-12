@@ -7,14 +7,14 @@
 <p align="center"><strong>Твоя музыка. Твой плеер. Твоё оформление.</strong></p>
 
 <p align="center">
-  <a href="https://github.com/COMF2222/fastcloud/releases/latest"><strong>Скачать для Windows и Mac</strong></a> ·
+  <a href="https://github.com/COMF2222/veirune/releases/latest"><strong>Скачать для Windows и Mac</strong></a> ·
   <a href="https://fastcloud.comf.workers.dev/">Сайт и демо</a> ·
   <a href="https://fastcloud.comf.workers.dev/changes">Что нового</a> ·
   <a href="README.en.md">English</a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/COMF2222/fastcloud/releases/latest"><img src="https://img.shields.io/github/v/release/COMF2222/fastcloud?color=ff5519" alt="Последняя версия"></a>
+  <a href="https://github.com/COMF2222/veirune/releases/latest"><img src="https://img.shields.io/github/v/release/COMF2222/veirune?color=ff5519" alt="Последняя версия"></a>
   <img src="https://img.shields.io/badge/Windows-x64-242424" alt="Windows x64">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-242424" alt="Лицензия MIT"></a>
 </p>
@@ -100,7 +100,7 @@
 
 ## Скачать и начать слушать
 
-1. Открой [последний релиз](https://github.com/COMF2222/fastcloud/releases/latest)
+1. Открой [последний релиз](https://github.com/COMF2222/veirune/releases/latest)
    и скачай **`Veirune_…_x64-setup.exe`** — полный установщик для Windows x64.
    Для Mac выбери **`Veirune_…_macos-aarch64.dmg`** (Apple Silicon) или
    **`Veirune_…_macos-x86_64.dmg`** (Intel), открой DMG и перенеси приложение в Applications.
@@ -144,7 +144,7 @@ SoundCloud. Доступность страницы входа SoundCloud в б�
 
 - [Документация и установка](https://fastcloud.comf.workers.dev/docs)
 - [Ответы на частые вопросы](https://fastcloud.comf.workers.dev/faq)
-- [Сообщить об ошибке или предложить функцию](https://github.com/COMF2222/fastcloud/issues)
+- [Сообщить об ошибке или предложить функцию](https://github.com/COMF2222/veirune/issues)
 - [Исходники, сборка и устройство приложения](docs/development.md)
 - [Подготовка релизов](docs/releasing.md)
 

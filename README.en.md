@@ -7,14 +7,14 @@
 <p align="center"><strong>Your music. Your player. Your style.</strong></p>
 
 <p align="center">
-  <a href="https://github.com/COMF2222/fastcloud/releases/latest"><strong>Download for Windows and Mac</strong></a> ·
+  <a href="https://github.com/COMF2222/veirune/releases/latest"><strong>Download for Windows and Mac</strong></a> ·
   <a href="https://fastcloud.comf.workers.dev/en/">Website and demo</a> ·
   <a href="https://fastcloud.comf.workers.dev/en/changes">Release notes</a> ·
   <a href="README.md">Русский</a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/COMF2222/fastcloud/releases/latest"><img src="https://img.shields.io/github/v/release/COMF2222/fastcloud?color=ff5519" alt="Latest release"></a>
+  <a href="https://github.com/COMF2222/veirune/releases/latest"><img src="https://img.shields.io/github/v/release/COMF2222/veirune?color=ff5519" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/Windows-x64-242424" alt="Windows x64">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-242424" alt="MIT license"></a>
 </p>
@@ -93,7 +93,7 @@ Performance profiles and a custom font help adapt the interface to your computer
 
 ## Download and start listening
 
-1. Open the [latest release](https://github.com/COMF2222/fastcloud/releases/latest)
+1. Open the [latest release](https://github.com/COMF2222/veirune/releases/latest)
    and download **`Veirune_…_x64-setup.exe`**, the full Windows x64 installer.
    For Mac, choose **`Veirune_…_macos-aarch64.dmg`** (Apple Silicon) or
    **`Veirune_…_macos-x86_64.dmg`** (Intel), open the DMG and drag the app to Applications.
@@ -137,7 +137,7 @@ currently released. [Mac installation and testing](docs/macos.md).
 
 - [Documentation and installation](https://fastcloud.comf.workers.dev/en/docs)
 - [Frequently asked questions](https://fastcloud.comf.workers.dev/en/faq)
-- [Report a bug or request a feature](https://github.com/COMF2222/fastcloud/issues)
+- [Report a bug or request a feature](https://github.com/COMF2222/veirune/issues)
 - [Source code, builds and architecture](docs/development.md)
 - [Release preparation](docs/releasing.md)
 

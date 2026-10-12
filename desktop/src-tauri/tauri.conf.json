@@ -42,7 +42,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEMxMTlDRThFNkZEOTU5QUUKUldTdVdkbHZqczRad1o1b0RWUlJuRWJzd2VBTDFUbzl6RUJ0Vk5zSjlpRldRbzlXbkFJTzdKelgK",
       "endpoints": [
-        "https://github.com/COMF2222/fastcloud/releases/latest/download/latest-light.json"
+        "https://github.com/COMF2222/veirune/releases/latest/download/latest-light.json"
       ],
       "windows": {
         "installMode": "passive"

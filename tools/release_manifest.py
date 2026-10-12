@@ -9,7 +9,7 @@ from check_release_version import release_tag
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG = ROOT / "desktop/src-tauri/tauri.conf.json"
 DIST = ROOT / "desktop/release"
-RELEASE_BASE = "https://github.com/COMF2222/fastcloud/releases"
+RELEASE_BASE = "https://github.com/COMF2222/veirune/releases"
 
 
 def manifests(dist: Path, version: str) -> None:

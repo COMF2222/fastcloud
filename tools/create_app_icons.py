@@ -57,6 +57,8 @@ def build():
     for filename in ['veirune-icon.png','fastcloud-icon.png']:
         write_png(primary, WEBSITE/'public/assets'/filename,256)
     write_png(primary, WEBSITE/'public/favicon.png',64)
+    write_png(primary, WEBSITE/'public/assets/favicon.png',64)
+    write_png(primary, WEBSITE/'public/assets/veirune-favicon-moon.png',64)
     primary.save(WEBSITE/'public/favicon.ico',sizes=[(16,16),(32,32),(48,48),(64,64)])
     main_assets = MOBILE/'ios/App/App/Assets.xcassets'
     # Primary and alternative 09 have exactly the same pixels.

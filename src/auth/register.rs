@@ -64,7 +64,7 @@ const DEFAULT_POLL: std::time::Duration = std::time::Duration::from_secs(3);
 const APP_NAME: &str = "Veirune";
 const APP_DESCRIPTION: &str =
     "Veirune, a native desktop SoundCloud client: browsing, search and playback.";
-const APP_WEBSITE: &str = "https://github.com/COMF2222/fastcloud";
+const APP_WEBSITE: &str = "https://github.com/COMF2222/veirune";
 
 /// Why a registration attempt could not produce credentials.
 ///

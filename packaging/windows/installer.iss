@@ -7,7 +7,7 @@
 #endif
 #define AppPublisher "Fastcloud contributors"
 #ifndef AppURL
-#define AppURL "https://github.com/COMF2222/fastcloud"
+#define AppURL "https://github.com/COMF2222/veirune"
 #endif
 #define AppExeName "fastcloud.exe"
 

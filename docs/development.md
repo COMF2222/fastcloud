@@ -10,7 +10,7 @@ SoundCloud requests, playback, caching and player state.
 
 Tagged Windows builds are produced by GitHub Actions with the CLAP model and
 worker bundled. Download the full installer from the
-[Releases page](https://github.com/COMF2222/fastcloud/releases). Starting with
+[Releases page](https://github.com/COMF2222/veirune/releases). Starting with
 v0.1.2, the app checks GitHub Releases for updates and offers an update button
 in Settings → General and in the sidebar when a new version is available.
 
@@ -21,7 +21,7 @@ You need Node.js 22+, Rust 1.95+, and the
 platform.
 
 ```sh
-git clone https://github.com/COMF2222/fastcloud
+git clone https://github.com/COMF2222/veirune
 cd fastcloud/desktop
 npm ci
 cp .env.example .env.local
@@ -64,7 +64,7 @@ Fastcloud does not ship a SoundCloud client secret. The first screen asks users
 to sign in. The normal sign-in button connects to the Fastcloud access server
 using each listener's own SoundCloud
 account. The owner can enable approval for new accounts in Settings → Account; existing users keep access unless it is disabled. The separate
-[backend](https://github.com/COMF2222/fastcloud-backend) holds the shared app
+[backend](https://github.com/COMF2222/veirune-backend) holds the shared app
 credentials and access decisions.
 
 If you have your own Artist Pro application, use the advanced connection option.

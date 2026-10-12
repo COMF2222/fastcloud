@@ -15,7 +15,7 @@ use std::{
 use tokio::io::AsyncWriteExt;
 
 const EMBEDDED: &str = include_str!(concat!(env!("OUT_DIR"), "/component-manifest.json"));
-const RELEASES: &str = "https://github.com/COMF2222/fastcloud/releases/download";
+const RELEASES: &str = "https://github.com/COMF2222/veirune/releases/download";
 #[cfg(windows)]
 pub const WORKER_PATH: &str = "worker-lite/fastcloud-clap/fastcloud-clap.exe";
 #[cfg(not(windows))]
