@@ -16,21 +16,45 @@ Var VeiruneLegacyDirectory
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
-  ${If} $VeiruneLegacyDirectory != ""
-  ${AndIf} $VeiruneLegacyDirectory == $INSTDIR
-  ${AndIf} ${FileExists} "$INSTDIR\fastcloud.exe"
-    ; The new installer has now written its replacement uninstall registration.
-    DeleteRegKey SHCTX "Software\Microsoft\Windows\CurrentVersion\Uninstall\Fastcloud"
-    DeleteRegKey SHCTX "Software\fastcloud\Fastcloud"
-    !insertmacro IsShortcutTarget "$SMPROGRAMS\Fastcloud.lnk" "$INSTDIR\fastcloud.exe"
-    Pop $0
-    ${If} $0 = 1
-      Delete "$SMPROGRAMS\Fastcloud.lnk"
+  ; Tauri skips new shortcut names in /UPDATE mode. Repair the Start Menu entry
+  ; explicitly, and replace legacy desktop links before removing either old link.
+  ${If} ${FileExists} "$INSTDIR\fastcloud.exe"
+    ${If} $NoShortcutMode <> 1
+      ${IfNot} ${FileExists} "$SMPROGRAMS\${PRODUCTNAME}.lnk"
+        CreateShortcut "$SMPROGRAMS\${PRODUCTNAME}.lnk" "$INSTDIR\fastcloud.exe"
+        !insertmacro SetLnkAppUserModelId "$SMPROGRAMS\${PRODUCTNAME}.lnk"
+      ${EndIf}
+      ${If} $VeiruneLegacyDirectory != ""
+      ${AndIf} $VeiruneLegacyDirectory == $INSTDIR
+        ${IfNot} ${FileExists} "$DESKTOP\${PRODUCTNAME}.lnk"
+          CreateShortcut "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\fastcloud.exe"
+          !insertmacro SetLnkAppUserModelId "$DESKTOP\${PRODUCTNAME}.lnk"
+        ${EndIf}
+        !insertmacro IsShortcutTarget "$SMPROGRAMS\${PRODUCTNAME}.lnk" "$INSTDIR\fastcloud.exe"
+        Pop $0
+        ${If} $0 = 1
+          !insertmacro IsShortcutTarget "$SMPROGRAMS\Fastcloud.lnk" "$INSTDIR\fastcloud.exe"
+          Pop $0
+          ${If} $0 = 1
+            Delete "$SMPROGRAMS\Fastcloud.lnk"
+          ${EndIf}
+        ${EndIf}
+        !insertmacro IsShortcutTarget "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\fastcloud.exe"
+        Pop $0
+        ${If} $0 = 1
+          !insertmacro IsShortcutTarget "$DESKTOP\Fastcloud.lnk" "$INSTDIR\fastcloud.exe"
+          Pop $0
+          ${If} $0 = 1
+            Delete "$DESKTOP\Fastcloud.lnk"
+          ${EndIf}
+        ${EndIf}
+      ${EndIf}
     ${EndIf}
-    !insertmacro IsShortcutTarget "$DESKTOP\Fastcloud.lnk" "$INSTDIR\fastcloud.exe"
-    Pop $0
-    ${If} $0 = 1
-      Delete "$DESKTOP\Fastcloud.lnk"
+    ${If} $VeiruneLegacyDirectory != ""
+    ${AndIf} $VeiruneLegacyDirectory == $INSTDIR
+      ; Registration cleanup happens only after the replacement is installed.
+      DeleteRegKey SHCTX "Software\Microsoft\Windows\CurrentVersion\Uninstall\Fastcloud"
+      DeleteRegKey SHCTX "Software\fastcloud\Fastcloud"
     ${EndIf}
   ${EndIf}
 !macroend

@@ -2,6 +2,23 @@
   "schema": 1,
   "releases": [
     {
+      "version": "0.4.16",
+      "ru": {
+        "title": "Ярлыки после обновления",
+        "changes": [
+          "После обновления с прежнего названия сохраняется доступ к приложению с рабочего стола и из меню «Пуск».",
+          "Старый ярлык удаляется только после создания рабочего ярлыка Veirune."
+        ]
+      },
+      "en": {
+        "title": "Shortcuts after updating",
+        "changes": [
+          "Updates from the previous app name keep the app accessible from the desktop and Start Menu.",
+          "Legacy shortcuts are removed only after a working Veirune shortcut is available."
+        ]
+      }
+    },
+    {
       "version": "0.4.15",
       "ru": {
         "title": "Veirune — музыка с тобой",
