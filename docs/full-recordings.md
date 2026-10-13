@@ -29,3 +29,8 @@ backend deploy script runs the existing migrations and backups; the media-cache
 correspondence table initializes automatically. No additional secrets or paid
 recognition service are required. Actual catalog coverage depends on available
 public recordings and reliable metadata, not a promised 100% match rate.
+
+Current API search rows can identify recordings using a track URN without a
+numeric id. Matching validates either form and rejects conflicting identifiers.
+A SNIP/PREVIEW policy also triggers full-recording lookup when the access field
+is missing or stale; blocked or private sources remain excluded.

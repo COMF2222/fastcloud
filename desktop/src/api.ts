@@ -183,6 +183,12 @@ export const api = {
     const seed = allowed[variation % allowed.length]
     return Promise.resolve([seed, ...demo.filter(track => !likedTracks.some(liked => liked.id === track.id) && !previewWaveDislikes.has(track.id))])
   },
+  station: async (tracks: Track[], kind: 'track' | 'collection' | 'artist') => {
+    if (!preview) return invoke<void>('start_station', { tracks: tracks.slice(0, 5000), kind })
+    const allowed = tracks.filter(track => !previewWaveDislikes.has(track.id) && track.access !== 'preview' && track.access !== 'blocked' && !['SNIP', 'BLOCK'].includes(track.policy || ''))
+    if (!allowed.length) throw new Error('No playable radio seeds')
+    await api.play([allowed[kind === 'track' ? 0 : Math.floor(Math.random() * allowed.length)], ...demo.filter(track => !previewWaveDislikes.has(track.id))], 0, true)
+  },
   waveDisliked: (trackId: number) => preview ? Promise.resolve(previewWaveDislikes.has(trackId)) : invoke<boolean>('wave_disliked', { trackId }),
   waveDislikes: () => preview ? Promise.resolve([...previewWaveDislikes].flatMap(id => { const track = previewFeedbackTracks.get(id); return track ? [track] : [] })) : invoke<Track[]>('wave_dislikes'),
   waveDislike: (track: Track, disliked: boolean) => {

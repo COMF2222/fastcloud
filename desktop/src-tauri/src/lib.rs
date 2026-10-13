@@ -23,6 +23,7 @@ mod diagnostics;
 mod personal;
 mod chat;
 mod wave;
+mod station;
 #[path = "../../../src/player/mod.rs"]
 mod player;
 #[path = "../../../src/skin/zip.rs"]
@@ -105,6 +106,7 @@ struct AppState {
 
 #[derive(Clone)]
 struct WaveSession {
+    station: Option<String>,
     continuation: bool,
     manual_ids: std::collections::HashSet<u64>,
     likes: Vec<Track>,
@@ -225,6 +227,7 @@ fn wave_refill_rechecks_dislikes_added_after_generation_started() {
     }
     let started_at = std::time::Instant::now();
     let session = Arc::new(Mutex::new(Some(WaveSession {
+        station: None,
         continuation: false, manual_ids: std::collections::HashSet::new(),
         likes: vec![tracks[0].clone()], seen: std::collections::HashSet::from([tracks[0].id]),
         seen_identities: vec![wave::track_identity(&tracks[0])],
@@ -253,6 +256,7 @@ fn disabling_autoplay_discards_an_in_flight_continuation() {
     player.state.lock().queue = vec![tracks[0].clone()];
     let started_at = std::time::Instant::now();
     let session = Arc::new(Mutex::new(Some(WaveSession {
+        station: None,
         continuation: true, manual_ids: std::collections::HashSet::from([tracks[0].id]),
         likes: vec![tracks[0].clone()], seen: std::collections::HashSet::from([tracks[0].id]),
         seen_identities: vec![wave::track_identity(&tracks[0])],
@@ -470,9 +474,10 @@ impl AppState {
                 playback.current.map(|_| {
                     let queue = playback.queue.clone();
                     WaveSession {
+                        station: settings.last_station.as_ref().map(|(kind, _)| kind.clone()),
                         continuation: !settings.last_wave_active,
                         manual_ids: if settings.last_wave_active { Default::default() } else { queue.iter().map(|track|track.id).collect() },
-                        likes: queue.clone(),
+                        likes: settings.last_station.as_ref().map_or_else(|| queue.clone(), |(_, seeds)| seeds.clone()),
                         seen: queue.iter().map(|track| track.id).collect(),
                         seen_identities: queue.iter().map(wave::track_identity).collect(),
                         started_at: std::time::Instant::now(),
@@ -543,17 +548,20 @@ impl AppState {
                                     session.seen_identities = tracks.iter().map(wave::track_identity).collect();
                                 }
                                 Some((session.likes.clone(), session.variation, session.started_at,
-                                    session.seen.clone(), session.seen_identities.clone()))
+                                    session.seen.clone(), session.seen_identities.clone(), session.station.clone()))
                             } else { None }
                         })
                     };
-                    if let Some((likes, variation, started_at, avoid, avoid_identities)) = refill {
+                    if let Some((likes, variation, started_at, avoid, avoid_identities, station)) = refill {
                         let player = player.clone();
                         let wave = wave.clone();
                         let client = client.clone();
                         let wave_session = wave_session.clone();
                         tokio::spawn(async move {
-                            let generated = wave::generate(client, &wave, likes, variation, &avoid, &avoid_identities).await;
+                            let generated = if let Some(kind) = station {
+                                let frontier = player.state.lock().queue.clone();
+                                station::generate(client, &wave, &likes, &frontier, &kind, variation, &avoid, &avoid_identities).await
+                            } else { wave::generate(client, &wave, likes, variation, &avoid, &avoid_identities).await };
                             append_wave_tracks(&player, &wave, &wave_session, started_at, generated);
                         });
                     }
@@ -666,12 +674,21 @@ impl AppState {
     }
 
     fn persist_wave_active(&self, active: bool) {
-        self.settings.lock().last_wave_active = active;
+        { let mut settings = self.settings.lock(); settings.last_wave_active = active; if !active { settings.last_station = None; } }
         match config::settings_path() {
-            Ok(path) => if let Err(error) = config::update_settings(&path, |settings| settings.last_wave_active = active) {
+            Ok(path) => if let Err(error) = config::update_settings(&path, |settings| { settings.last_wave_active = active; if !active { settings.last_station = None; } }) {
                 log::warn!("Could not save My Wave state: {error}");
             },
             Err(error) => log::warn!("Could not locate My Wave state: {error}"),
+        }
+    }
+
+    fn persist_station(&self, station: Option<(String, Vec<Track>)>) {
+        self.settings.lock().last_station = station.clone();
+        if let Ok(path) = config::settings_path() {
+            if let Err(error) = config::update_settings(&path, |settings| settings.last_station = station) {
+                log::warn!("Could not save radio context: {error}");
+            }
         }
     }
 }
@@ -844,6 +861,7 @@ async fn my_wave(
             }
             player.play_queue(vec![seed.clone()], 0, false);
             *session = Some(WaveSession {
+                station: None,
                 continuation: false, manual_ids: Default::default(),
                 likes: liked_tracks.clone(), seen: std::collections::HashSet::from([seed.id]),
                 seen_identities: vec![wave::track_identity(&seed)],
@@ -852,6 +870,7 @@ async fn my_wave(
             Ok(())
         })?;
     }
+    state.persist_station(None);
     state.persist_wave_active(true);
     let client = state.client.clone();
     let wave = state.wave.clone();
@@ -865,6 +884,41 @@ async fn my_wave(
         append_wave_tracks(&player, &wave, &wave_session, started_at, generated);
     });
     Ok(vec![seed])
+}
+
+#[tauri::command]
+async fn start_station(state: tauri::State<'_, AppState>, tracks: Vec<Track>, kind: String) -> Result<(), String> {
+    if !feedback_account_ready(&state) { return Err("Personal data is loading; try again shortly".into()); }
+    if !["track", "collection", "artist"].contains(&kind.as_str()) { return Err("Unknown radio kind".into()); }
+    let variation = state.wave.next_variation(0);
+    let seeds = state.wave.with_dislike_filter(|filter| {
+        let eligible: Vec<_> = tracks.into_iter().filter(|track| !filter.rejects(track)).collect();
+        station::seeds(&eligible, if kind == "track" { 0 } else { variation })
+    });
+    let seed = seeds.first().ok_or("No playable radio seeds")?.clone();
+    let player = state.player()?.clone();
+    let started_at = std::time::Instant::now();
+    {
+        let mut session = state.wave_session.lock();
+        state.wave.with_dislike_filter(|filter| {
+            if filter.rejects(&seed) { return Err("Track was excluded from recommendations"); }
+            player.play_queue(vec![seed.clone()], 0, false);
+            *session = Some(WaveSession { station: Some(kind.clone()), continuation: false,
+                manual_ids: Default::default(), likes: seeds.clone(),
+                seen: std::collections::HashSet::from([seed.id]), seen_identities: vec![wave::track_identity(&seed)],
+                started_at, variation: 0, busy: true, last_attempt: Some(started_at) });
+            Ok(())
+        }).map_err(str::to_string)?;
+    }
+    state.persist_station(Some((kind.clone(), seeds.clone())));
+    state.persist_wave_active(true);
+    let client = state.client.clone(); let wave = state.wave.clone(); let session = state.wave_session.clone();
+    state.rt.spawn(async move {
+        let result = station::generate(client, &wave, &seeds, &[], &kind, 0,
+            &std::collections::HashSet::from([seed.id]), &[wave::track_identity(&seed)]).await;
+        append_wave_tracks(&player, &wave, &session, started_at, result);
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -2116,7 +2170,9 @@ fn transport(
             if player.undo_queue() {
                 let wave = state.queue_wave_history.lock().pop_back().flatten();
                 let active = wave.as_ref().is_some_and(|session| !session.continuation);
+                let station = wave.as_ref().and_then(|session| session.station.as_ref().map(|kind| (kind.clone(), session.likes.clone())));
                 *state.wave_session.lock() = wave; state.persist_wave_active(active);
+                state.persist_station(station);
                 if active { state.wave.with_dislike_filter(|dislikes| { player.remove_matching(|track| dislikes.rejects(track)); }); }
             }
         },
@@ -2199,7 +2255,7 @@ fn play_tracks(
     }
     if state.settings.lock().autoplay {
         let manual_ids = if recommended.unwrap_or(false) { Default::default() } else { seen.clone() };
-        *session = Some(WaveSession { continuation:true, manual_ids, likes:seed_tracks,
+        *session = Some(WaveSession { station: None, continuation:true, manual_ids, likes:seed_tracks,
             seen, seen_identities, started_at:std::time::Instant::now(),variation:state.wave.next_variation(0),
             busy:false,last_attempt:None });
     }
@@ -3791,6 +3847,7 @@ pub fn run() {
             problem_report,
             save_problem_report,
             my_wave,
+            start_station,
             wave_dislike,
             wave_disliked,
             wave_dislikes,

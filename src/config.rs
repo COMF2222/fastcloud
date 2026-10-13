@@ -153,6 +153,9 @@ pub struct Settings {
     /// Whether the saved queue belongs to an active My Wave session.
     #[serde(default)]
     pub last_wave_active: bool,
+    /// Device-local radio context; never synchronized as a taste preference.
+    #[serde(default)]
+    pub last_station: Option<(String, Vec<crate::api::models::Track>)>,
     pub client_id: Option<String>,
     /// SoundCloud profile used for public library fallback when SoundCloud's
     /// user OAuth flow is unavailable. Public likes, tracks and playlists can
@@ -331,6 +334,7 @@ impl Default for Settings {
             last_track_urn: None,
             last_position_ms: None,
             last_wave_active: false,
+            last_station: None,
             client_id: None,
             soundcloud_profile_url: None,
             show_track_numbers: false,
@@ -643,6 +647,7 @@ impl Settings {
             next.last_track_urn = current.last_track_urn;
             next.last_position_ms = current.last_position_ms;
             next.last_wave_active = current.last_wave_active;
+            next.last_station = current.last_station;
             next.last_queue = current.last_queue;
             next.last_queue_idx = current.last_queue_idx;
         }
@@ -1018,6 +1023,7 @@ mod tests {
             last_position_ms: Some(12_345),
             last_queue_idx: Some(0),
             last_wave_active: true,
+            last_station: Some(("artist".into(), crate::demo::demo_tracks())),
             ..Settings::default()
         };
         write_settings(&path, &player_state).unwrap();
@@ -1034,6 +1040,8 @@ mod tests {
         assert_eq!(saved.last_position_ms, player_state.last_position_ms);
         assert_eq!(saved.last_queue_idx, player_state.last_queue_idx);
         assert_eq!(saved.last_wave_active, player_state.last_wave_active);
+        assert_eq!(saved.last_station.as_ref().unwrap().0, "artist");
+        assert_eq!(saved.last_station.as_ref().unwrap().1.len(), 10);
     }
 
     #[test]

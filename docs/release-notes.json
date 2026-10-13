@@ -2,6 +2,27 @@
   "schema": 1,
   "releases": [
     {
+      "version": "0.4.17",
+      "ru": {
+        "title": "Волна по любимой музыке",
+        "changes": [
+          "Запускай волну по треку, альбому, плейлисту или артисту.",
+          "Волна по артисту чередует его музыку с похожими исполнителями.",
+          "Станции продолжаются автоматически, учитывают дизлайки и сохраняют свою основу после перезапуска.",
+          "Улучшен поиск полной доступной записи для треков, которые SoundCloud отдаёт фрагментом."
+        ]
+      },
+      "en": {
+        "title": "Radio for your favourite music",
+        "changes": [
+          "Start radio from a track, album, playlist or artist.",
+          "Artist radio mixes their music with similar performers.",
+          "Stations continue automatically, respect dislikes and retain their original seeds after restarting.",
+          "Improved full-recording lookup for tracks that SoundCloud exposes as previews."
+        ]
+      }
+    },
+    {
       "version": "0.4.16",
       "ru": {
         "title": "Ярлыки после обновления",

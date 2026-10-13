@@ -36,3 +36,29 @@ These are ranking improvements, not a guarantee that every recommendation will
 match a listener's taste. Assess actual quality from completion, skips, dislikes
 and performer diversity during real sessions. Existing undated likes cannot
 reconstruct listening dates from before Fastcloud recorded them.
+
+## Radio from a track, collection or artist
+
+Radio uses the selected music as its source rather than the personal My Wave
+profile. The track menu, track page and expanded player start track radio;
+playlist/album pages and artist profiles provide their own radio action.
+The opening song plays immediately while related pages load in the background.
+
+Up to sixteen playable, distinct seeds cover the whole collection. Each refill
+fetches at most four related pages concurrently, with a nine-second timeout per
+page. Pages contribute in round-robin rank order. Artist radio aims for one song
+from the source performer per three songs, with a maximum of eight per 24-song
+batch; other performers contribute at most two per batch. Availability and
+dislikes can reduce these counts. The personal discovery/mood mode does not
+override an explicitly selected radio source.
+
+Dislikes, preview policies, seen IDs and recording identities exclude candidates;
+dislikes are checked again at queue append time. The original seeds and radio
+kind are device-local playback state and survive restart and queue undo.
+Radio continues independently of the ordinary playlist autoplay preference.
+Clearing the upcoming queue, stopping or manually playing another queue cancels
+the station. A previous station's pending results cannot append to a new session.
+
+On Android, related-page requests explicitly use `linked_partitioning=true`.
+Native JSON parsing expects an object containing `collection`; the unpartitioned
+array response previously left track radio with only its opening song.
