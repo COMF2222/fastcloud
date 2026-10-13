@@ -2,6 +2,23 @@
   "schema": 1,
   "releases": [
     {
+      "version": "0.4.19",
+      "ru": {
+        "title": "Подключение и выход из аккаунта",
+        "changes": [
+          "Исправлен переход на новый сервер для аккаунтов, подключённых через собственное API-приложение SoundCloud.",
+          "Выход из аккаунта работает и при недоступном сервере."
+        ]
+      },
+      "en": {
+        "title": "Connection and sign-out",
+        "changes": [
+          "Fixed migration to the new server for accounts previously connected through their own SoundCloud API app.",
+          "Sign out works even when the server is unavailable."
+        ]
+      }
+    },
+    {
       "version": "0.4.18",
       "ru": {
         "title": "Новый сервер",

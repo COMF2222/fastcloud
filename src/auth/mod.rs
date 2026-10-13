@@ -152,7 +152,22 @@ impl AppCredentials {
 
     /// Environment first (explicit beats stored), then the keyring.
     pub fn discover() -> Option<Self> {
-        Self::from_env().or_else(Self::from_remote_keyring).or_else(Self::from_keyring)
+        Self::from_env().or_else(Self::from_remote_keyring).or_else(|| {
+            let direct = Self::from_keyring()?;
+            let Some(remote) = read_secret(ADMIN_SERVER_ENTRY)
+                .and_then(|origin| direct.for_owned_server(&origin)) else { return Some(direct) };
+            delete_secret(REMOTE_USER_ENTRY).ok()?;
+            remote.save_remote().ok()?;
+            Some(remote)
+        })
+    }
+
+    fn for_owned_server(&self, origin: &str) -> Option<Self> {
+        if self.server_url.is_some() || !matches!(origin, LEGACY_SERVER_ORIGIN | CURRENT_SERVER_ORIGIN) {
+            return None;
+        }
+        Some(Self { client_id:self.client_id.clone(), client_secret:String::new(),
+            redirect_uri:self.redirect_uri.clone(), server_url:Some(CURRENT_SERVER_ORIGIN.into()) })
     }
 
     pub fn from_remote_keyring() -> Option<Self> {
@@ -282,6 +297,7 @@ pub fn checked_server_url(value: &str) -> Result<String> {
 
 pub fn saved_server_url() -> Option<String> {
     read_secret(ADMIN_SERVER_ENTRY).or_else(|| read_secret(REMOTE_ENTRY))
+        .map(|origin| replacement_server_origin(&origin).map_or(origin.clone(),str::to_owned))
 }
 
 pub fn save_server_url(value: &str) -> Result<String> {
@@ -443,6 +459,8 @@ pub struct Session {
     creds: AppCredentials,
     tokens: Arc<tokio::sync::Mutex<Option<Tokens>>>,
     client: Arc<crate::api::ApiClient>,
+    lifecycle: Arc<tokio::sync::watch::Sender<u64>>,
+    signing_out: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Session {
@@ -457,7 +475,7 @@ impl Session {
     }
     pub fn media_server_url(&self) -> Option<String> {
         self.creds.server_url.clone().or_else(|| {
-            read_secret(ADMIN_SERVER_ENTRY).and_then(|value| checked_server_url(&value).ok())
+            saved_server_url().and_then(|value| checked_server_url(&value).ok())
         })
     }
 
@@ -470,6 +488,8 @@ impl Session {
             creds,
             tokens: Arc::new(tokio::sync::Mutex::new(None)),
             client: client.clone(),
+            lifecycle: Arc::new(tokio::sync::watch::channel(0).0),
+            signing_out: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         });
         client.attach_session(&session);
         session
@@ -480,6 +500,7 @@ impl Session {
     pub fn for_client(&self, client: Arc<crate::api::ApiClient>) -> Arc<Self> {
         let session = Arc::new(Self {
             creds: self.creds.clone(), tokens: self.tokens.clone(), client: client.clone(),
+            lifecycle:self.lifecycle.clone(), signing_out:self.signing_out.clone(),
         });
         client.attach_session(&session);
         session
@@ -505,7 +526,18 @@ impl Session {
     /// A valid access token, refreshing or re-minting as needed. Also pushes
     /// it into the API client, so callers never have to.
     pub async fn access_token(&self) -> Result<String> {
+        anyhow::ensure!(!self.signing_out.load(std::sync::atomic::Ordering::SeqCst), "SoundCloud session is signing out");
+        let mut lifecycle = self.lifecycle.subscribe();
+        tokio::select! {
+            biased;
+            _ = lifecycle.changed() => anyhow::bail!("SoundCloud session was signed out"),
+            result = self.access_token_active() => result,
+        }
+    }
+
+    async fn access_token_active(&self) -> Result<String> {
         let mut held = self.tokens.lock().await;
+        anyhow::ensure!(!self.signing_out.load(std::sync::atomic::Ordering::SeqCst), "SoundCloud session is signing out");
         if let Some(tokens) = held.as_ref().filter(|t| !t.expired()) {
             self.client.set_oauth(tokens.access_token.clone());
             return Ok(tokens.access_token.clone());
@@ -566,20 +598,33 @@ impl Session {
         Ok(())
     }
 
-    /// Invalidate the session server-side and forget it locally.
-    pub async fn sign_out(&self) -> Result<()> {
-        let signed_out = crate::api::endpoints::sign_out(&self.client).await;
-        if self.is_remote() {
-            if let Err(error) = signed_out {
-                log::warn!("SoundCloud sign-out failed; clearing remote session locally: {error}");
-            }
-        } else {
-            signed_out.context("sign out from SoundCloud")?;
-        }
-        self.tokens.lock().await.take();
+    async fn clear_local_grant(&self) -> Option<Tokens> {
+        self.signing_out.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.lifecycle.send_modify(|epoch| *epoch = epoch.wrapping_add(1));
+        let previous = self.tokens.lock().await.take();
         self.client.clear_oauth();
+        self.signing_out.store(false, std::sync::atomic::Ordering::SeqCst);
+        previous
+    }
+
+    /// Local sign-out works offline. Remote revocation uses only the old grant.
+    pub async fn sign_out(&self) -> Result<()> {
+        let previous = self.clear_local_grant().await;
         if self.creds.server_url.is_some() { delete_secret(REMOTE_USER_ENTRY)?; }
         else { Tokens::delete()?; }
+        if let Some(previous) = previous.filter(|tokens| tokens.grant == Grant::User) {
+            let url = self.media_server_url().map_or_else(
+                || format!("{}/sign-out",crate::api::client::API_ROOT),
+                |server| format!("{server}/v1/soundcloud/api/sign-out"));
+            tokio::spawn(async move {
+                let result = reqwest::Client::new().post(url)
+                    .header(reqwest::header::AUTHORIZATION,format!("OAuth {}",previous.access_token))
+                    .timeout(std::time::Duration::from_secs(10)).send().await;
+                if result.is_err() || result.is_ok_and(|response| !response.status().is_success()) {
+                    log::warn!("Remote sign-out unavailable; the local session has been cleared");
+                }
+            });
+        }
         Ok(())
     }
 
@@ -975,6 +1020,48 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_direct_owner_credentials_use_a_fresh_owned_broker_grant() {
+        let direct = AppCredentials::new("owner-client".into(),"private-secret".into(),None);
+        for origin in [LEGACY_SERVER_ORIGIN,CURRENT_SERVER_ORIGIN] {
+            let migrated = direct.for_owned_server(origin).unwrap();
+            assert_eq!(migrated.server_url.as_deref(),Some(CURRENT_SERVER_ORIGIN));
+            assert!(migrated.client_secret.is_empty());
+            assert_eq!(migrated.client_id,direct.client_id);
+            assert_eq!(migrated.redirect_uri,direct.redirect_uri);
+        }
+        assert_eq!(direct.client_secret,"private-secret");
+        assert!(direct.for_owned_server("https://custom.example").is_none());
+        let remote = AppCredentials {server_url:Some("https://custom.example".into()),..direct};
+        assert!(remote.for_owned_server(LEGACY_SERVER_ORIGIN).is_none());
+    }
+
+    #[tokio::test]
+    async fn offline_sign_out_cancels_refresh_and_clears_the_grant_without_waiting_for_the_network() {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = Arc::new(crate::api::ApiClient::demo());
+        let creds = AppCredentials {client_id:"fixture".into(),client_secret:String::new(),
+            redirect_uri:DEFAULT_REDIRECT_URI.into(),server_url:Some(format!("http://{}",listener.local_addr().unwrap()))};
+        let session = Session::with_test_user(creds,client.clone()).await;
+        {
+            let mut tokens = session.tokens.lock().await;
+            let tokens = tokens.as_mut().unwrap();
+            tokens.expires_at = Some(0);
+            tokens.refresh_token = "fixture-refresh".into();
+        }
+        let waiting = tokio::spawn({let session=session.clone(); async move {session.access_token().await}});
+        let (mut socket,_) = listener.accept().await.unwrap();
+        let mut buffer=[0;1024];
+        assert!(socket.read(&mut buffer).await.unwrap()>0);
+        let previous = tokio::time::timeout(std::time::Duration::from_secs(1),session.clear_local_grant()).await.unwrap();
+        assert_eq!(previous.unwrap().grant,Grant::User);
+        assert!(waiting.await.unwrap().is_err());
+        assert_eq!(session.grant().await,None);
+        assert!(client.oauth_token().is_none());
+        // This state-only helper deliberately leaves the user's real keyring untouched.
+    }
 
     #[test]
     fn replacement_server_only_migrates_the_retired_owned_origin() {
