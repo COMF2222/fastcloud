@@ -50,6 +50,11 @@ pub const DEFAULT_REDIRECT_URI: &str = "http://127.0.0.1:41317/callback";
 pub const AUTH_ROOT: &str = "https://secure.soundcloud.com";
 
 pub const AUTH_SERVICE: &str = "com.fastcloud.tokens";
+pub const LEGACY_SERVER_ORIGIN: &str = "https://77.223.107.226";
+pub const CURRENT_SERVER_ORIGIN: &str = "https://80.47.238.200";
+pub fn replacement_server_origin(previous: &str) -> Option<&'static str> {
+    (previous == LEGACY_SERVER_ORIGIN).then_some(CURRENT_SERVER_ORIGIN)
+}
 pub const USER_ENTRY: &str = "oauth";
 pub const APP_ENTRY: &str = "oauth_app";
 pub const CLIENT_ID_ENTRY: &str = "client_id";
@@ -151,12 +156,20 @@ impl AppCredentials {
     }
 
     pub fn from_remote_keyring() -> Option<Self> {
-        Some(Self {
+        let mut creds = Self {
             client_id: read_secret(REMOTE_CLIENT_ENTRY)?,
             client_secret: String::new(),
             redirect_uri: read_secret(REMOTE_REDIRECT_ENTRY)?,
             server_url: Some(read_secret(REMOTE_ENTRY)?),
-        })
+        };
+        if let Some(server) = creds.server_url.as_deref().and_then(replacement_server_origin) {
+            // The former VPS is unavailable. Require a fresh grant on our replacement
+            // server without deleting per-account settings or personal caches.
+            delete_secret(REMOTE_USER_ENTRY).ok()?;
+            creds.server_url = Some(server.into());
+            creds.save_remote().ok()?;
+        }
+        Some(creds)
     }
 
     pub async fn from_server(server_url: &str) -> Result<Self> {
@@ -962,6 +975,14 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replacement_server_only_migrates_the_retired_owned_origin() {
+        assert_eq!(replacement_server_origin(LEGACY_SERVER_ORIGIN), Some(CURRENT_SERVER_ORIGIN));
+        for origin in [CURRENT_SERVER_ORIGIN, "https://example.com", "https://77.223.107.226.example.com"] {
+            assert_eq!(replacement_server_origin(origin), None);
+        }
+    }
 
     #[tokio::test]
     async fn an_expired_user_session_is_not_silently_downgraded_or_discarded() {

@@ -38,6 +38,7 @@ pub struct Listen {
 #[serde(default, rename_all = "camelCase")]
 struct Cache {
     device: String,
+    server: Option<String>,
     cloud: Cloud,
     dirty_preferences: BTreeMap<String, Value>,
     dirty_folders: BTreeMap<String, Value>,
@@ -48,6 +49,23 @@ struct Cache {
     stats: BTreeMap<String, Listen>,
     synced_stats: BTreeMap<String, (u64, u32)>,
     seeded_likes: bool,
+}
+
+impl Cache {
+    fn recover_server(&mut self, server: &str, remote: &Cloud) {
+        let previous = self.server.as_deref().unwrap_or(crate::auth::LEGACY_SERVER_ORIGIN);
+        if previous == crate::auth::LEGACY_SERVER_ORIGIN && server == crate::auth::CURRENT_SERVER_ORIGIN {
+            for (id,value) in &self.cloud.preferences { if !remote.preferences.contains_key(id) { self.dirty_preferences.entry(id.clone()).or_insert_with(|| value.clone()); } }
+            for (id,value) in &self.cloud.folders { if !remote.folders.contains_key(id) { self.dirty_folders.entry(id.clone()).or_insert_with(|| value.clone()); } }
+            for (id,value) in &self.cloud.smart_playlists { if !remote.smart_playlists.contains_key(id) { self.dirty_smart.entry(id.clone()).or_insert_with(|| value.clone()); } }
+            for (id,value) in &self.cloud.liked_at { if !remote.liked_at.contains_key(id) { self.dirty_likes.entry(id.clone()).or_insert_with(|| value.clone()); } }
+            for (id,value) in &self.cloud.track_feedback { if !remote.track_feedback.contains_key(id) { self.dirty_feedback.entry(id.clone()).or_insert_with(|| value.clone()); } }
+            // These counters belong to this device; do not replay aggregate totals
+            // received from other devices as new listening activity.
+            self.synced_stats.clear();
+        }
+        self.server = Some(server.to_owned());
+    }
 }
 
 struct Inner { account: u64, epoch: u64, cache: Cache, previous: Option<(u64, u64, Instant, bool)>, session_ms: u64, counted: bool, status: String }
@@ -323,6 +341,8 @@ impl Hub {
         let payload = {
             let mut inner = self.inner.lock();
             if inner.epoch != epoch { return Ok(()); }
+            inner.cache.recover_server(&server, &remote);
+            self.save(&inner)?;
             merge_received_feedback(&mut inner.cache,&remote.track_feedback);
             if remote.preferences.is_empty() && inner.cache.dirty_preferences.is_empty() {
                 inner.cache.dirty_preferences = if inner.cache.cloud.preferences.is_empty() { portable(&config::Settings::default()) } else { inner.cache.cloud.preferences.clone() };
@@ -442,6 +462,35 @@ fn smart_matches(rule: &Smart, track: &api::models::Track, added: i64, played: i
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replacement_server_recovers_cached_fields_and_owned_counters_once() {
+        let mut cache = Cache::default();
+        cache.cloud.preferences.insert("theme".into(), json!("dark"));
+        cache.cloud.folders.insert("saved".into(), json!({"name":"Saved"}));
+        cache.dirty_preferences.insert("theme".into(), json!("light"));
+        cache.cloud.totals = json!({"ms":9000});
+        cache.synced_stats.insert("2026-10-12:1".into(), (1000,1));
+        cache.recover_server(crate::auth::CURRENT_SERVER_ORIGIN, &Cloud::default());
+        assert_eq!(cache.dirty_preferences["theme"], json!("light"));
+        assert_eq!(cache.dirty_folders["saved"], cache.cloud.folders["saved"]);
+        assert!(cache.synced_stats.is_empty());
+        assert!(cache.stats.is_empty(), "Aggregate history must not become device counters");
+        assert_eq!(cache.cloud.totals, json!({"ms":9000}));
+        cache.synced_stats.insert("2026-10-12:1".into(), (1000,1));
+        cache.recover_server(crate::auth::CURRENT_SERVER_ORIGIN, &Cloud::default());
+        assert_eq!(cache.synced_stats.len(), 1);
+        let mut custom = Cache {server:Some("https://example.com".into()), ..Default::default()};
+        custom.synced_stats.insert("2026-10-12:1".into(), (1000,1));
+        custom.recover_server(crate::auth::CURRENT_SERVER_ORIGIN, &Cloud::default());
+        assert_eq!(custom.synced_stats.len(), 1);
+        let mut second_device = Cache::default();
+        second_device.cloud.preferences.insert("theme".into(), json!("dark"));
+        let mut updated = Cloud::default();
+        updated.preferences.insert("theme".into(), json!("light"));
+        second_device.recover_server(crate::auth::CURRENT_SERVER_ORIGIN, &updated);
+        assert!(second_device.dirty_preferences.is_empty(), "A stale cache must not overwrite data already recovered by another device");
+    }
     #[test]
     fn decorated_artist_names_merge_but_collaborations_do_not() {
         let tracks = vec![json!({"artist": "Lil Peep", "ms": 1000}), json!({"artist": "☆LiL PEEP☆", "ms": 2000}), json!({"artist": "Lil Peep & Lil Tracy", "ms": 500}), json!({"artist": "  ＣＵＰＳＩＺＥ  ", "ms": 400}), json!({"artist": "cupsize", "ms": 600})];
