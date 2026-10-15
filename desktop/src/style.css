@@ -426,11 +426,7 @@ html[data-quality="eco"] .main.has-wallpaper::before { filter: none; }
 html[data-quality="balanced"] .settings-card, html[data-quality="balanced"] .card { backdrop-filter: blur(6px); }
 html[data-quality="quality"] .settings-card, html[data-quality="quality"] .card { background: color-mix(in srgb, var(--surface-card) 84%, transparent); backdrop-filter: blur(16px); }
 html[data-quality="quality"] .main.has-wallpaper .topbar { background: color-mix(in srgb, var(--surface-card) 68%, transparent); backdrop-filter: blur(18px); }
-html[data-quality="quality"] .main { position: relative; isolation: isolate; }
-html[data-quality="quality"] .main::after { content: ''; position: absolute; z-index: 0; inset: 0; pointer-events: none; opacity: .55; background: radial-gradient(circle at 78% 17%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 33%), radial-gradient(circle at 12% 82%, #4d6d9322, transparent 34%), radial-gradient(circle, #ffffff38 1px, transparent 2px); background-size: auto, auto, 127px 131px; animation: glass-drift 20s ease-in-out infinite alternate; }
-html[data-quality="quality"] .main > * { position: relative; z-index: 1; }
 html[data-quality="quality"] .track-list, html[data-quality="quality"] .player-bar { background: color-mix(in srgb, var(--surface-card) 82%, transparent); backdrop-filter: blur(14px); }
-@keyframes glass-drift { from { background-position: 0 0, 0 0, 0 0; } to { background-position: 0 0, 0 0, 22px -17px; } }
 @media (max-width: 900px) { .settings-layout { grid-template-columns: 1fr; }.settings-nav { position: static; display: flex; overflow-x: auto; }.settings-nav button { flex: none; }.performance-options { grid-template-columns: 1fr; } }
 html[data-reduced-motion="true"] *, html[data-reduced-motion="true"] *::before, html[data-reduced-motion="true"] *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 html[data-theme="light"] .topbar, html[data-theme="light"] .sidebar-rule, html[data-theme="light"] .tabs, html[data-theme="light"] .player-bar { border-color: var(--line); }

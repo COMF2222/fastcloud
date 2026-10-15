@@ -1,6 +1,6 @@
 import { previewChat } from './chatPreview'
 import type { ChatAction } from './chatTypes'
-import { invoke } from '@tauri-apps/api/core'
+import { convertFileSrc, invoke } from '@tauri-apps/api/core'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { captureTheme, validateTheme, type ThemePreset } from './themePresets'
 import type { PersonalCollections, ListeningStatistics, SmartPlaylist, ProblemReport, OfflineCapacity, Comment, Connection, Data, LyricsRecord, LyricTrackMatch, Me, OfflineEntry, PlayerState, Playlist, QuickAccessShortcut, Settings, StorageReport, Track, User, VisualiserFrame, WaveformSamples, WebProfile } from './types'
@@ -163,7 +163,12 @@ export const api = {
     if (previewSleepUntil !== null && previewSleepUntil <= Date.now()) { previewPlayer.isPlaying = false; previewSleepUntil = null }
     return Promise.resolve({ ...previewPlayer, canUndoQueue: previewQueueHistory.length > 0, sleepRemainingMs: previewSleepUntil === null ? null : Math.max(0, previewSleepUntil - Date.now()) })
   },
-  imageData: (url: string) => preview ? Promise.resolve(url) : invoke<string>('image_data', { url }),
+  imageData: async (url: string) => {
+    if (preview) return url
+    const source = await invoke<string>('image_data', { url })
+    // A disk-write failure still displays the image through the bounded fallback.
+    return source.startsWith('data:') ? source : convertFileSrc(source)
+  },
   waveformSamples: (url: string) => preview ? Promise.reject<WaveformSamples>(new Error('Waveform unavailable in preview')) : invoke<WaveformSamples>('waveform_samples', { url }),
   offlineTracks: () => preview ? Promise.resolve([...previewOffline.values()].sort((a, b) => {
     const left = previewOfflineLikeOrder.indexOf(a.track.id)

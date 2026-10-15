@@ -14,6 +14,7 @@ const soundcloudCdn = (value: string) => {
 export function RemoteImage({ src, previewSrc, fallback, pixels, alt = '', ...props }: ImgHTMLAttributes<HTMLImageElement> & { src: string; previewSrc?: string; fallback?: string; pixels?: number }) {
   const [broken, setBroken] = useState<string | null>(null)
   const element = useRef<HTMLImageElement>(null)
+  const recoveredFile = useRef<string | null>(null)
   const [nearViewport, setNearViewport] = useState(props.loading !== 'lazy')
   useEffect(() => {
     if (nearViewport || props.loading !== 'lazy') return
@@ -64,5 +65,14 @@ export function RemoteImage({ src, previewSrc, fallback, pixels, alt = '', ...pr
     ? [image.data, thumbnail.data]
     : [primary]
   const visible = candidates.find(value => !!value && value !== broken)
-  return <img {...props} ref={element} src={visible || undefined} alt={alt} onError={() => visible && setBroken(visible)} />
+  return <img {...props} ref={element} src={visible || undefined} alt={alt} onError={() => {
+    if (!visible) return
+    setBroken(visible)
+    // The disk quota may evict a cover while another view still holds its URL.
+    // Resolve it again once; do not keep retrying a genuinely broken image.
+    if (proxied && visible === image.data && !visible.startsWith('data:') && recoveredFile.current !== visible) {
+      recoveredFile.current = visible
+      void image.refetch().then(result => { if (result.data) setBroken(null) })
+    }
+  }} />
 }

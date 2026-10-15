@@ -1,6 +1,7 @@
 /target
 /desktop/node_modules
 /desktop/dist
+/desktop/.codex-qa/
 /desktop/release
 /desktop/release-notes.md
 /desktop/*.tsbuildinfo

@@ -999,7 +999,7 @@ fn clear_offline_tracks() -> Result<(), String> {
 #[tauri::command]
 async fn image_data(state: tauri::State<'_, AppState>, url: String) -> Result<String, String> {
     let relay = state.client.relay_credentials().await.map_err(|error| error.to_string())?;
-    state.image_cache.data_url(url, relay).await
+    state.image_cache.image_source(url, relay).await
 }
 
 #[derive(Serialize)]
@@ -3664,6 +3664,9 @@ pub fn run() {
                 }
             });
             app.manage(AppState::new()?);
+            // Only this generated artwork directory is exposed, not the
+            // account database, credentials, audio cache or arbitrary files.
+            app.asset_protocol_scope().allow_directory(app.state::<AppState>().image_cache.directory(), false)?;
             app.manage(update_events::Subscription::default());
             let (mini, saved_bounds) = {
                 let state = app.state::<AppState>();

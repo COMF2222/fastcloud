@@ -2,6 +2,25 @@
   "schema": 1,
   "releases": [
     {
+      "version": "0.4.20",
+      "ru": {
+        "title": "Меньше расход памяти",
+        "changes": [
+          "Уменьшен расход памяти локального анализатора музыки без изменения результатов подбора.",
+          "Обложки читаются из локального кэша без лишних копий в памяти; качество изображений сохраняется.",
+          "Убраны анимированные засветы и точки в режиме полной производительности."
+        ]
+      },
+      "en": {
+        "title": "Lower memory use",
+        "changes": [
+          "Reduced local music analyser memory use without changing recommendation analysis results.",
+          "Artwork loads from the local cache without extra in-memory copies, preserving image quality.",
+          "Removed animated glow and dots from the Full performance profile."
+        ]
+      }
+    },
+    {
       "version": "0.4.19",
       "ru": {
         "title": "Подключение и выход из аккаунта",
