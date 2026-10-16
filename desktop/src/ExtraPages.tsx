@@ -30,11 +30,7 @@ function People({ users }: { users: User[] }) {
 }
 
 const isAlbum = (item: Playlist) => item.is_album || item.playlist_type?.toLowerCase() === 'album' || item.set_type?.toLowerCase() === 'album'
-const playlistDuration = (ms: number) => {
-  const seconds = Math.floor(ms / 1000)
-  const hours = Math.floor(seconds / 3600)
-  return hours ? `${hours}:${String(Math.floor(seconds / 60) % 60).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}` : duration(ms)
-}
+const playlistDuration = duration
 
 function ProfileCollections({ created, saved, albums, filter, english = false }: { created?: Data<Playlist[]>; saved?: Data<Playlist[]>; albums: boolean; filter: string; english?: boolean }) {
   const t = (ru: string, en: string) => english ? en : ru

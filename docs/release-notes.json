@@ -2,6 +2,21 @@
   "schema": 1,
   "releases": [
     {
+      "version": "0.4.21",
+      "ru": {
+        "title": "Время длинных треков",
+        "changes": [
+          "Длительность и время воспроизведения треков от часа отображаются с часами: 2:20:00 вместо 140:00."
+        ]
+      },
+      "en": {
+        "title": "Long track timestamps",
+        "changes": [
+          "Track durations and playback timestamps of an hour or more show hours: 2:20:00 instead of 140:00."
+        ]
+      }
+    },
+    {
       "version": "0.4.20",
       "ru": {
         "title": "Меньше расход памяти",

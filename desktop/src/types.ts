@@ -155,8 +155,10 @@ export const artworkForSize = (item: Track | Playlist, size: 'row' | 'card' | 'h
   return soundcloudImageAt(source, pixels)
 }
 export const duration = (ms?: number | null) => {
-  const seconds = Math.floor((ms || 0) / 1000)
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
+  const seconds = typeof ms === 'number' && Number.isFinite(ms) ? Math.max(0, Math.floor(ms / 1000)) : 0
+  const minutes = Math.floor(seconds / 60)
+  const rest = String(seconds % 60).padStart(2, '0')
+  return minutes < 60 ? `${minutes}:${rest}` : `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, '0')}:${rest}`
 }
 
 export interface LeaderboardEntry {
